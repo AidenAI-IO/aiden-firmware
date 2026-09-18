@@ -360,6 +360,45 @@ func TestConfigUpdateErrorsExposeStableKinds(t *testing.T) {
 	}
 }
 
+// A file that selects Classic mode (input_mode=stt) with a TTS provider but no STT
+// provider is exactly the recovery state the portal highlights. The editor view
+// used to show the DefaultConfig() STT provider for it and the no-op filter
+// compared against that view, so re-selecting the provider the page offered wrote
+// nothing and the flag could never be cleared. The patch has to reach the file.
+func TestUpdateConfigFileWritesProviderTheFileNeverDeclared(t *testing.T) {
+	source := `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "stt"
+
+[voice_settings.classic.tts]
+provider = "minimax-cn"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"stt":{"provider":"openai-whisper"}}}`))
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !result.OK || strings.Join(result.ChangedPaths, ",") != "voice_settings.classic.stt.provider" {
+		t.Fatalf("result = %+v", result)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `provider = "openai-whisper"`) {
+		t.Fatalf("stt provider was not written:\n%s", got)
+	}
+	if _, err := agent.LoadResolvedConfig(path); err != nil {
+		t.Fatalf("repaired config is still rejected: %v", err)
+	}
+}
+
 func TestUpdateConfigFileEmptyPatchDoesNotRewrite(t *testing.T) {
 	source := []byte("[basic_settings.language_timezone]\nlocale = \"en-US\"\n[basic_settings.device.hid]\nkeyboard_layout = \"qwerty\"\n")
 	path := filepath.Join(t.TempDir(), "agent.toml")

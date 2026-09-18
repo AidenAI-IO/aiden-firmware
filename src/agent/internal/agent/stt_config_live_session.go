@@ -155,7 +155,12 @@ func (a *STTConfigTestAPI) HandleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
-	cfg, err := LoadRuntimeConfig(a.configPath)
+	// The candidate values travel in the request and are applied on top of this
+	// context, so the persisted file only has to be readable. Requiring it to pass
+	// semantic validation disabled the live test in exactly the recovery state it
+	// is needed in: the flagged stt.provider is what the user is testing a
+	// replacement for. A file that cannot be read or decoded still fails here.
+	cfg, err := LoadResolvedConfigForUpdate(a.configPath)
 	if err != nil {
 		http.Error(w, "load Agent config: "+err.Error(), http.StatusServiceUnavailable)
 		return

@@ -54,6 +54,16 @@ same-origin management requests. Agent port mappings therefore do not affect
 the configuration portal, and the Agent does not expose duplicate models, STT
 test, or storage-management handlers on port 8080.
 
+`GET /api/config` and `GET /api/device/snapshot` include `config_valid` and a
+`config_errors` array of `{field, message}` objects. Semantic validation errors
+do not make these endpoints unavailable; they identify fields the recovery UI
+must highlight. A field the page does not render, or a message no validator
+attributed to one, reports an empty `field` and is surfaced in the details
+instead. An `agent.toml` that cannot be read or decoded returns an unavailable
+response, because there is no editable configuration to construct. A file that is
+missing altogether is not a validation failure: the runtime reads it as the
+built-in defaults, the page renders those defaults, and saving creates the file.
+
 `GET /api/storage/status` and the `storage` field of
 `GET /api/device/snapshot` share the following response shape:
 

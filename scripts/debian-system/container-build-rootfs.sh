@@ -190,7 +190,7 @@ EOF
         aiden-slot-resolve.service aiden-rootfs-grow.service \
         oem.mount userdata.mount userdata-ota.mount \
         aiden-userdata-migrate.service aiden-machine-id.service \
-        aiden-root-home.service \
+        aiden-root-home.service aiden-user-home.service \
         aiden-ssh-identity.service aiden-oem-ldconfig.service \
         aiden-environment.service aiden-zram.service aiden-swap.service \
         aiden-media-modules.service aiden-wifi-driver.service \
