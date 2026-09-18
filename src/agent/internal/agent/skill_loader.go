@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,12 +77,12 @@ func (idx *SkillIndex) scanDirectory(dir string) error {
 
 		skill, err := loadSkillMetadata(path)
 		if err != nil {
-			log.Printf("[skill_loader] skipping %q: %v", path, err)
+			logging.Warnf("agent", "skill_loader", "skipping %q: %v", path, err)
 			return nil
 		}
 
 		if _, exists := idx.skills[skill.Name]; exists {
-			log.Printf("[skill_loader] duplicate skill name %q in %q, keeping first", skill.Name, path)
+			logging.Warnf("agent", "skill_loader", "duplicate skill name %q in %q, keeping first", skill.Name, path)
 			return nil
 		}
 
@@ -158,7 +158,7 @@ func interfaceSliceToStringSlice(in []interface{}, fieldName string) []string {
 			out = append(out, s)
 			continue
 		}
-		log.Printf("[skill_loader] ignoring non-string %s value %v (type %T)", fieldName, v, v)
+		logging.Warnf("agent", "skill_loader", "ignoring non-string %s value %v (type %T)", fieldName, v, v)
 	}
 	return out
 }

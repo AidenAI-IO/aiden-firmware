@@ -1,10 +1,10 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -38,14 +38,14 @@ func beginTextInputVLLMCall(ctx context.Context, operation string) func(error) {
 	}
 	call := metrics.vllmCalls.Add(1)
 	started := time.Now()
-	log.Printf("[text-input] vllm begin call=%d operation=%s", call, operation)
+	logging.Debugf("agent", "text_input", "vllm begin call=%d operation=%s", call, operation)
 	return func(err error) {
 		duration := time.Since(started)
 		if err != nil {
-			log.Printf("[text-input] vllm end call=%d operation=%s duration=%s ok=false err=%q", call, operation, duration, err)
+			logging.Debugf("agent", "text_input", "vllm end call=%d operation=%s duration=%s ok=false err=%q", call, operation, duration, err)
 			return
 		}
-		log.Printf("[text-input] vllm end call=%d operation=%s duration=%s ok=true", call, operation, duration)
+		logging.Debugf("agent", "text_input", "vllm end call=%d operation=%s duration=%s ok=true", call, operation, duration)
 	}
 }
 

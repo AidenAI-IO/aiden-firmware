@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/logging"
 
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -71,7 +71,7 @@ func NewAgentLoop(
 	contextManager *contextmanager.ContextManager,
 ) *AgentLoop {
 	if contextManager == nil {
-		log.Fatalf("context manager is nil")
+		logging.Fatalf("agent", "agent_loop", "context manager is nil")
 	}
 	return &AgentLoop{
 		Model:             model,
@@ -270,7 +270,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 				}
 				l.contextManager = newManager
 				llmExecutor.ReplaceContextManager(newManager)
-				log.Printf("[context] provider context limit exceeded; compacted context and retrying\n")
+				logging.Infof("agent", "context", "provider context limit exceeded; compacted context and retrying")
 				return "", iterationRestartBudget, nil
 			}
 		}
@@ -335,7 +335,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			return "", iterationContinue, err
 		} else if hasPending {
 			policy.ResetForSteer()
-			log.Printf("[steer] LLM parse failed, steer injected (length=%d)\n", len(steer.Content))
+			logging.Warnf("agent", "steer", "LLM parse failed, steer injected (length=%d)", len(steer.Content))
 			return "", iterationRestartBudget, nil
 		}
 
@@ -371,7 +371,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		if err := l.persistSteer(ctx, llmExecutor, steer); err != nil {
 			return "", iterationContinue, err
 		}
-		log.Printf("[steer] LLM action interrupted, steer injected (length=%d)\n", len(steer.Content))
+		logging.Infof("agent", "steer", "LLM action interrupted, steer injected (length=%d)", len(steer.Content))
 		return "", iterationRestartBudget, nil
 	}
 
@@ -431,7 +431,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			CallOptions:     turnOptions,
 		})
 		if prepareErr != nil {
-			log.Printf("[tool_result] preparation failed for %s: %v\n", toolExecution.Call.Spec.Name, prepareErr)
+			logging.Errorf("agent", "tool_result", "preparation failed for %s: %v", toolExecution.Call.Spec.Name, prepareErr)
 			prepared = failedPreparedToolResult(toolExecution.Result, toolExecution.ActionCompleted)
 		} else {
 			prepared = preparedResult
@@ -485,7 +485,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			}
 			if hasPending {
 				policy.ResetForSteer()
-				log.Printf("[steer] tool canceled but pending steer exists (length=%d), restarting iteration budget\n", len(steer.Content))
+				logging.Infof("agent", "steer", "tool canceled but pending steer exists (length=%d), restarting iteration budget", len(steer.Content))
 				return "", iterationRestartBudget, nil
 			}
 			if ctx.Err() == nil {
@@ -601,7 +601,7 @@ func (l *AgentLoop) compactContextBeforeLLM(ctx context.Context, llmExecutor *ex
 	}
 	l.contextManager = newManager
 	llmExecutor.ReplaceContextManager(newManager)
-	log.Printf("[context] agent-loop context reached %d tokens (trigger %d); compacted before next model call\n", promptTokens, l.ContextCompactionTrigger)
+	logging.Infof("agent", "context", "agent-loop context reached %d tokens (trigger %d); compacted before next model call", promptTokens, l.ContextCompactionTrigger)
 	return true, nil
 }
 
@@ -631,7 +631,7 @@ func (l *AgentLoop) applyLoopGuardDecision(decision TerminationDecision) {
 		Role:    messages.MessageRoleNotice,
 		Content: decision.Notice,
 	}); err != nil {
-		log.Printf("[loop guard] failed to append notice message: %v", err)
+		logging.Warnf("agent", "loop_guard", "failed to append notice message: %v", err)
 	}
 }
 
@@ -765,7 +765,7 @@ func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecu
 		if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
 			// Tool was interrupted but we have a new steer to process
 			// Return the error but the steer is preserved for next iteration
-			log.Printf("[steer] tool canceled but pending steer exists (length=%d), will be processed\n", len(steer.Content))
+			logging.Infof("agent", "steer", "tool canceled but pending steer exists (length=%d), will be processed", len(steer.Content))
 		}
 	}
 

@@ -2,8 +2,8 @@ package contextmanager
 
 import (
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/logging"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,7 +63,7 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	metadata, found, err := loadSessionMetadata(sessionFolder, sessionID)
 	switch {
 	case err != nil:
-		log.Printf("[CM] Failed to load session metadata for %s: %v\n", sessionID, err)
+		logging.Warnf("agent", "cm", "Failed to load session metadata for %s: %v", sessionID, err)
 	case found:
 		parentSessionID = strings.TrimSpace(metadata.ParentSessionID)
 	}
@@ -222,7 +222,7 @@ func (c *ContextManager) appendToList(messages []messages.Message) error {
 	}
 
 	if err := appendSession(c.sessionFolder, c.sessionID, messages); err != nil {
-		log.Println("[CM] Failed to append messages to session", err)
+		logging.Errorf("agent", "cm", "Failed to append messages to session %v", err)
 		return err
 	}
 

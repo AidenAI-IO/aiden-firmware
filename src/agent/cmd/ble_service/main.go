@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"aiden-agent/internal/ble"
+	"aiden-agent/internal/logging"
 )
 
 func main() {
@@ -19,10 +19,10 @@ func main() {
 	pairingWindow := flag.Duration("pairing-window", 5*time.Minute, "first-device BLE pairing window")
 	flag.Parse()
 	if *eventCapacity <= 0 {
-		log.Fatalf("event-capacity must be positive")
+		logging.Fatalf("ble_service", "startup", "event-capacity must be positive")
 	}
 	if *pairingWindow <= 0 {
-		log.Fatalf("pairing-window must be positive")
+		logging.Fatalf("ble_service", "startup", "pairing-window must be positive")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -31,17 +31,17 @@ func main() {
 	service := ble.NewService(*eventCapacity)
 	uds := ble.NewUDSServer(*socketPath, service)
 	if err := uds.Start(); err != nil {
-		log.Fatalf("start BLE UDS service: %v", err)
+		logging.Fatalf("ble_service", "startup", "start BLE UDS service: %v", err)
 	}
 	defer uds.Close()
-	log.Printf("ble_service listening on %s", *socketPath)
+	logging.Infof("ble_service", "startup", "ble_service listening on %s", *socketPath)
 
 	for ctx.Err() == nil {
 		err := service.RunBlueZ(ctx, *deviceName, *pairingWindow)
 		if ctx.Err() != nil {
 			break
 		}
-		log.Printf("BlueZ backend stopped: %v", err)
+		logging.Warnf("ble_service", "main", "BlueZ backend stopped: %v", err)
 		timer := time.NewTimer(2 * time.Second)
 		select {
 		case <-ctx.Done():
@@ -51,5 +51,5 @@ func main() {
 		case <-timer.C:
 		}
 	}
-	log.Printf("ble_service stopped")
+	logging.Infof("ble_service", "main", "ble_service stopped")
 }

@@ -35,7 +35,7 @@ service_log() {
     shift 2
     message="$*"
     timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    line="$timestamp [$level] [agent] [supervisor] $event $message"
+    line="$timestamp [$level][agent][supervisor] $event $message"
     printf '%s\n' "$line" >> "$log_file"
     printf '%s\n' "$line"
 }

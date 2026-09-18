@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/wifiproxy"
 )
 
@@ -101,7 +101,8 @@ func (s *Server) ListenAndServe() error {
 			return fmt.Errorf("initialize storage manager: %w", err)
 		}
 	}
-	log.Printf("[config_web] listening on %s", s.options.Addr())
+	s.logAgentRecoveryState()
+	logging.Infof("config_web", "config_web", "listening on %s", s.options.Addr())
 	err := s.http.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

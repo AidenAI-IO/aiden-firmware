@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -26,6 +25,7 @@ import (
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/agent/tokencounter"
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/util"
 
 	"github.com/google/uuid"
@@ -435,7 +435,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 			Quiet:            false,
 		})
 		if err != nil {
-			log.Printf("[skill_sync] sync failed (non-fatal): %v", err)
+			logging.Warnf("agent", "skill_sync", "sync failed (non-fatal): %v", err)
 		} else {
 			mergeNeeded = report.MergeNeeded
 		}
@@ -491,7 +491,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		if logger != nil {
 			logger.Warn("managed python environment unavailable: %v", pythonErr)
 		} else {
-			log.Printf("managed python environment unavailable: %v", pythonErr)
+			logging.Warnf("agent", "runtime", "managed python environment unavailable: %v", pythonErr)
 		}
 	} else {
 		toolOptions = append(toolOptions, WithShellTemporaryDirectory(managedPythonTmp))
@@ -627,7 +627,7 @@ func (r *Runtime) ttsProviderManager() *tts.ProviderManager {
 			if r.logger != nil {
 				r.logger.Warn("TTS init failed: %v", err)
 			} else {
-				log.Printf("[tts] init failed, continuing without TTS: %v\n", err)
+				logging.Warnf("agent", "tts", "init failed, continuing without TTS: %v", err)
 			}
 		}
 		if manager == nil {
@@ -729,7 +729,7 @@ func (r *Runtime) startMemoryWorker(runtimeLogger *Logger) {
 		runtimeLogger.Warn("[memory] worker disabled: %v", err)
 		return
 	}
-	log.Printf("[memory] worker disabled: %v", err)
+	logging.Warnf("agent", "memory", "worker disabled: %v", err)
 }
 
 // EpisodeMemoryInitializationError reports why the background consolidation
@@ -817,7 +817,7 @@ func (r *Runtime) Preempt() {
 					if r.logger != nil {
 						r.logger.Warn("[preempt] hook %d panicked: %v", i, recovered)
 					} else {
-						log.Printf("[preempt] hook %d panicked: %v", i, recovered)
+						logging.Warnf("agent", "preempt", "hook %d panicked: %v", i, recovered)
 					}
 				}
 			}()

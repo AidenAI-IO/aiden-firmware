@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 // Run serves the device configuration portal until SIGINT or SIGTERM.
@@ -44,7 +46,7 @@ func Run(args []string) int {
 
 	server, err := NewServer(options)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config-web: %v\n", err)
+		logging.Errorf("config_web", "run", "config-web: %v", err)
 		return 1
 	}
 	errCh := make(chan error, 1)
@@ -56,7 +58,7 @@ func Run(args []string) int {
 	select {
 	case err := <-errCh:
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "config-web: %v\n", err)
+			logging.Errorf("config_web", "run", "config-web: %v", err)
 			return 1
 		}
 		return 0
@@ -64,7 +66,7 @@ func Run(args []string) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "config-web shutdown: %v\n", err)
+			logging.Errorf("config_web", "run", "config-web shutdown: %v", err)
 			return 1
 		}
 		return 0

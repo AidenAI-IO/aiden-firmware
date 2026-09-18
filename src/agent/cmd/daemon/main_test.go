@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ import (
 	"aiden-agent/internal/agent/messages"
 	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agenttask"
+	"aiden-agent/internal/logging"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -1266,14 +1266,8 @@ func TestDrainWakeupEventsWhileListeningLogsDrainedCount(t *testing.T) {
 	wakeupEvents <- struct{}{}
 
 	var logBuf bytes.Buffer
-	originalOutput := log.Writer()
-	originalFlags := log.Flags()
-	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(originalOutput)
-		log.SetFlags(originalFlags)
-	})
+	restore := logging.SetOutput(&logBuf)
+	t.Cleanup(restore)
 
 	drainWakeupEventsWhileListening(wakeupEvents)
 

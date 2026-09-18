@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"aiden-agent/internal/logging"
 )
 
 type commandResult struct {
@@ -184,7 +186,7 @@ func (s *Server) reapRestartLocked() {
 }
 
 func logConfigWebError(message string) {
-	fmt.Fprintf(os.Stderr, "[config_web] %s\n", message)
+	logging.Errorf("config_web", "config_web", "%s", message)
 }
 
 func mergeEnvironment(base []string, assignments []EnvAssignment) []string {

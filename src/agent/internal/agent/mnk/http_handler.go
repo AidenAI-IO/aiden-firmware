@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+
+	"aiden-agent/internal/logging"
 )
 
 // HTTPHandler handles HTTP requests for MNK operations
@@ -48,7 +49,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Log request (optional, can be controlled by log level)
 	taskID := r.Header.Get(BenchmarkTaskIDHeader)
 	if taskID != "" {
-		log.Printf("[MNK] Task %s: %s", taskID, req.Operation)
+		logging.Infof("agent", "mnk", "Task %s: %s", taskID, req.Operation)
 	}
 
 	// Execute operation

@@ -1,9 +1,9 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -192,7 +192,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 		c.resetInterruptLocked()
 		// Clear any stale pending steer to prevent old instruction from executing after new one
 		c.clearPendingLocked()
-		log.Printf("[steer] consumePending: interrupt steer consumed (length=%d)\n", len(steer.Content))
+		logging.Infof("agent", "steer", "consumePending: interrupt steer consumed (length=%d)", len(steer.Content))
 		return steer, true
 	}
 
@@ -200,7 +200,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 	if !c.hasPendingSteer {
 		return RunSteerMessage{}, false
 	}
-	log.Printf("[steer] consumePending: pending steer consumed (length=%d)\n", len(c.pendingSteer.Content))
+	logging.Infof("agent", "steer", "consumePending: pending steer consumed (length=%d)", len(c.pendingSteer.Content))
 	return c.consumePendingLocked()
 }
 

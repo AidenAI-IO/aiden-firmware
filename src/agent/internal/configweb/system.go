@@ -124,7 +124,7 @@ else
   level=ERROR
 fi
 timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
-printf '%s [%s] [config_web] [ota] update_exited exit_code=%s\n' "$timestamp" "$level" "$exit_code"
+printf '%s [%s][config_web][ota] update_exited exit_code=%s\n' "$timestamp" "$level" "$exit_code"
 exit "$exit_code"
 `
 

@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,6 +20,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/logging"
 )
 
 const (
@@ -144,7 +144,7 @@ func (a *Adapter) dial(ctx context.Context) (*websocket.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Println("[tts] fish-audio: connected")
+	logging.Infof("agent", "tts", "fish-audio: connected")
 	return conn, nil
 }
 

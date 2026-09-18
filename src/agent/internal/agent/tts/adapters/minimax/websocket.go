@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/logging"
 )
 
 const (
@@ -192,7 +192,7 @@ func (s *wsSession) synthesizeChunk(text string) error {
 		var resp map[string]any
 		if err := readJSONWithContext(s.ctx, conn, &resp); err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) && wroteAudio {
-				log.Printf("[tts] %s: synthesized %d chars\n", s.cfg.provider, len(text))
+				logging.Infof("agent", "tts", "%s: synthesized %d chars", s.cfg.provider, len(text))
 				return nil
 			}
 			return fmt.Errorf("read audio: %w", err)
@@ -200,7 +200,7 @@ func (s *wsSession) synthesizeChunk(text string) error {
 		if event, _ := resp["event"].(string); event != "" {
 			switch event {
 			case "task_finished":
-				log.Printf("[tts] %s: synthesized %d chars\n", s.cfg.provider, len(text))
+				logging.Infof("agent", "tts", "%s: synthesized %d chars", s.cfg.provider, len(text))
 				return nil
 			case "task_failed":
 				return fmt.Errorf("task failed: %s", minimaxResponseMessage(resp))

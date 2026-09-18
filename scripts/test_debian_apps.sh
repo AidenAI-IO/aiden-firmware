@@ -59,6 +59,16 @@ grep -Fq -- '--output-dir "${OUTPUT_DIR}/rootfs-cli-tools"' \
 grep -Fq -- '--catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog"' \
     "${APPS_DIR}/container-build-rootfs-cli-tools.sh"
 grep -Fq 'run_cli_tools' "${APPS_DIR}/build-apps.sh"
+# `go install module@version` inside the container must use the host's module
+# proxy. Without this the self-hosted builders fall back to proxy.golang.org and
+# the rootfs CLI tool build dies on a connection reset.
+for go_proxy_var in GOPROXY GONOPROXY GOPRIVATE GOSUMDB GONOSUMDB; do
+    grep -Eq -- "^[[:space:]]*-e ${go_proxy_var} \\\\$" "${APPS_DIR}/build-apps.sh" ||
+        fail "apps container must forward ${go_proxy_var} to reach the module proxy"
+done
+if grep -Eq -- '^[[:space:]]*-e GOFLAGS \\$' "${APPS_DIR}/build-apps.sh"; then
+    fail "apps container must not inherit GOFLAGS, which would change build output"
+fi
 grep -Fq 'overlay-debian-oem/usr/model' "${APPS_DIR}/prepare-board-g0.sh"
 grep -Fq 'bin/ttyd' "${APPS_DIR}/prepare-board-g0.sh"
 if grep -Fq '${REPO_ROOT}/overlay/oem' "${APPS_DIR}/prepare-board-g0.sh"; then
@@ -95,6 +105,27 @@ printf '%s\0' "$@" >>"${MOCK_DOCKER_LOG}"
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
     printf 'sha256:mock-builder-image\n'
 fi
+if [ "${1:-}" = run ]; then
+    # Record the environment Docker would pass for both -e NAME=value and
+    # -e NAME. Keep the raw argument log separate for mount/command checks.
+    : >"${MOCK_DOCKER_LOG}.env"
+    previous=
+    for argument in "$@"; do
+        if [ "${previous}" = -e ]; then
+            case "${argument}" in
+            *=*) printf '%s\0' "${argument}" >>"${MOCK_DOCKER_LOG}.env" ;;
+            *)
+                if [ "${!argument+x}" = x ]; then
+                    printf '%s\0' "${argument}=${!argument}" >>"${MOCK_DOCKER_LOG}.env"
+                fi
+                ;;
+            esac
+            previous=
+        else
+            previous=${argument}
+        fi
+    done
+fi
 EOF
 chmod +x "${TEST_ROOT}/mock-bin/docker"
 
@@ -123,10 +154,10 @@ grep -qx "${TEST_ROOT}/go-mod-cache:/go-mod-cache" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx 'scripts/debian-apps/container-build-apps.sh' \
     "${TEST_ROOT}/docker-args.txt"
-# The apps run above had no GOPROXY in its environment, so nothing may have
-# been forwarded: an empty GOPROXY in the container would still mean
-# proxy.golang.org, but a stray flag is how such a regression would first show.
-if grep -q '^GOPROXY=' "${TEST_ROOT}/docker-args.txt"; then
+# Bare -e GOPROXY flags must leave it undefined when the caller has not set
+# it. Inspect the effective environment rather than just the argument names.
+tr '\0' '\n' <"${mock_log}.env" >"${TEST_ROOT}/docker-env.txt"
+if grep -q '^GOPROXY=' "${TEST_ROOT}/docker-env.txt"; then
     fail "build-apps.sh forwarded a GOPROXY that was not set"
 fi
 
@@ -143,8 +174,9 @@ DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
 DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
     "${APPS_DIR}/build-apps.sh" apps
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/goproxy-docker-args.txt"
+tr '\0' '\n' <"${mock_log}.env" >"${TEST_ROOT}/goproxy-docker-env.txt"
 grep -qx 'GOPROXY=https://goproxy.example/|https://proxy.golang.org|direct' \
-    "${TEST_ROOT}/goproxy-docker-args.txt" \
+    "${TEST_ROOT}/goproxy-docker-env.txt" \
     || fail "build-apps.sh did not forward GOPROXY into the apps container"
 
 : >"${mock_log}"

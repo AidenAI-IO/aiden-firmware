@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/ble"
+	"aiden-agent/internal/logging"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -623,7 +623,7 @@ func (p *NotificationMemoryProcessor) logInvalidNotificationProposal(record Noti
 		p.logger.Warn("[notification-memory] invalid proposal skipped: context_id=%s error=%v", record.ContextID, err)
 		return
 	}
-	log.Printf("[notification-memory] invalid proposal skipped: context_id=%s error=%v", record.ContextID, err)
+	logging.Warnf("agent", "notification_memory", "invalid proposal skipped: context_id=%s error=%v", record.ContextID, err)
 }
 
 func (p *NotificationMemoryProcessor) applyNotificationProposal(ctx context.Context, record NotificationRecord, proposal notificationMemoryProposal, refs []MemoryMergeReference) error {
@@ -905,7 +905,7 @@ func (p *NotificationMemoryProcessor) logBatchError(err error) {
 		p.logger.Warn("[notification-memory] batch failed: %v", err)
 		return
 	}
-	log.Printf("[notification-memory] batch failed: %v", err)
+	logging.Warnf("agent", "notification_memory", "batch failed: %v", err)
 }
 
 func notificationMemoryIgnored(event ble.NotificationEvent) bool {

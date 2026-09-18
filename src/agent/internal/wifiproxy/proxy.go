@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"aiden-agent/internal/logging"
 	"aiden-agent/internal/netproxy"
 	xproxy "golang.org/x/net/proxy"
 )
@@ -177,7 +177,7 @@ func (s *Server) Serve(listener net.Listener) error {
 	s.mu.Unlock()
 	_ = s.Refresh(ctx)
 	go s.monitor(ctx)
-	log.Printf("[wifi_proxy] listening on %s", listener.Addr())
+	logging.Infof("wifi_proxy", "wifi_proxy", "listening on %s", listener.Addr())
 	protocol := newProtocolListener(listener, s)
 	defer protocol.Close()
 	err := s.httpServer.Serve(protocol)
@@ -209,7 +209,7 @@ func (s *Server) monitor(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := s.Refresh(ctx); err != nil {
-				log.Printf("[wifi_proxy] refresh failed: %v", err)
+				logging.Warnf("wifi_proxy", "wifi_proxy", "refresh failed: %v", err)
 			}
 		}
 	}

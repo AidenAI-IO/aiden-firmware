@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -52,7 +51,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "config-check":
-			os.Exit(runConfigCheck(os.Args[2:]))
+			os.Exit(RunConfigCheck(os.Args[2:]))
 		case "config-meta":
 			os.Exit(runConfigMeta(os.Args[2:]))
 		case "config":
@@ -67,7 +66,6 @@ func main() {
 			os.Exit(wifiproxy.Run(os.Args[2:]))
 		}
 	}
-	logging.InstallStandard("agent", os.Stderr)
 
 	// Default: run as daemon
 	var (
@@ -153,7 +151,7 @@ func main() {
 	persistedConfig := cfg
 	cfg, err = configForRunningUSB(cfg)
 	if err != nil {
-		log.Printf("[input] USB boot settings failed: %v", err)
+		logging.Errorf("agent", "input", "USB boot settings failed: %v", err)
 		exitCode = 1
 		return
 	}
@@ -171,10 +169,10 @@ func main() {
 		runtime.SetInitialEnvironmentRevision(environmentRevision)
 	}
 	if err := runtime.StartStorageMonitor(); err != nil {
-		log.Printf("[storage_monitor] startup check failed: %v", err)
+		logging.Warnf("agent", "storage_monitor", "startup check failed: %v", err)
 	}
 	if err := runtime.PrimeScreenMappingOnStartup(context.Background()); err != nil {
-		log.Printf("[init] screen mapping prime failed: %v", err)
+		logging.Warnf("agent", "init", "screen mapping prime failed: %v", err)
 	}
 
 	// HTTP server runs in all input modes so the web UI is available even
@@ -183,7 +181,7 @@ func main() {
 	defer server.Close()
 	inputs := newInputLifecycle(runtime, server)
 	if err := inputs.Start(cfg); err != nil {
-		log.Printf("[input] startup failed: %v", err)
+		logging.Errorf("agent", "input", "startup failed: %v", err)
 		exitCode = 1
 		return
 	}
@@ -210,9 +208,9 @@ func main() {
 		if cfg.HID.InputBackendADB() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := agent.EnsureADBReverse(ctx, port, port); err != nil {
-				log.Printf("[adb] reverse tcp:%s -> tcp:%s setup failed: %v", port, port, err)
+				logging.Warnf("agent", "adb", "reverse tcp:%s -> tcp:%s setup failed: %v", port, port, err)
 			} else {
-				log.Printf("[adb] reverse tcp:%s -> tcp:%s configured for companion app desktop bridge", port, port)
+				logging.Infof("agent", "adb", "reverse tcp:%s -> tcp:%s configured for companion app desktop bridge", port, port)
 			}
 			cancel()
 		}
@@ -232,7 +230,7 @@ func main() {
 	select {
 	case err := <-serverErr:
 		if err != nil {
-			log.Printf("[server] stopped: %v", err)
+			logging.Errorf("agent", "server", "stopped: %v", err)
 			exitCode = 1
 		}
 	case <-signals:
@@ -272,7 +270,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	}
 	defer func() {
 		if err := dialog.Close(); err != nil {
-			log.Printf("[audio] close dialog: %v\n", err)
+			logging.Warnf("agent", "audio", "close dialog: %v", err)
 		}
 	}()
 	dialog.SetMessagePublisher(server.BroadcastMessage)
@@ -288,10 +286,10 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	})
 
 	inputMode := cfg.InputModeOrDefault()
-	log.Printf("[init] Config loaded: model=%s, input_mode=%s\n",
+	logging.Infof("agent", "init", "Config loaded: model=%s, input_mode=%s",
 		cfg.Model.Model, inputMode)
 	vadBackend := cfg.VADBackendOrDefault()
-	log.Printf("[init] VAD: backend=%s, rknn_model=%s, helper=%s, speech_threshold=%.2f, silence=%dms, min_speech=%dms\n",
+	logging.Infof("agent", "init", "VAD: backend=%s, rknn_model=%s, helper=%s, speech_threshold=%.2f, silence=%dms, min_speech=%dms",
 		vadBackend,
 		valueOrDefault(cfg.VADModelPath, agent.DefaultVADModelPath()),
 		agent.ResolveVADHelperPath(vadBackend, cfg.VADHelperPath),
@@ -365,11 +363,11 @@ func startQuickCaptureGPIOWatcher(cfg agent.Config, trigger quickCaptureTrigger,
 		err := trigger.TriggerQuickCapture()
 		switch {
 		case err == nil:
-			log.Printf("[quick_capture] GPIO %d triggered capture", pin)
+			logging.Infof("agent", "quick_capture", "GPIO %d triggered capture", pin)
 		case errors.Is(err, agent.ErrQuickCaptureBusy):
-			log.Printf("[quick_capture] GPIO %d ignored: capture already in progress", pin)
+			logging.Warnf("agent", "quick_capture", "GPIO %d ignored: capture already in progress", pin)
 		default:
-			log.Printf("[quick_capture] GPIO %d trigger failed: %v", pin, err)
+			logging.Errorf("agent", "quick_capture", "GPIO %d trigger failed: %v", pin, err)
 		}
 	})
 	if err != nil {
@@ -433,10 +431,10 @@ func startWakeupWatchersWithDebounce(newWatcher wakeupWatcherFactory, callback f
 		pin := pin
 		watcher, err := newWatcher(pin, func() {
 			if !debouncer.allow() {
-				log.Printf("[wakeup] GPIO %d wakeup event ignored by %s debounce", pin, debounceInterval)
+				logging.Warnf("agent", "wakeup", "GPIO %d wakeup event ignored by %s debounce", pin, debounceInterval)
 				return
 			}
-			log.Printf("[wakeup] GPIO %d wakeup event", pin)
+			logging.Infof("agent", "wakeup", "GPIO %d wakeup event", pin)
 			callback()
 		})
 		if err != nil {
@@ -506,7 +504,7 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 		return
 	}
 
-	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	events := make(chan voiceEvent, 1)
 
@@ -515,12 +513,12 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 		signalVoiceWakeupEvent(events)
 	})
 	if err != nil {
-		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
+		logging.Errorf("agent", "daemon", "Failed to start GPIO wakeup listeners: %v", err)
 		return
 	}
 	defer stopWakeupWatchers(watchers)
 
-	log.Printf("[ready] Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 
 	for {
 		if reloadRequested(reload) {
@@ -530,21 +528,21 @@ func runWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Ru
 		case <-reloadStop(reload):
 			return
 		case <-sigChan:
-			log.Println("\n[exit] Stopped.")
+			logging.Infof("agent", "exit", "Stopped.")
 			return
 		case <-events:
-			log.Println("\n[wakeup] GPIO wakeup triggered, opening voice session...")
+			logging.Infof("agent", "wakeup", "GPIO wakeup triggered, opening voice session...")
 			if exit := runVoiceSession(cfg, dialog, runtime, sigChan, events); exit {
-				log.Println("\n[exit] Stopped.")
+				logging.Infof("agent", "exit", "Stopped.")
 				return
 			}
-			log.Println("[ready] Waiting for wakeup event...")
+			logging.Infof("agent", "ready", "Waiting for wakeup event...")
 		}
 	}
 }
 
 func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory, reload ...<-chan struct{}) {
-	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	ctx := context.Background()
 	wakeupEvents := make(chan struct{}, 1)
@@ -554,12 +552,12 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 		signalWakeupEvent(wakeupEvents)
 	})
 	if err != nil {
-		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
+		logging.Errorf("agent", "daemon", "Failed to start GPIO wakeup listeners: %v", err)
 		return
 	}
 	defer stopWakeupWatchers(watchers)
 
-	log.Printf("[ready] Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 
 	pendingWakeup := false
 	for {
@@ -574,19 +572,19 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 				if dialog != nil {
 					dialog.StopRecording()
 				}
-				log.Println("\n[exit] Stopped.")
+				logging.Infof("agent", "exit", "Stopped.")
 				return
 			case <-wakeupEvents:
-				log.Println("\n[wakeup] GPIO wakeup triggered, starting to listen...")
+				logging.Infof("agent", "wakeup", "GPIO wakeup triggered, starting to listen...")
 			}
 		} else {
 			pendingWakeup = false
 		}
 
 		// Start recording
-		log.Println("[listen] Recording audio...")
+		logging.Infof("agent", "listen", "Recording audio...")
 		if err := dialog.StartRecording(); err != nil {
-			log.Printf("[error] Failed to start recording: %v\n", err)
+			logging.Errorf("agent", "daemon", "Failed to start recording: %v", err)
 			continue
 		}
 
@@ -602,7 +600,7 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 		)
 		if exit {
 			dialog.StopRecording()
-			log.Println("\n[exit] Stopped.")
+			logging.Infof("agent", "exit", "Stopped.")
 			return
 		}
 
@@ -614,12 +612,12 @@ func runLegacyWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *ag
 			continue
 		}
 
-		log.Println("[ready] Waiting for next wakeup event...")
+		logging.Infof("agent", "ready", "Waiting for next wakeup event...")
 	}
 }
 
 func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, sigChan chan os.Signal, newWatcher wakeupWatcherFactory, reload ...<-chan struct{}) {
-	log.Printf("\n[ready] Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Starting GPIO wakeup listeners on %s...", wakeupGPIOPinsLabel())
 
 	events := make(chan voiceEvent, 1)
 
@@ -628,12 +626,12 @@ func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runt
 		signalVoiceWakeupEvent(events)
 	})
 	if err != nil {
-		log.Printf("[error] Failed to start GPIO wakeup listeners: %v\n", err)
+		logging.Errorf("agent", "daemon", "Failed to start GPIO wakeup listeners: %v", err)
 		return
 	}
 	defer stopWakeupWatchers(watchers)
 
-	log.Printf("[ready] Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
+	logging.Infof("agent", "ready", "Waiting for wakeup event (%s)... Ctrl+C to quit", wakeupGPIOPinsLabel())
 
 	var nextTurn *pendingVoiceTurn
 	var pendingTurnContext agent.VoiceTurnContext
@@ -651,10 +649,10 @@ func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runt
 					if dialog != nil {
 						dialog.StopRecording()
 					}
-					log.Println("\n[exit] Stopped.")
+					logging.Infof("agent", "exit", "Stopped.")
 					return
 				case <-events:
-					log.Println("\n[wakeup] GPIO wakeup triggered, starting to listen...")
+					logging.Infof("agent", "wakeup", "GPIO wakeup triggered, starting to listen...")
 				}
 			} else {
 				pendingWakeup = false
@@ -662,19 +660,19 @@ func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runt
 
 			utterance, exit := listenOneUtterance(dialog, sigChan, events, wakeupListenTimeout)
 			if exit {
-				log.Println("\n[exit] Stopped.")
+				logging.Infof("agent", "exit", "Stopped.")
 				return
 			}
 			if len(utterance) == 0 {
-				log.Println("[listen] no utterance captured after wakeup")
-				log.Println("[ready] Waiting for next wakeup event...")
+				logging.Infof("agent", "listen", "no utterance captured after wakeup")
+				logging.Infof("agent", "ready", "Waiting for next wakeup event...")
 				pendingTurnContext = agent.VoiceTurnContext{}
 				continue
 			}
 			input, err := dialog.PrepareTurnInput(utterance)
 			if err != nil {
-				log.Printf("[error] prepare turn input failed: %v\n", err)
-				log.Println("[ready] Waiting for next wakeup event...")
+				logging.Errorf("agent", "daemon", "prepare turn input failed: %v", err)
+				logging.Infof("agent", "ready", "Waiting for next wakeup event...")
 				pendingTurnContext = agent.VoiceTurnContext{}
 				continue
 			}
@@ -690,21 +688,21 @@ func runSingleTurnSTTWakeupMode(cfg agent.Config, dialog audioDialogRunner, runt
 		nextTurn = nil
 		result := runVoiceTurnWithInputContext(cfg, dialog, runtime, turn.input, turn.utterance, sigChan, events, turn.turnContext, true)
 		if result.exit {
-			log.Println("\n[exit] Stopped.")
+			logging.Infof("agent", "exit", "Stopped.")
 			return
 		}
 		if result.nextTurn != nil {
 			nextTurn = result.nextTurn
-			log.Println("[session] turn interrupted, running captured steering input")
+			logging.Infof("agent", "session", "turn interrupted, running captured steering input")
 			continue
 		}
 		if result.interrupted {
 			pendingWakeup = true
 			pendingTurnContext = interruptedFollowUpContext(result)
-			log.Println("[session] playback interrupted, starting a new wakeup turn")
+			logging.Infof("agent", "session", "playback interrupted, starting a new wakeup turn")
 			continue
 		}
-		log.Println("[ready] Waiting for next wakeup event...")
+		logging.Infof("agent", "ready", "Waiting for next wakeup event...")
 	}
 }
 
@@ -712,7 +710,7 @@ func signalVoiceWakeupEvent(events chan<- voiceEvent) {
 	select {
 	case events <- voiceEventWakeup:
 	default:
-		log.Println("[wakeup] pending wakeup already queued, coalescing duplicate GPIO wakeup event")
+		logging.Warnf("agent", "wakeup", "pending wakeup already queued, coalescing duplicate GPIO wakeup event")
 	}
 }
 
@@ -720,7 +718,7 @@ func signalWakeupEvent(wakeupEvents chan<- struct{}) {
 	select {
 	case wakeupEvents <- struct{}{}:
 	default:
-		log.Println("[wakeup] pending wakeup already queued, coalescing duplicate GPIO wakeup event")
+		logging.Warnf("agent", "wakeup", "pending wakeup already queued, coalescing duplicate GPIO wakeup event")
 	}
 }
 
@@ -743,7 +741,7 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 			nextTurn = nil
 		} else {
 			if maxTurns > 0 && turns >= maxTurns {
-				log.Printf("[session] max turns reached (%d), closing voice session\n", maxTurns)
+				logging.Infof("agent", "session", "max turns reached (%d), closing voice session", maxTurns)
 				return false
 			}
 
@@ -758,14 +756,14 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 				return true
 			}
 			if len(utterance) == 0 {
-				log.Println("[session] listen timeout, closing voice session")
+				logging.Infof("agent", "session", "listen timeout, closing voice session")
 				return false
 			}
 
 			var err error
 			input, err = dialog.PrepareTurnInput(utterance)
 			if err != nil {
-				log.Printf("[error] prepare turn input failed: %v\n", err)
+				logging.Errorf("agent", "daemon", "prepare turn input failed: %v", err)
 				firstTurn = false
 				continue
 			}
@@ -779,17 +777,17 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 		}
 		firstTurn = false
 		if result.waitForWakeupRequested {
-			log.Println("[session] agent requested wakeup wait, closing voice session")
+			logging.Infof("agent", "session", "agent requested wakeup wait, closing voice session")
 			return false
 		}
 		if result.nextTurn != nil {
 			nextTurn = result.nextTurn
-			log.Println("[session] turn interrupted, running captured steering input")
+			logging.Infof("agent", "session", "turn interrupted, running captured steering input")
 			continue
 		}
 		if result.interrupted {
 			pendingTurnContext = interruptedFollowUpContext(result)
-			log.Println("[session] turn interrupted, listening for follow-up")
+			logging.Infof("agent", "session", "turn interrupted, listening for follow-up")
 			continue
 		}
 		turns++
@@ -799,7 +797,7 @@ func runVoiceSession(cfg agent.Config, dialog audioDialogRunner, runtime *agent.
 func runVoiceTurn(cfg agent.Config, dialog audioDialogRunner, runtime *agent.Runtime, utterance []int16, sigChan chan os.Signal, events <-chan voiceEvent) voiceTurnResult {
 	input, err := dialog.PrepareTurnInput(utterance)
 	if err != nil {
-		log.Printf("[error] prepare turn input failed: %v\n", err)
+		logging.Errorf("agent", "daemon", "prepare turn input failed: %v", err)
 		return voiceTurnResult{}
 	}
 
@@ -835,7 +833,7 @@ thinking:
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if interruptOnWakeup {
-				log.Println("[interrupt] GPIO wakeup during active turn, immediately canceling")
+				logging.Infof("agent", "interrupt", "GPIO wakeup during active turn, immediately canceling")
 				dialog.InterruptOutput()
 				cancel()
 				canceledInfo := waitForTurnCancellation(dialog, resultCh)
@@ -844,11 +842,11 @@ thinking:
 					followUpContext: buildInterruptedContext(input, canceledInfo),
 				}
 			}
-			log.Println("[interrupt] wakeup received during thinking, ignoring because wakeup interrupt is disabled")
+			logging.Warnf("agent", "interrupt", "wakeup received during thinking, ignoring because wakeup interrupt is disabled")
 		case turnResult := <-resultCh:
 			cancel()
 			if turnResult.err != nil {
-				log.Printf("[error] %v\n", turnResult.err)
+				logging.Errorf("agent", "daemon", "%v", turnResult.err)
 				turnErr = turnResult.err
 				result = turnResult.result
 				break thinking
@@ -877,7 +875,7 @@ thinking:
 
 	if dialog.RecordingActive() {
 		if err := dialog.StopRecording(); err != nil {
-			log.Printf("[listen] stop recording before TTS playback: %v\n", err)
+			logging.Warnf("agent", "listen", "stop recording before TTS playback: %v", err)
 		}
 	}
 
@@ -896,7 +894,7 @@ speaking:
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if interruptOnWakeup {
-				log.Println("[interrupt] wakeup received during speaking, stopping playback")
+				logging.Infof("agent", "interrupt", "wakeup received during speaking, stopping playback")
 				dialog.InterruptOutput()
 				cancelSpeak()
 				runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, waitForSpeakCancel(speakCh))
@@ -910,7 +908,7 @@ speaking:
 			cancelSpeak()
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("[error] speak failed: %v\n", err)
+				logging.Errorf("agent", "daemon", "speak failed: %v", err)
 			}
 			break speaking
 		}
@@ -927,19 +925,19 @@ func interruptedFollowUpContext(result voiceTurnResult) agent.VoiceTurnContext {
 }
 
 func captureVoiceSteer(cfg agent.Config, dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent) (*pendingVoiceTurn, bool) {
-	log.Println("[steer] wakeup received during thinking, listening for steering input")
+	logging.Infof("agent", "steer", "wakeup received during thinking, listening for steering input")
 	dialog.InterruptOutput()
 	utterance, exit := listenOneUtterance(dialog, sigChan, events, voiceSteerListenTimeoutForConfig(cfg))
 	if exit {
 		return nil, true
 	}
 	if len(utterance) == 0 {
-		log.Println("[steer] no steering utterance captured")
+		logging.Infof("agent", "steer", "no steering utterance captured")
 		return nil, false
 	}
 	input, err := dialog.PrepareTurnInput(utterance)
 	if err != nil {
-		log.Printf("[steer] prepare steer input failed: %v\n", err)
+		logging.Errorf("agent", "steer", "prepare steer input failed: %v", err)
 		return nil, false
 	}
 	return &pendingVoiceTurn{
@@ -1045,13 +1043,13 @@ func waitForTurnCancellation(dialog audioDialogRunner, resultCh <-chan struct {
 			episodeID: turnResult.result.EpisodeID,
 		}
 	case <-time.After(voiceTurnCancelWaitTimeout):
-		log.Println("[interrupt] current turn did not finish after signal cancellation; waiting for voice run to go idle")
+		logging.Warnf("agent", "interrupt", "current turn did not finish after signal cancellation; waiting for voice run to go idle")
 		idleCtx, cancel := context.WithTimeout(context.Background(), voiceTurnCancelWaitTimeout)
 		defer cancel()
 		if dialog.WaitForVoiceRunIdle(idleCtx) {
 			return canceledTurnInfo{}
 		}
-		log.Println("[interrupt] voice run still active after cancellation wait; forcing reset")
+		logging.Warnf("agent", "interrupt", "voice run still active after cancellation wait; forcing reset")
 		dialog.ForceResetVoiceRun()
 		return canceledTurnInfo{}
 	}
@@ -1061,24 +1059,24 @@ func waitForSpeakCancel(speakCh <-chan error) error {
 	select {
 	case err := <-speakCh:
 		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("[error] speak failed after signal cancellation: %v\n", err)
+			logging.Errorf("agent", "daemon", "speak failed after signal cancellation: %v", err)
 		}
 		return err
 	case <-time.After(voiceTurnCancelWaitTimeout):
-		log.Println("[interrupt] speech did not finish after signal cancellation; exiting")
+		logging.Warnf("agent", "interrupt", "speech did not finish after signal cancellation; exiting")
 		return context.Canceled
 	}
 }
 
 func listenOneUtterance(dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent, listenTimeout time.Duration) ([]int16, bool) {
-	log.Println("[listen] Recording audio...")
+	logging.Infof("agent", "listen", "Recording audio...")
 	if err := dialog.StartRecording(); err != nil {
-		log.Printf("[error] Failed to start recording: %v\n", err)
+		logging.Errorf("agent", "daemon", "Failed to start recording: %v", err)
 		return nil, false
 	}
 	defer func() {
 		if err := dialog.StopRecording(); err != nil {
-			log.Printf("[listen] stop recording after listen: %v\n", err)
+			logging.Warnf("agent", "listen", "stop recording after listen: %v", err)
 		}
 	}()
 	dialog.ResetVAD()
@@ -1101,13 +1099,13 @@ func drainWakeupsWhileListening(events <-chan voiceEvent) {
 }
 
 func ignoreWakeupWhileListening() {
-	log.Println("[listen] duplicate wakeup received while listening, ignoring")
+	logging.Warnf("agent", "listen", "duplicate wakeup received while listening, ignoring")
 }
 
 func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signal, events <-chan voiceEvent, listenTimeout time.Duration) ([]int16, bool) {
 	frameSamples := dialog.VADFrameSamples()
 	if frameSamples <= 0 {
-		log.Printf("[listen] invalid VAD frame size: %d\n", frameSamples)
+		logging.Errorf("agent", "listen", "invalid VAD frame size: %d", frameSamples)
 		return nil, false
 	}
 
@@ -1126,7 +1124,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 			return nil, true
 		case <-events:
 			if speechDetected && len(captured) > 0 {
-				log.Println("[listen] wakeup pressed during recording, returning captured audio")
+				logging.Infof("agent", "listen", "wakeup pressed during recording, returning captured audio")
 				utterance := dialog.FinishPendingUtterance(vadPending)
 				if len(utterance) > 0 {
 					return utterance, false
@@ -1139,20 +1137,20 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 		}
 
 		if listenTimeout > 0 && time.Since(startedAt) >= listenTimeout {
-			log.Printf("[listen] No complete utterance within %s\n", listenTimeout)
+			logging.Infof("agent", "listen", "No complete utterance within %s", listenTimeout)
 			if len(captured) > 0 && (!hasVADState || speechDetected) {
-				log.Printf("[listen] Returning %d buffered samples after VAD timeout\n", len(captured))
+				logging.Infof("agent", "listen", "Returning %d buffered samples after VAD timeout", len(captured))
 				return captured, false
 			}
 			if len(captured) > 0 {
-				log.Printf("[listen] Discarding %d buffered samples without detected speech\n", len(captured))
+				logging.Infof("agent", "listen", "Discarding %d buffered samples without detected speech", len(captured))
 			}
 			return nil, false
 		}
 
 		chunk, err := dialog.ReadRecordChunk(200)
 		if err != nil {
-			log.Printf("[listen] read_record_chunk error: %v\n", err)
+			logging.Errorf("agent", "listen", "read_record_chunk error: %v", err)
 			return nil, false
 		}
 
@@ -1161,7 +1159,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 			return nil, true
 		case <-events:
 			if speechDetected && len(captured) > 0 {
-				log.Println("[listen] wakeup pressed during recording, returning captured audio")
+				logging.Infof("agent", "listen", "wakeup pressed during recording, returning captured audio")
 				utterance := dialog.FinishPendingUtterance(vadPending)
 				if len(utterance) > 0 {
 					return utterance, false
@@ -1177,7 +1175,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 		}
 
 		if chunk.EndOfStream {
-			log.Println("[listen] record session closed by service")
+			logging.Infof("agent", "listen", "record session closed by service")
 			return nil, false
 		}
 
@@ -1196,7 +1194,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 			utterance, err := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
 			consumed += frameSamples
 			if err != nil {
-				log.Printf("[vad] RKNN processing failed: %v\n", err)
+				logging.Errorf("agent", "vad", "RKNN processing failed: %v", err)
 				return nil, false
 			}
 			if reporter, ok := dialog.(vadDebugReporter); ok {
@@ -1206,7 +1204,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 					speechDetected = true
 				}
 				if time.Now().After(nextVADLogAt) {
-					log.Print(formatVADDebugLog(state))
+					logging.Debugf("agent", "daemon", "%s", formatVADDebugLog(state))
 					nextVADLogAt = time.Now().Add(time.Second)
 				}
 			}
@@ -1218,7 +1216,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 					ignoreWakeupWhileListening()
 				default:
 				}
-				log.Println("[utterance] VAD detected end of speech")
+				logging.Infof("agent", "utterance", "VAD detected end of speech")
 				return utterance, false
 			}
 		}
@@ -1250,7 +1248,7 @@ func processAudioUntilUtteranceWithWakeupInterrupt(
 ) (bool, bool) {
 	frameSamples := dialog.VADFrameSamples()
 	if frameSamples <= 0 {
-		log.Printf("[listen] invalid VAD frame size: %d\n", frameSamples)
+		logging.Errorf("agent", "listen", "invalid VAD frame size: %d", frameSamples)
 		return false, false
 	}
 
@@ -1271,11 +1269,11 @@ func processAudioUntilUtteranceWithWakeupInterrupt(
 		drainWakeupEventsWhileListening(wakeupEvents)
 
 		if listenTimeout > 0 && time.Since(startedAt) >= listenTimeout {
-			log.Printf("[listen] No complete utterance within %s, stopping recording\n", listenTimeout)
+			logging.Infof("agent", "listen", "No complete utterance within %s, stopping recording", listenTimeout)
 			if len(captured) > 0 {
-				log.Printf("[listen] Sending %d buffered samples after VAD timeout\n", len(captured))
+				logging.Infof("agent", "listen", "Sending %d buffered samples after VAD timeout", len(captured))
 				if err := dialog.StopRecording(); err != nil {
-					log.Printf("[listen] stop recording before timeout utterance: %v\n", err)
+					logging.Warnf("agent", "listen", "stop recording before timeout utterance: %v", err)
 				}
 				exit, interrupted := processUtteranceWithWakeupInterrupt(dialog, runtime, ctx, captured, sigChan, wakeupEvents, interruptOnWakeup)
 				if exit || interrupted {
@@ -1287,7 +1285,7 @@ func processAudioUntilUtteranceWithWakeupInterrupt(
 
 		chunk, err := dialog.ReadRecordChunk(200)
 		if err != nil {
-			log.Printf("[listen] read_record_chunk error: %v\n", err)
+			logging.Errorf("agent", "listen", "read_record_chunk error: %v", err)
 			return false, false
 		}
 
@@ -1296,7 +1294,7 @@ func processAudioUntilUtteranceWithWakeupInterrupt(
 		}
 
 		if chunk.EndOfStream {
-			log.Println("[listen] record session closed by service")
+			logging.Infof("agent", "listen", "record session closed by service")
 			return false, false
 		}
 
@@ -1317,18 +1315,18 @@ func processAudioUntilUtteranceWithWakeupInterrupt(
 			utterance, err := dialog.ProcessVADFrame(vadPending[consumed : consumed+frameSamples])
 			consumed += frameSamples
 			if err != nil {
-				log.Printf("[vad] RKNN processing failed: %v\n", err)
+				logging.Errorf("agent", "vad", "RKNN processing failed: %v", err)
 				return false, false
 			}
 			if reporter, ok := dialog.(vadDebugReporter); ok && time.Now().After(nextVADLogAt) {
 				state := reporter.VADDebugState()
-				log.Print(formatVADDebugLog(state))
+				logging.Debugf("agent", "daemon", "%s", formatVADDebugLog(state))
 				nextVADLogAt = time.Now().Add(time.Second)
 			}
 			if utterance != nil {
-				log.Println("[utterance] VAD detected end of speech")
+				logging.Infof("agent", "utterance", "VAD detected end of speech")
 				if err := dialog.StopRecording(); err != nil {
-					log.Printf("[listen] stop recording before utterance processing: %v\n", err)
+					logging.Warnf("agent", "listen", "stop recording before utterance processing: %v", err)
 				}
 				return processUtteranceWithWakeupInterrupt(dialog, runtime, ctx, utterance, sigChan, wakeupEvents, interruptOnWakeup)
 			}
@@ -1351,7 +1349,7 @@ func drainWakeupEventsWhileListening(wakeupEvents <-chan struct{}) {
 			drainedCount++
 		default:
 			if drainedCount > 0 {
-				log.Printf("[listen] %d duplicate wakeup(s) received while listening, ignoring", drainedCount)
+				logging.Warnf("agent", "listen", "%d duplicate wakeup(s) received while listening, ignoring", drainedCount)
 			}
 			return
 		}
@@ -1369,7 +1367,7 @@ func processUtteranceWithWakeupInterrupt(
 ) (bool, bool) {
 	if wakeupEvents == nil {
 		if err := dialog.ProcessUtterance(ctx, utterance, runtime); err != nil {
-			log.Printf("[error] %v\n", err)
+			logging.Errorf("agent", "daemon", "%v", err)
 		}
 		return false, false
 	}
@@ -1388,16 +1386,16 @@ func processUtteranceWithWakeupInterrupt(
 			return true, false
 		case <-wakeupEvents:
 			if interruptOnWakeup {
-				log.Println("[interrupt] wakeup received during legacy turn, canceling current turn")
+				logging.Infof("agent", "interrupt", "wakeup received during legacy turn, canceling current turn")
 				cancel()
 				waitForLegacyUtteranceCancel(resultCh)
 				return false, true
 			}
-			log.Println("[interrupt] wakeup received during legacy turn, ignoring because interrupt is disabled")
+			logging.Warnf("agent", "interrupt", "wakeup received during legacy turn, ignoring because interrupt is disabled")
 		case err := <-resultCh:
 			cancel()
 			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("[error] %v\n", err)
+				logging.Errorf("agent", "daemon", "%v", err)
 			}
 			return false, false
 		}
@@ -1408,9 +1406,9 @@ func waitForLegacyUtteranceCancel(resultCh <-chan error) {
 	select {
 	case err := <-resultCh:
 		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("[error] %v\n", err)
+			logging.Errorf("agent", "daemon", "%v", err)
 		}
 	case <-time.After(voiceTurnCancelWaitTimeout):
-		log.Println("[interrupt] legacy turn did not finish after cancellation; continuing")
+		logging.Warnf("agent", "interrupt", "legacy turn did not finish after cancellation; continuing")
 	}
 }

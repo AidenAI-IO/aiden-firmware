@@ -1,13 +1,13 @@
 package realtimevoice
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"strings"
 
@@ -86,7 +86,7 @@ func (p OpenAIProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		_ = s.Close()
 		return nil, err
 	}
-	log.Printf("[realtime] OpenAI transcription requested: session_id=%s protocol=%s model=%s transcription_model=%s language=auto", s.Info().ID, normalizeRealtimeProtocol(p.RealtimeProtocol), model, DefaultOpenAIInputTranscriptionModel)
+	logging.Infof("agent", "realtime", "OpenAI transcription requested: session_id=%s protocol=%s model=%s transcription_model=%s language=auto", s.Info().ID, normalizeRealtimeProtocol(p.RealtimeProtocol), model, DefaultOpenAIInputTranscriptionModel)
 	if err := s.waitReady(ctx, 1); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -348,10 +348,10 @@ func logOpenAITranscriptionAcknowledgement(body []byte, fallbackSessionID string
 		return
 	}
 	if !ack.Present {
-		log.Printf("[realtime] OpenAI transcription acknowledgement absent: session_id=%s", ack.SessionID)
+		logging.Warnf("agent", "realtime", "OpenAI transcription acknowledgement absent: session_id=%s", ack.SessionID)
 		return
 	}
-	log.Printf("[realtime] OpenAI transcription acknowledged: session_id=%s transcription_model=%s language=%q", ack.SessionID, ack.Model, ack.Language)
+	logging.Infof("agent", "realtime", "OpenAI transcription acknowledged: session_id=%s transcription_model=%s language=%q", ack.SessionID, ack.Model, ack.Language)
 }
 
 func translateOpenAIEvent(body []byte) (Event, bool) {
