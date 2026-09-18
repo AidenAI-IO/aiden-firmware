@@ -617,6 +617,7 @@ def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]]
         pass_pct=pct(passed),
         fail_pct=pct(failed),
         skip_pct=pct(skipped),
+        capability_metrics_html="",
         analysis_html=analysis_html_for_run_dir(run_dir) if run_dir else "",
     )
 

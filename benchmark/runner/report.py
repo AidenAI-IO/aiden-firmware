@@ -36,16 +36,58 @@ def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
         encoding="utf-8",
     )
 
+
+def write_metrics(
+    path: Path,
+    suite_name: str,
+    manifest: dict[str, Any],
+    results: list[TaskResult],
+) -> None:
+    payload = {
+        "schema_version": manifest.get("metrics_schema_version", "p0-v1"),
+        "suite": suite_name,
+        "run_id": manifest.get("run_id", ""),
+        "suite_sha256": manifest.get("suite_sha256"),
+        "metrics_k": _manifest_k(manifest),
+        "aggregate": aggregate(results, k=_manifest_k(manifest)),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
 def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
                   results: list[TaskResult]) -> None:
-    agg = aggregate(results)
+    agg = aggregate(results, k=_manifest_k(manifest))
+    agent_label = manifest.get("agent_model") or manifest.get("agent_url") or "unknown"
     lines = [
         f"# {suite_name} — {manifest.get('run_id', '')}",
         "",
-        f"Agent: {manifest.get('agent_url', '')}",
+        f"Agent: {agent_label}",
         f"Judge: {(manifest.get('judge_config') or {}).get('provider', 'none')}"
         f" / {(manifest.get('judge_config') or {}).get('model', 'none')}",
-        f"Total: {agg['passed']}/{agg['tasks']} passed",
+        f"Attempts: {agg['passed']}/{agg['tasks']} passed across {agg.get('unique_tasks', 0)} tasks",
+        f"Eligible attempts: {agg.get('agent_eligible_attempts', 0)}/{agg.get('attempts', 0)}",
+        "",
+        "## Capability Metrics",
+        "",
+        f"k={agg.get('metrics_k', 1)}; pass@1={_format_rate(agg.get('pass_at_1'))}; "
+        f"pass@k={_format_rate(agg.get('pass_at_k'))}; pass^k={_format_rate(agg.get('pass_pow_k'))}",
+        f"pass@k coverage={_format_coverage(agg.get('pass_at_k'))}; "
+        f"attempt success={_format_rate(agg.get('attempt_success_rate'))}",
+        f"first success attempt p50={_format_number((agg.get('first_success_attempt') or {}).get('p50'))}",
+        f"oracle best score@k={_format_number((agg.get('oracle_best_score_at_k') or {}).get('value'))}",
+        f"cost to first success: tokens p50={_format_number(((agg.get('cost_to_first_success') or {}).get('total_tokens') or {}).get('p50'))}; "
+        f"wall p50={_format_number(((agg.get('cost_to_first_success') or {}).get('task_wall_ms') or {}).get('p50'))} ms; "
+        f"cost p50={_format_number(((agg.get('cost_to_first_success') or {}).get('cost_usd') or {}).get('p50'))}",
+        "",
+        "| failure class | count |",
+        "|---|---:|",
+    ]
+    for failure_class, count in (agg.get("failure_classes") or {}).items():
+        lines.append(f"| {failure_class} | {count} |")
+    lines += [
         "",
         "## By category",
         "",
@@ -59,12 +101,33 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         "",
         "## Efficiency",
         "",
-        f"median wall: {agg.get('wall_ms_median')} ms"
-        f"    p95 wall: {agg.get('wall_ms_p95')} ms",
-        f"median tool calls: {agg.get('tool_calls_median')}"
-        f"    p95: {agg.get('tool_calls_p95')}",
+        f"task wall: p50 {_format_number((agg.get('task_wall_ms') or {}).get('p50'))} ms"
+        f"    p90 {_format_number((agg.get('task_wall_ms') or {}).get('p90'))} ms",
+        f"tool calls: p50 {_format_number((agg.get('tool_calls') or {}).get('p50'))}"
+        f"    p90 {_format_number((agg.get('tool_calls') or {}).get('p90'))}",
+        f"LLM calls: p50 {_format_number((agg.get('llm_calls') or {}).get('p50'))}"
+        f"    device actions: p50 {_format_number((agg.get('device_actions') or {}).get('p50'))}",
+        f"LLM / vision / device / screenshot p50: "
+        f"{_format_number((agg.get('llm_time_ms') or {}).get('p50'))} / "
+        f"{_format_number((agg.get('vision_llm_time_ms') or {}).get('p50'))} / "
+        f"{_format_number((agg.get('device_execution_ms') or {}).get('p50'))} / "
+        f"{_format_number((agg.get('screenshot_capture_ms') or {}).get('p50'))} ms",
+        f"tokens: input {_format_number((agg.get('input_tokens') or {}).get('sum'))}"
+        f" / output {_format_number((agg.get('output_tokens') or {}).get('sum'))}"
+        f" / cached {_format_number((agg.get('cached_input_tokens') or {}).get('sum'))}",
+        f"cost: {_format_number((agg.get('cost_usd') or {}).get('sum'))}",
         "",
     ]
+    if agg.get("failure_stages"):
+        coverage = agg.get("failure_stage_coverage") or {}
+        lines += ["## First Failure Stages", "", "| stage | count |", "|---|---:|"]
+        for stage, count in agg["failure_stages"].items():
+            lines.append(f"| {stage} | {count} |")
+        lines += [
+            "",
+            f"Classified-stage coverage: {coverage.get('classified', 0)}/{coverage.get('eligible_failures', 0)} eligible failures",
+            "",
+        ]
     trace_observations = agg.get("trace_observations") or {}
     if trace_observations:
         lines += [
@@ -88,6 +151,36 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         lines += [
             "",
         ]
+
+    # Per-task results table
+    per_task_data = agg.get("per_task", {})
+    if per_task_data:
+        lines += [
+            "## Per-Task Results",
+            "",
+            "| Task ID | Status | Pass Rate | 1st✓ | Avg Score | Best Score | Avg Time |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for task_id, task_metrics in sorted(per_task_data.items(), key=lambda x: x[1].get("pass_rate", 0)):
+            pass_rate = task_metrics.get("pass_rate", 0.0)
+            passed = task_metrics.get("passed", 0)
+            eligible = task_metrics.get("eligible_attempts", 0)
+            first_passed = task_metrics.get("first_attempt_passed")
+            best_score = task_metrics.get("best_quality_score")
+            avg_score = task_metrics.get("avg_quality_score")
+            avg_wall = task_metrics.get("avg_wall_ms")
+
+            pass_rate_str = f"{pass_rate * 100:.1f}%"
+            status_str = f"{passed}/{eligible}"
+            first_icon = "✓" if first_passed is True else ("✗" if first_passed is False else "-")
+            score_str = f"{avg_score:.2f}" if avg_score is not None else "n/a"
+            best_score_str = f"{best_score:.2f}" if best_score is not None else "n/a"
+            wall_str = f"{avg_wall / 1000:.1f}s" if avg_wall is not None else "n/a"
+
+            lines.append(f"| {task_id} | {status_str} | {pass_rate_str} | {first_icon} | {score_str} | {best_score_str} | {wall_str} |")
+
+        lines += [""]
+
     lines += [
         "## Failures",
         "",
@@ -100,3 +193,35 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         lines.append(f"- **{r.task_id}** ({r.status}) — {reasons}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _format_number(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return f"{value:.2f}" if isinstance(value, float) else str(value)
+
+
+def _format_rate(metric: Any) -> str:
+    if not isinstance(metric, dict) or metric.get("value") is None:
+        return "n/a"
+    value = float(metric["value"]) * 100
+    ci = metric.get("ci95") or {}
+    if ci.get("lower") is None:
+        return f"{value:.1f}%"
+    return f"{value:.1f}% [{float(ci['lower']) * 100:.1f}%, {float(ci['upper']) * 100:.1f}%]"
+
+
+def _format_coverage(metric: Any) -> str:
+    if not isinstance(metric, dict):
+        return "n/a"
+    return f"{metric.get('eligible_tasks', 0)}/{metric.get('total_tasks', 0)} tasks"
+
+
+def _manifest_k(manifest: dict[str, Any]) -> int:
+    value = manifest.get("metrics_k", 1)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
