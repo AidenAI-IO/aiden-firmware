@@ -179,7 +179,7 @@ The page renders the following config sections. The Language & Time Zone control
 
 ## Minimal config examples
 
-### HTTP/Web UI without the device voice loop (`text`)
+### HTTP/Web UI without the device voice loop (voice unconfigured)
 
 ```toml
 [basic_settings.language_timezone]
@@ -194,8 +194,9 @@ context_compaction_threshold = 0.8
 screenshot_keep_n = 3
 screenshot_prune_interval = 2
 
-[voice_settings.mode]
-input_mode = "text"
+# input_mode is intentionally omitted: this example configures no STT/TTS
+# provider, and stt and realtime each require their own. An unset mode is
+# valid and leaves the agent reachable through the Web UI and HTTP API.
 
 [model_settings.providers.openrouter-main]
 type = "openrouter"
@@ -345,7 +346,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `context_compaction_threshold` | `0.8`                    | Fraction of the usable model input budget at which the conversation is summarized into a compaction message. Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.8`. Values of `1` or greater, `nan`, and `inf` are rejected. Compaction itself has no token target: the transcript is reduced structurally by retaining head and tail messages and replacing the middle with one LLM summary, so the post-compaction size follows from the summary rather than from a budget. |
 | `screenshot_keep_n`         | `3`                         | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default                                                                                    |
 | `screenshot_prune_interval` | `2`                         | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default                                              |
-| `input_mode`                | `text` / `stt` / `realtime` | Input mode: HTTP/Web UI only, legacy STT/TTS voice loop, or direct realtime voice model                                                                                                                                 |
+| `input_mode`                | unset / `stt` / `realtime`   | Voice mode: unset leaves voice unconfigured (HTTP/Web UI only), `stt` runs the STT/TTS voice loop, `realtime` uses a realtime voice model. `stt` requires `[voice_settings.classic.stt]` and `[...tts]`; `realtime` requires a realtime credential |
 
 Before each model request, the Agent prunes stale state and older completed
 tool-call/result pairs, normally protecting the latest three exchanges. It then

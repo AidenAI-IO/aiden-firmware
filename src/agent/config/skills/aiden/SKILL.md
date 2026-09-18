@@ -329,7 +329,7 @@ full-board USB re-enumeration procedure described below. These are the first fie
 
 ```toml
 [voice_settings.mode]
-input_mode = "text"          # text | stt | realtime
+input_mode = "stt"          # stt | realtime
 
 [basic_settings.device]
 device_type = "iOS"          # iOS | Android | macOS | windows | linux
