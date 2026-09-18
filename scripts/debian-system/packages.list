@@ -4,6 +4,10 @@ systemd-sysv
 udev
 dbus
 kmod
+# Registers each login as a logind session scope. Without it sshd sessions stay
+# in the ssh.service cgroup, which KillMode=process leaves running, so a
+# poweroff never terminates them and SSH clients hang until the final kill.
+libpam-systemd
 openssh-server
 sudo
 ca-certificates

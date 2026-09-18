@@ -97,8 +97,8 @@ audit_ext4() {
 audit_packages() {
     local package
     for package in \
-        systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 \
-        iputils-arping wpasupplicant bluez systemd-resolved \
+        systemd-sysv udev dbus kmod libpam-systemd openssh-server sudo adb \
+        iproute2 iputils-arping wpasupplicant bluez systemd-resolved \
         systemd-timesyncd dnsmasq-base e2fsprogs v4l-utils libdrm2; do
         awk -F '\t' -v package="${package}" \
             'NR > 1 && ($1 == package || $1 == package ":armhf") {found=1} END {exit !found}' \
