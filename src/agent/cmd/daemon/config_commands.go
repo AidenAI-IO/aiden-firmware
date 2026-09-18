@@ -46,11 +46,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 	return configupdate.FromAgentConfig(cfg)
 }
 
-// ValidationError represents a single validation error with field path and message
-type ValidationError struct {
-	Field   string `json:"field"`
-	Message string `json:"message"`
-}
+type ValidationError = agent.ConfigValidationError
 
 // ValidationResult is the output format for config-check command
 type ValidationResult struct {
@@ -70,9 +66,12 @@ type ConfigTestCheck struct {
 	Detail string `json:"detail"`
 }
 
-// runConfigCheck implements the `agent config-check` subcommand
-// It reads JSON config from stdin, validates it, and outputs structured JSON result
-func runConfigCheck(args []string) int {
+// RunConfigCheck implements the `agent config-check` subcommand. It reads a
+// config file with --config or a config_web payload from stdin, validates it, and
+// outputs a structured JSON result. It is exported so the configuration-portal
+// tests can drive the same entry point the CI and release gates run, instead of
+// re-implementing its loader step.
+func RunConfigCheck(args []string) int {
 	fs := flag.NewFlagSet("config-check", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read config from stdin")
@@ -120,6 +119,17 @@ func runConfigCheck(args []string) int {
 	return 1
 }
 
+// checkConfigPath validates a persisted file for the CI and release gates, which
+// run `config-check --config` before an image is assembled. It is deliberately the
+// strict verdict: a config the runtime would paper over at boot (a stale
+// input_mode=realtime whose credential was removed, where the Agent silently falls
+// back to text mode) still has to fail here, or the gate would pass configurations
+// that do not do what they say.
+//
+// The Config Web recovery portal reports a different, runtime-loader verdict,
+// because the page has to describe the state the Agent actually boots in and the
+// field to repair. The two are allowed to disagree; the portal is the repair
+// surface, this is the release gate.
 func checkConfigPath(path string) ValidationResult {
 	if _, err := agent.LoadResolvedConfig(path); err != nil {
 		return ValidationResult{Valid: false, Errors: parseValidationErrors(err)}
@@ -130,7 +140,7 @@ func checkConfigPath(path string) ValidationResult {
 // checkConfig reads a config_web wire-format payload from r, maps it onto
 // agent.Config, and runs the canonical Config.Validate(). It returns the
 // structured result, or a non-nil error only when the input is not decodable
-// JSON. Splitting this out of runConfigCheck keeps the full
+// JSON. Splitting this out of RunConfigCheck keeps the full
 // decode -> map -> validate pipeline testable without driving os.Stdin/Stdout.
 func checkConfig(r io.Reader) (ValidationResult, error) {
 	// The payload is the config_web wire format defined by webConfigDTO:
@@ -339,7 +349,13 @@ func runConfigTest(args []string) int {
 		return 1
 	}
 
-	cfg, err := agent.LoadResolvedConfig(*configFlag)
+	// config-test checks the candidate values carried in the request, so the
+	// persisted file only supplies surrounding context (proxy settings, provider
+	// records). Requiring it to pass semantic validation would disable the section
+	// Test buttons in exactly the recovery state they are needed in: the invalid
+	// field is what the user is trying to test a replacement for. A file that
+	// cannot be read or decoded still fails here.
+	cfg, err := agent.LoadResolvedConfigForUpdate(*configFlag)
 	if err != nil {
 		writeConfigTestResult(configTestFailure("load_config", err.Error()))
 		return 1
@@ -460,114 +476,11 @@ func configTestFailure(check, detail string) ConfigTestResult {
 	}
 }
 
-// parseValidationErrors converts a validation error into structured field errors
-// The Config.Validate() returns simple error strings, we parse them to extract field names
+// parseValidationErrors converts a validation error into structured field errors.
+// The mapping is shared with the Config Web recovery portal, which highlights the
+// same field, so it lives in the agent package.
 func parseValidationErrors(err error) []ValidationError {
-	if err == nil {
-		return []ValidationError{}
-	}
-
-	errMsg := err.Error()
-	errors := []ValidationError{}
-
-	// Try to extract field name from common error patterns
-	// Pattern 1: "search.provider is required when..."
-	// Pattern 2: "invalid search.provider: ..."
-	// Pattern 3: "model.provider is required"
-	// Pattern 4: "vad_speech_threshold must be in [0,1]"
-
-	// For now, return the whole error as a single validation error
-	// We can enhance this later to parse specific field names
-	field := ""
-	message := errMsg
-
-	// Try to extract field from error message
-	// Common patterns in Config.Validate():
-	if strings.Contains(errMsg, "search.provider") || strings.Contains(errMsg, "search provider") {
-		field = "search.provider"
-	} else if strings.Contains(errMsg, "search.api_key") || strings.Contains(errMsg, "search api_key") {
-		field = "search.api_key"
-	} else if strings.Contains(errMsg, "model.provider") {
-		field = "model.provider"
-	} else if strings.Contains(errMsg, "model.api_mode") {
-		field = "model.api_mode"
-		// The reasoning-budget constraints name the limit they are compared
-		// against, so this check must precede those fields to blame the value
-		// the user can actually change.
-	} else if strings.Contains(errMsg, "model.reasoning_budget_tokens") {
-		field = "model.reasoning_budget_tokens"
-	} else if strings.Contains(errMsg, "model.max_response_tokens") {
-		field = "model.max_response_tokens"
-	} else if strings.Contains(errMsg, "model.context_window") {
-		field = "model.context_window"
-	} else if strings.Contains(errMsg, "model.model_max_output_tokens") {
-		field = "model.model_max_output_tokens"
-	} else if strings.Contains(errMsg, "model.model") {
-		field = "model.model"
-	} else if strings.Contains(errMsg, "device.device_type") {
-		field = "device.device_type"
-	} else if strings.Contains(errMsg, "stt.provider") {
-		field = "stt.provider"
-	} else if strings.Contains(errMsg, "tts.provider") {
-		field = "tts.provider"
-	} else if strings.Contains(errMsg, "input_mode") {
-		field = "input_mode"
-	} else if strings.Contains(errMsg, "hid.keyboard_layout") || strings.Contains(errMsg, "keyboard_layout") {
-		field = "hid.keyboard_layout"
-	} else if strings.Contains(errMsg, "hid.pointer_mode") || strings.Contains(errMsg, "pointer_mode") {
-		field = "hid.pointer_mode"
-	} else if strings.Contains(errMsg, "max_iterations") {
-		field = "max_iterations"
-	} else if strings.Contains(errMsg, "vad_speech_threshold") {
-		field = "vad_speech_threshold"
-	} else if strings.Contains(errMsg, "voice_followup_timeout_ms") {
-		field = "voice_followup_timeout_ms"
-	} else if strings.Contains(errMsg, "voice_first_turn_timeout_ms") {
-		field = "voice_first_turn_timeout_ms"
-	} else if strings.Contains(errMsg, "voice_max_turns") {
-		field = "voice_max_turns"
-	} else if strings.Contains(errMsg, "voice_max_response_tokens") {
-		field = "voice_max_response_tokens"
-	} else if strings.Contains(errMsg, "screenshot_keep_n") {
-		field = "screenshot_keep_n"
-	} else if strings.Contains(errMsg, "screenshot_prune_interval") {
-		field = "screenshot_prune_interval"
-	} else if strings.Contains(errMsg, "screen_stable_timeout_ms") {
-		field = "screen_stable_timeout_ms"
-	} else if strings.Contains(errMsg, "screen_stable_ms") {
-		field = "screen_stable_ms"
-	} else if strings.Contains(errMsg, "screen_stable_diff_threshold") {
-		field = "screen_stable_diff_threshold"
-	} else if strings.Contains(errMsg, "audio.sample_rate") {
-		field = "audio.sample_rate"
-	} else if strings.Contains(errMsg, "audio.channels") {
-		field = "audio.channels"
-	} else if strings.Contains(errMsg, "audio.bit_width") {
-		field = "audio.bit_width"
-	} else if strings.Contains(errMsg, "audio.backend") {
-		field = "audio.backend"
-	} else if strings.Contains(errMsg, "telemetry.base_url") {
-		field = "telemetry.base_url"
-	} else if strings.Contains(errMsg, "telemetry.public_key") {
-		field = "telemetry.public_key"
-	} else if strings.Contains(errMsg, "telemetry.secret_key") {
-		field = "telemetry.secret_key"
-	} else if strings.Contains(errMsg, "telemetry.provider") {
-		field = "telemetry.provider"
-	} else if strings.Contains(errMsg, "telemetry.upload_timeout_sec") {
-		field = "telemetry.upload_timeout_sec"
-	} else if strings.Contains(errMsg, "telemetry.max_retry") {
-		field = "telemetry.max_retry"
-	} else if strings.Contains(errMsg, "log.llm_http_retention_days") {
-		field = "log.llm_http_retention_days"
-	}
-
-	errors = append(errors, ValidationError{
-		Field:   field,
-		Message: message,
-	})
-
-	return errors
+	return agent.ParseConfigValidationErrors(err)
 }
 
 // writeConfigCheckError writes an error message as a JSON ValidationResult
