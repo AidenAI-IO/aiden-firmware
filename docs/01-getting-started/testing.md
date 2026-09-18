@@ -36,7 +36,7 @@ frame_service_cli --socket /run/frame_service/frame_service.sock list-frames
 For temporary service execution on development machines, the default socket is `/tmp/frame_service.sock`:
 
 ```bash
-/oem/usr/bin/frame_service --socket /tmp/frame_service.sock
+/usr/lib/aiden/frame_service --socket /tmp/frame_service.sock
 frame_service_cli --socket /tmp/frame_service.sock health
 ```
 

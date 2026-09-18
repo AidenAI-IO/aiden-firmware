@@ -7,8 +7,6 @@ readonly IMAGE_DIR=${OUTPUT_DIR}/image
 readonly SDK_DIR=/sdk
 readonly WORK_DIR=${OUTPUT_DIR}/audit-work
 readonly ROOTFS_MOUNT=${WORK_DIR}/rootfs
-readonly OEM_MOUNT=${WORK_DIR}/oem
-readonly OEM_IMAGE_MOUNT=${WORK_DIR}/oem-image
 readonly USERDATA_MOUNT=${WORK_DIR}/userdata
 readonly OTA_MOUNT=${WORK_DIR}/ota
 readonly UNPACK_DIR=${WORK_DIR}/unpacked
@@ -18,13 +16,12 @@ readonly ROOTFS_CLI_TOOLS_DIR=/rootfs-cli-tools
 # shellcheck source=../rootfs_cli_tool_catalog.sh
 source "${REPO_ROOT}/scripts/rootfs_cli_tool_catalog.sh"
 
-readonly -a PRODUCTION_BINARIES=(aiden-dynamic-keyboard)
 
 readonly TTYD_SHA256=b0784080bd78f0a5916462672f461542c607f8ea7cee56b075e8cd04e1ffcc4d
 
 # These are the glibc/armhf VQE binaries shipped by the SDK's USE_32BIT
 # RKAUDIO build. Keep the exact digests here so an incompatible replacement
-# cannot silently enter the production OEM image.
+# cannot silently enter the production rootfs.
 readonly VQE_AEC_SHA256=3427abaa4b2ab7917d079e6cba46a68a836069bcc7f6b9e94630353fcd8c1a9a
 readonly VQE_COMMON_SHA256=de8ff824dd1f2e5ec1074b84490d2836ed9dc61d59d6a90d9cdf19386097263c
 
@@ -54,17 +51,6 @@ mount_image() {
     mkdir -p "${target}"
     mount -o loop,ro "${image}" "${target}"
     mounts+=("${target}")
-}
-
-stage_oem_image() {
-    rm -rf "${OEM_MOUNT}" "${OEM_IMAGE_MOUNT}"
-    mkdir -p "${OEM_MOUNT}" "${OEM_IMAGE_MOUNT}"
-    mount_image "${IMAGE_DIR}/oem.img" "${OEM_IMAGE_MOUNT}"
-    rsync -aHAX --numeric-ids --delete \
-        "${OEM_IMAGE_MOUNT}/" "${OEM_MOUNT}/"
-    # Keep the OEM tree available for the remaining checks while releasing
-    # the loop device before mounting another filesystem image.
-    unmount_mounts
 }
 
 audit_ext4() {
@@ -109,6 +95,7 @@ audit_business_package() {
     for path in \
         /usr/lib/aiden/agent /usr/lib/aiden/frame_service \
         /usr/lib/aiden/audio_service /usr/lib/aiden/ble_service \
+        /usr/lib/aiden/frame_service_cli /usr/lib/aiden/audio_service_cli \
         /usr/lib/aiden/aiden-environment /usr/lib/aiden/ttyd \
         /usr/share/aiden/config-web/index.html \
         /usr/share/aiden/skills/aiden/SKILL.md; do
@@ -232,8 +219,11 @@ audit_rootfs() {
         || fail "/tmp ownership or mode is invalid"
     test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/var/tmp")" = 0:0:1777 \
         || fail "/var/tmp ownership or mode is invalid"
-    test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/oem")" = 0:0:755 \
-        || fail "/oem ownership or mode is invalid"
+    test ! -e "${ROOTFS_MOUNT}/oem" && test ! -L "${ROOTFS_MOUNT}/oem" \
+        || fail "retired /oem path is present in rootfs"
+    if find "${ROOTFS_MOUNT}" -type l -lname '/oem*' -print -quit | grep -q .; then
+        fail "rootfs contains a link to the retired OEM path"
+    fi
     test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/userdata")" = 0:0:755 \
         || fail "/userdata ownership or mode is invalid"
     if find "${ROOTFS_MOUNT}/etc/init.d" -maxdepth 1 \
@@ -286,43 +276,38 @@ audit_rootfs() {
     test -L "${ROOTFS_MOUNT}/etc/systemd/system/getty.target.wants/serial-getty@ttyFIQ0.service" \
         || fail "serial recovery console is not enabled"
 
-    # Unit ExecStart paths under /oem are available only after the runtime
-    # OEM mount, so mirror that mount while verifying the rootfs unit graph.
-    mount --bind "${OEM_MOUNT}" "${ROOTFS_MOUNT}/oem"
-    mounts+=("${ROOTFS_MOUNT}/oem")
     systemd-analyze --root="${ROOTFS_MOUNT}" verify \
         aiden.target aiden-machine-id.service aiden-agent.service aiden-config-web.service \
         aiden-wifi-proxy.service aiden-wifi-proxy-agent-restart.path \
         aiden-wifi-proxy-agent-restart.service \
         aiden-ttyd.service aiden-usb-gadget.service aiden-boot-timeline-init.service \
-        aiden-boot-timeline.service oem.mount userdata.mount userdata-ota.mount \
+        aiden-boot-timeline.service userdata.mount userdata-ota.mount \
         >"${OUTPUT_DIR}/systemd-unit-audit.txt" 2>&1 || {
             cat "${OUTPUT_DIR}/systemd-unit-audit.txt" >&2
             fail "systemd unit verification failed"
         }
 }
 
-audit_oem_files() {
+audit_platform_files() {
     local actual expected library expected_sha actual_sha
-    actual=$(find "${OEM_MOUNT}/usr/bin" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
-    expected=$(printf '%s\n' "${PRODUCTION_BINARIES[@]}" | LC_ALL=C sort)
-    [ "${actual}" = "${expected}" ] || {
-        diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") >&2 || true
-        fail "OEM executable allowlist mismatch"
-    }
+    test -x "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-dynamic-keyboard" \
+        || fail "dynamic keyboard helper is missing"
+    (cd "${ROOTFS_MOUNT}" && sha256sum -c "${OUTPUT_DIR}/platform-files.sha256") \
+        >>"${REPORT}" || fail "platform files changed after rootfs assembly"
+    "${REPO_ROOT}/scripts/validate_ota_pubkey.sh" "${ROOTFS_MOUNT}/usr/share/keyrings/aiden-ota.pem"
     actual_sha=$(sha256sum "${ROOTFS_MOUNT}/usr/lib/aiden/ttyd" | awk '{print $1}')
     [ "${actual_sha}" = "${TTYD_SHA256}" ] \
         || fail "ttyd checksum mismatch"
-    if find "${OEM_MOUNT}" \( -name '*.a' -o -name '*.la' -o -name '*.o' \
+    if find "${ROOTFS_MOUNT}/usr/lib/aiden/platform" \( -name '*.a' -o -name '*.la' -o -name '*.o' \
         -o -name '*.map' -o -name '*.pc' -o -name CMakeFiles \
         -o -name pkgconfig -o -name include \) -print -quit | grep -q .; then
-        fail "build-only artifact leaked into OEM"
+        fail "build-only artifact leaked into platform"
     fi
-    test -L "${OEM_MOUNT}/usr/lib/librga.so" || fail "librga.so symlink is missing"
-    test "$(readlink "${OEM_MOUNT}/usr/lib/librga.so")" = librga.so.2 \
+    test -L "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/librga.so" || fail "librga.so symlink is missing"
+    test "$(readlink "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/librga.so")" = librga.so.2 \
         || fail "librga.so symlink is invalid"
-    test -L "${OEM_MOUNT}/usr/lib/librga.so.2" || fail "librga.so.2 symlink is missing"
-    test "$(readlink "${OEM_MOUNT}/usr/lib/librga.so.2")" = librga.so.2.1.0 \
+    test -L "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/librga.so.2" || fail "librga.so.2 symlink is missing"
+    test "$(readlink "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/librga.so.2")" = librga.so.2.1.0 \
         || fail "librga.so.2 symlink is invalid"
     for library in libaec_bf_process.so librkaudio_common.so; do
         case "${library}" in
@@ -330,21 +315,21 @@ audit_oem_files() {
             librkaudio_common.so) expected_sha=${VQE_COMMON_SHA256} ;;
             *) fail "unexpected VQE library name: ${library}"; continue ;;
         esac
-        test -s "${OEM_MOUNT}/usr/lib/${library}" \
+        test -s "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/${library}" \
             || fail "VQE runtime library is missing: ${library}"
-        cmp "${OEM_MOUNT}/usr/lib/${library}" \
-            "${REPO_ROOT}/overlay-debian-oem/usr/lib/${library}" \
-            || fail "VQE runtime library differs from the Debian OEM source: ${library}"
-        actual_sha=$(sha256sum "${OEM_MOUNT}/usr/lib/${library}" | awk '{print $1}')
+        cmp "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/${library}" \
+            "${REPO_ROOT}/overlay-debian/usr/lib/aiden/platform/lib/${library}" \
+            || fail "VQE runtime library differs from the Debian platform source: ${library}"
+        actual_sha=$(sha256sum "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/${library}" | awk '{print $1}')
         [ "${actual_sha}" = "${expected_sha}" ] \
             || fail "VQE runtime library checksum mismatch: ${library}"
     done
-    test ! -e "${OEM_MOUNT}/usr/lib/librknnrt.so" \
-        || fail "obsolete dynamic librknnrt.so leaked into OEM"
-    test -s "${OEM_MOUNT}/etc/ota_pubkey.pem" || fail "OTA public key is missing"
+    test ! -e "${ROOTFS_MOUNT}/usr/lib/aiden/platform/lib/librknnrt.so" \
+        || fail "obsolete dynamic librknnrt.so leaked into platform"
+    test -s "${ROOTFS_MOUNT}/usr/share/keyrings/aiden-ota.pem" || fail "OTA public key is missing"
     test -s "${ROOTFS_MOUNT}/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" \
         || fail "VAD model is missing from aiden-business"
-    test -s "${OEM_MOUNT}/usr/share/aiden/edid/hdmi_1080p30_cta.hex" \
+    test -s "${ROOTFS_MOUNT}/usr/share/aiden/edid/hdmi_1080p30_cta.hex" \
         || fail "EDID asset is missing"
     test -s "${ROOTFS_MOUNT}/usr/share/aiden/audio/voice-notifications/tts-unavailable.en-US.wav" \
         || fail "voice notification is missing from aiden-business"
@@ -358,9 +343,9 @@ audit_oem_files() {
         libarc4.ko ctr.ko ccm.ko aes_generic.ko cfg80211.ko \
         aic8800_bsp.ko aic8800_fdrv.ko aic8800_btlpm.ko \
         rga3.ko mpp_vcodec.ko rknpu.ko rockit.ko; do
-        test -s "${OEM_MOUNT}/usr/ko/${module}" || fail "kernel module is missing: ${module}"
+        test -s "${ROOTFS_MOUNT}/usr/lib/aiden/platform/modules/${module}" || fail "kernel module is missing: ${module}"
     done
-    test -s "${OEM_MOUNT}/usr/ko/aic8800dc_fw/fmacfw_patch_8800dc_u02.bin" \
+    test -s "${ROOTFS_MOUNT}/usr/lib/aiden/platform/modules/aic8800dc_fw/fmacfw_patch_8800dc_u02.bin" \
         || fail "AIC8800 firmware is missing"
 }
 
@@ -370,39 +355,35 @@ audit_elf_closure() {
     while IFS= read -r -d '' library; do
         libraries["$(basename "${library}")"]=${library}
     done < <(find \
-        "${ROOTFS_MOUNT}/lib" "${ROOTFS_MOUNT}/usr/lib" "${OEM_MOUNT}/usr/lib" \
+        "${ROOTFS_MOUNT}/lib" "${ROOTFS_MOUNT}/usr/lib" \
         \( -type f -o -type l \) -name '*.so*' -print0)
 
     printf 'path\tmachine\trunpath\tneeded\n' >"${OUTPUT_DIR}/elf-runtime-audit.tsv"
     while IFS= read -r -d '' file; do
         head -c 4 "${file}" | grep -q $'\177ELF' || continue
-        if [[ "${file}" == "${ROOTFS_MOUNT}"/* ]]; then
-            relative="/${file#${ROOTFS_MOUNT}/}"
-        else
-            relative=${file#${OEM_MOUNT}}
-        fi
+        relative="/${file#${ROOTFS_MOUNT}/}"
         machine=$(readelf -hW "${file}" 2>/dev/null \
             | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')
-        [ "${machine}" = ARM ] || fail "non-ARM ELF leaked into OEM: ${relative}"
+        [ "${machine}" = ARM ] || fail "non-ARM ELF leaked into platform: ${relative}"
         dynamic=$(readelf -dW "${file}" 2>/dev/null || true)
         if grep -qE 'libc\.so\.0|ld-uClibc' <<<"${dynamic}" \
             || strings "${file}" | grep -qE '/ld-uClibc|libc\.so\.0'; then
-            fail "uClibc dependency leaked into OEM: ${relative}"
+            fail "uClibc dependency leaked into platform: ${relative}"
         fi
         runpath=$(sed -n 's/.*(\(RPATH\|RUNPATH\)).*[[]\([^]]*\)[]].*/\2/p' <<<"${dynamic}")
         case "${relative}:${runpath}" in
             /usr/bin/*:'$ORIGIN/../lib' | /usr/lib/aiden/*:'$ORIGIN/../lib' | *:) ;;
-            *) fail "unapproved OEM RPATH/RUNPATH: ${relative}: ${runpath}" ;;
+            *) fail "unapproved runtime RPATH/RUNPATH: ${relative}: ${runpath}" ;;
         esac
         while IFS= read -r dependency; do
             [ -n "${dependency}" ] || continue
             [ -n "${libraries[${dependency}]:-}" ] \
-                || fail "unresolved OEM DT_NEEDED ${dependency}: ${relative}"
+                || fail "unresolved runtime DT_NEEDED ${dependency}: ${relative}"
         done < <(sed -n 's/.*(NEEDED).*[[]\([^]]*\)[]].*/\1/p' <<<"${dynamic}")
         printf '%s\t%s\t%s\t%s\n' "${relative}" "${machine}" "${runpath}" \
             "$(sed -n 's/.*(NEEDED).*[[]\([^]]*\)[]].*/\1/p' <<<"${dynamic}" | paste -sd, -)" \
             >>"${OUTPUT_DIR}/elf-runtime-audit.tsv"
-    done < <(find "${OEM_MOUNT}" -xdev -type f -print0)
+    done < <(find "${ROOTFS_MOUNT}/usr/lib/aiden" -xdev -type f -print0)
 }
 
 audit_boot() {
@@ -440,9 +421,10 @@ audit_update_image() {
     "${SDK_DIR}/tools/linux/Linux_Pack_Firmware/mk-update_unpack.sh" \
         -i "${IMAGE_DIR}/update.img" -o "${UNPACK_DIR}" >>"${REPORT}" 2>&1
     for item in env.img idblock.img uboot.img misc.img boot_a.img boot_b.img \
-        oem.img rootfs.img userdata.img ota.img; do
+        rootfs.img userdata.img ota.img; do
         cmp "${IMAGE_DIR}/${item}" "${UNPACK_DIR}/Image/${item}"
     done
+    test ! -e "${UNPACK_DIR}/Image/oem.img" || fail "update.img contains a retired OEM image"
     cmp "${IMAGE_DIR}/download.bin" "${UNPACK_DIR}/download.bin"
 }
 
@@ -459,8 +441,7 @@ main() {
         [misc.img]=$((4 * 1024 * 1024))
         [boot_a.img]=$((32 * 1024 * 1024))
         [boot_b.img]=$((32 * 1024 * 1024))
-        [oem.img]=$((256 * 1024 * 1024))
-        [rootfs.img]=$((1536 * 1024 * 1024))
+        [rootfs.img]=$((1792 * 1024 * 1024))
         [userdata.img]=$((3 * 1024 * 1024 * 1024))
         [ota.img]=$((300 * 1024 * 1024))
     )
@@ -468,7 +449,7 @@ main() {
         >"${OUTPUT_DIR}/partition-size-audit.tsv"
     local image size limit
     for image in env.img idblock.img uboot.img misc.img boot_a.img boot_b.img \
-        oem.img rootfs.img userdata.img ota.img; do
+        rootfs.img userdata.img ota.img; do
         test -s "${IMAGE_DIR}/${image}" || fail "image is missing: ${image}"
         size=$(stat -c %s "${IMAGE_DIR}/${image}")
         limit=${limits[${image}]}
@@ -477,21 +458,20 @@ main() {
             "$((limit - size))" >>"${OUTPUT_DIR}/partition-size-audit.tsv"
     done
     grep -qx \
-        'blkdevparts=mmcblk0:32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
+        'blkdevparts=mmcblk0:32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)' \
         "${OUTPUT_DIR}/bsp-env.txt" || fail "BSP partition layout changed"
 
+    test ! -e "${IMAGE_DIR}/oem.img" || fail "retired OEM image is present"
     audit_ext4 "${IMAGE_DIR}/rootfs.img" rootfs
-    audit_ext4 "${IMAGE_DIR}/oem.img" oem
     audit_ext4 "${IMAGE_DIR}/userdata.img" userdata
     audit_ext4 "${IMAGE_DIR}/ota.img" ota
     audit_packages
 
-    stage_oem_image
     mount_image "${IMAGE_DIR}/rootfs.img" "${ROOTFS_MOUNT}"
     audit_rootfs
     audit_business_package
     audit_rootfs_cli_tools
-    audit_oem_files
+    audit_platform_files
     audit_elf_closure
     unmount_mounts
 
@@ -520,7 +500,6 @@ main() {
         --config "${USERDATA_MOUNT}/debian/ota/config.json" \
         --boot-a "${IMAGE_DIR}/boot_a.img" \
         --boot-b "${IMAGE_DIR}/boot_b.img" \
-        --oem "${IMAGE_DIR}/oem.img" \
         --rootfs "${IMAGE_DIR}/rootfs.img" \
         >"${OUTPUT_DIR}/ota-config-mounted-audit.txt"
     unmount_mounts

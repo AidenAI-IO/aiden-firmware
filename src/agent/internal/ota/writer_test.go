@@ -11,7 +11,7 @@ import (
 )
 
 func TestDefaultProductionRootFSPartitionSizeMatchesBoardConfig(t *testing.T) {
-	const wantRootFSSize = int64(1536 << 20)
+	const wantRootFSSize = int64(1792 << 20)
 
 	if DefaultRootFSPartitionSize != wantRootFSSize {
 		t.Fatalf("DefaultRootFSPartitionSize = %d, want %d", DefaultRootFSPartitionSize, wantRootFSSize)
@@ -25,7 +25,7 @@ func TestDefaultProductionRootFSPartitionSizeMatchesBoardConfig(t *testing.T) {
 
 func TestWriterWritesOnlyInactiveCanonicalPartitions(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"boot_b", "oem_b", "rootfs_b"} {
+	for _, name := range []string{"boot_b", "rootfs_b"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte{}, 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", name, err)
 		}
@@ -290,7 +290,6 @@ func TestWriterPreservesDefaultLimitsWithPartialOverrides(t *testing.T) {
 	if err := os.WriteFile(src, make([]byte, 32<<20+1), 0o644); err != nil {
 		t.Fatalf("WriteFile(src) error = %v", err)
 	}
-	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"oem_b": 1}}
 	if err := w.WritePart("boot", SlotB, src); err == nil || !strings.Contains(err.Error(), "larger than partition") {
 		t.Fatalf("partial override oversize error = %v", err)
 	}
@@ -321,4 +320,11 @@ func testTarGzWithEntries(t *testing.T, entries []testTarEntry) []byte {
 		t.Fatalf("Close(gzip) error = %v", err)
 	}
 	return buf.Bytes()
+}
+
+func TestWriterRejectsRetiredOEMPartition(t *testing.T) {
+	w := PartitionWriter{ActiveSlot: SlotA}
+	if _, err := w.ResolveBlockName("oem", SlotB); err == nil {
+		t.Fatal("retired OEM partition accepted")
+	}
 }

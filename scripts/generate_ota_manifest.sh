@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/generate_ota_manifest.sh --version VERSION --channel CHANNEL --build-time RFC3339 --sign-key KEY.pem --image-dir DIR --output manifest.json
 
-Generate a signed OTA manifest for slot-aware boot, oem, and rootfs images.
+Generate a signed OTA manifest for slot-aware boot and rootfs images.
 
 Required options:
   --version       Monotonic release version, for example 20260521-120000-abcdef0
@@ -30,7 +30,7 @@ Optional:
 
 Required images:
   boot_a.img and boot_b.img are always required.
-  For oem/rootfs, either NAME.img or both NAME_a.img and NAME_b.img are required.
+  For rootfs, either NAME.img or both NAME_a.img and NAME_b.img are required.
 USAGE
 }
 
@@ -354,7 +354,6 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 boot_part="$(part_json boot)"
-oem_part="$(part_json oem)"
 rootfs_part="$(part_json rootfs)"
 
 unsigned="$tmpdir/unsigned.json"
@@ -366,9 +365,8 @@ jq -n \
   --arg version "$version" \
   --arg build_time "$build_time" \
   --argjson boot "$boot_part" \
-  --argjson oem "$oem_part" \
   --argjson rootfs "$rootfs_part" \
-  '{schema_version:1,channel:$channel,version:$version,build_time:$build_time,parts:[$boot,$oem,$rootfs],signature:{algorithm:"ed25519"}}' \
+  '{schema_version:2,channel:$channel,version:$version,build_time:$build_time,parts:[$boot,$rootfs],signature:{algorithm:"ed25519"}}' \
   > "$unsigned"
 
 if [ "$max_download_bytes" -gt 0 ]; then

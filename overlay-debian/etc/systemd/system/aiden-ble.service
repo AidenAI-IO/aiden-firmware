@@ -1,7 +1,7 @@
 [Unit]
 Description=Aiden BLE peripheral and ANCS service
-Requires=oem.mount aiden-environment.service bluetooth.service
-After=oem.mount aiden-environment.service bluetooth.service
+Requires=aiden-environment.service bluetooth.service
+After=aiden-environment.service bluetooth.service
 StartLimitIntervalSec=60s
 StartLimitBurst=5
 ConditionPathExists=/usr/lib/aiden/ble_service

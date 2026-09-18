@@ -13,7 +13,7 @@ pixel_format=${FRAME_SERVICE_PIXEL_FORMAT:-nv12}
 requested_subdev=${FRAME_SERVICE_SUBDEV:-}
 requested_force=${FRAME_SERVICE_FORCE_TRIGGER:-auto}
 requested_edid=${FRAME_SERVICE_EDID:-auto}
-tc_edid=${FRAME_SERVICE_TC358743_EDID:-/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex}
+tc_edid=${FRAME_SERVICE_TC358743_EDID:-/usr/share/aiden/edid/hdmi_1080p30_cta.hex}
 hpd_low=${FRAME_SERVICE_TC358743_HPD_LOW_SECONDS:-2}
 settle=${FRAME_SERVICE_TC358743_SETTLE_SECONDS:-5}
 

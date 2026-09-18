@@ -70,7 +70,7 @@ http_responds() {
 }
 
 for service in \
-    oem.mount userdata.mount userdata-ota.mount \
+    userdata.mount userdata-ota.mount \
     aiden-userdata-migrate.service aiden-environment.service \
     systemd-networkd.service aiden-wifi-proxy.service; do
     wait_for "${service} is not active" service_active "${service}"

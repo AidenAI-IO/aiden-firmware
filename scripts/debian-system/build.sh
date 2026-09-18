@@ -36,7 +36,7 @@ Environment:
   DEBIAN_APPS_OUTPUT_DIR         Audited application output.
   DEBIAN_SYSTEM_BUILD_IMAGE      Rootfs/image builder image name.
   DEBIAN_SYSTEM_BSP_BUILD_IMAGE  Luckfox BSP builder image name.
-  OTA_PUBLIC_KEY_PATH            Production Ed25519 public key (required by images).
+  OTA_PUBLIC_KEY_PATH            Production Ed25519 public key (required by rootfs/images).
   AGENT_CONFIG_PATH              External agent.toml installed into userdata.img
                                  (required by images; never copied into the repository).
   OTA_DEVICE_CONFIG_PATH         Config generated from the signed release manifest
@@ -44,7 +44,8 @@ Environment:
   SOURCE_DATE_EPOCH              Rootfs archive/build metadata timestamp.
   RK_JOBS                        BSP build parallelism.
 
-The images action creates generic rootfs.img and oem.img artifacts. The SDK
+The rootfs action requires BSP modules and audited apps. The images action creates
+a generic rootfs.img containing the platform and business package. The SDK
 packer maps each generic image to both A/B partitions, so the two slots start
 with identical bytes.
 
@@ -129,7 +130,7 @@ run_rootfs_container() {
     local script=$1
     shift
     local image_id source_git_common_dir sdk_commit
-    local -a proxy_args=()
+    local -a proxy_args=() platform_args=()
     test -s "${APPS_OUTPUT}/rootfs-cli-tools/manifest.sha256" || {
         echo "Missing application rootfs CLI tools: ${APPS_OUTPUT}/rootfs-cli-tools" >&2
         exit 1
@@ -145,14 +146,21 @@ run_rootfs_container() {
     # The selected SDK may live outside the repository, so resolve its commit
     # on the host and mount it at a fixed path for the privileged container.
     sdk_commit=$(git -C "${SDK_DIR}" rev-parse HEAD)
-    if [ ! -s "${OUTPUT_DIR}/aiden-business.deb" ]; then
+    if [ "${script}" = scripts/debian-system/container-build-rootfs.sh ]; then
         DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
             DEBIAN_PACKAGE_OUTPUT_DIR="${OUTPUT_DIR}" \
             DEBIAN_PACKAGE_BUILD_IMAGE="${ROOTFS_BUILD_IMAGE}" \
             "${REPO_ROOT}/scripts/debian-package/build.sh"
     fi
-    test -s "${OUTPUT_DIR}/aiden-business.deb" || { echo "Missing aiden-business.deb" >&2; exit 1; }
+
+    if [ "${script}" = scripts/debian-system/container-build-rootfs.sh ]; then
+        platform_args=(-v "${OTA_PUBLIC_KEY_PATH}:/run/secrets/ota_pubkey.pem:ro"
+            -v "${OUTPUT_DIR}/aiden-business.deb:/aiden-business.deb:ro")
+    fi
     docker run --rm --privileged \
+        ${platform_args[@]+"${platform_args[@]}"} \
+        -v "${APPS_OUTPUT}/apps:/apps:ro" \
+        -v "${APPS_OUTPUT}/apps-audit:/apps-audit:ro" \
         ${proxy_args[@]+"${proxy_args[@]}"} \
         -e "HOST_UID=$(id -u)" \
         -e "HOST_GID=$(id -g)" \
@@ -164,7 +172,6 @@ run_rootfs_container() {
         -v "${SDK_DIR}:/sdk:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -v "${APPS_OUTPUT}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
-        -v "${OUTPUT_DIR}/aiden-business.deb:/aiden-business.deb:ro" \
         -w /work \
         "${ROOTFS_BUILD_IMAGE}" \
         bash "${script}" "$@"
@@ -172,6 +179,15 @@ run_rootfs_container() {
 
 run_rootfs() {
     docker image inspect "${ROOTFS_BUILD_IMAGE}" >/dev/null
+    if [ -z "${OTA_PUBLIC_KEY_PATH:-}" ] || [ ! -f "${OTA_PUBLIC_KEY_PATH}" ]; then
+        echo "OTA_PUBLIC_KEY_PATH must name a production Ed25519 public key" >&2
+        exit 1
+    fi
+    test -d "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko" || {
+        echo "Missing BSP modules; run the bsp action before rootfs" >&2
+        exit 1
+    }
+    grep -qx 'status=pass' "${APPS_OUTPUT}/apps-audit/summary.txt"
     run_rootfs_container scripts/debian-system/container-build-rootfs.sh
 }
 
@@ -227,7 +243,7 @@ run_bsp() {
         exit 1
     }
     grep -qx \
-        'blkdevparts=mmcblk0:32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
+        'blkdevparts=mmcblk0:32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)' \
         "${env_text}"
     for item in env.img idblock.img uboot.img misc.img boot_a.img boot_b.img download.bin; do
         test -s "${SDK_DIR}/output/image/${item}"
@@ -277,8 +293,6 @@ run_images() {
         -v "${REPO_ROOT}:/work:ro" \
         -v "${SDK_DIR}:/sdk:ro" \
         -v "${OUTPUT_DIR}:/out" \
-        -v "${APPS_OUTPUT}/apps:/apps:ro" \
-        -v "${APPS_OUTPUT}/apps-audit:/apps-audit:ro" \
         -v "${OTA_PUBLIC_KEY_PATH}:/run/secrets/ota_pubkey.pem:ro" \
         -v "${AGENT_CONFIG_PATH}:/run/secrets/agent.toml:ro" \
         -w /work \
@@ -308,7 +322,7 @@ run_config() {
         echo "OTA_DEVICE_CONFIG_PATH must name a config generated from the signed release manifest" >&2
         exit 1
     fi
-    for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img ota.img; do
+    for image in boot_a.img boot_b.img rootfs.img userdata.img ota.img; do
         test -s "${IMAGE_DIR}/${image}" || {
             echo "Missing system image ${IMAGE_DIR}/${image}; run the images action first" >&2
             exit 1
@@ -362,9 +376,8 @@ main() {
     case "${action}" in
         all)
             run_builder
-            DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" DEBIAN_PACKAGE_OUTPUT_DIR="${OUTPUT_DIR}" DEBIAN_PACKAGE_BUILD_IMAGE="${ROOTFS_BUILD_IMAGE}" "${REPO_ROOT}/scripts/debian-package/build.sh"
-            run_rootfs
             run_bsp
+            run_rootfs
             run_images
             run_config
             run_audit

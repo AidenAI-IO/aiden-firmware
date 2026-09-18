@@ -93,7 +93,6 @@ gh release create "$TAG" \
   --title "Custom Firmware $TAG" \
   output/debian/image/boot_a.img.tar.gz \
   output/debian/image/boot_b.img.tar.gz \
-  output/debian/image/oem.img.tar.gz \
   output/debian/image/rootfs.img.tar.gz \
   output/debian/image/update.img.tar.gz \
   output/debian/image/manifest.json

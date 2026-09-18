@@ -1,7 +1,7 @@
 [Unit]
 Description=Recover protected Aiden configuration before userdata consumers start
-Requires=oem.mount userdata.mount userdata-ota.mount aiden-oem-ldconfig.service
-After=oem.mount userdata.mount userdata-ota.mount aiden-oem-ldconfig.service
+Requires=userdata.mount userdata-ota.mount aiden-platform-ldconfig.service
+After=userdata.mount userdata-ota.mount aiden-platform-ldconfig.service
 Before=aiden-userdata-migrate.service
 
 [Service]

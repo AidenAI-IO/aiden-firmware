@@ -85,7 +85,7 @@ func DefaultOptions() Options {
 		// remains an explicit override for development and tests.
 		AgentHTTPBaseURL:  strings.TrimSpace(os.Getenv("AIDEN_AGENT_HTTP_BASE_URL")),
 		OTABinary:         envOrDefault("AIDEN_OTA_BIN", "/usr/lib/aiden/ota"),
-		EnvRunBinary:      envOrDefault("AIDEN_ENV_RUN_BIN", "/oem/usr/bin/aiden-env-run"),
+		EnvRunBinary:      envOrDefault("AIDEN_ENV_RUN_BIN", "/usr/lib/aiden/aiden-managed-env-run"),
 		OTAUpdateLockPath: envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", "/tmp/config_web_ota_update.lock"),
 		OTAUpdateLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", "/userdata/ota/config_web_ota_update.log"),
 		OTAHealthLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", "/var/log/ota/ota.log"),

@@ -129,7 +129,7 @@ fail_pattern = r'fail_[a-f0-9]+'           # Failure IDs
 要启用 Web 访问，需要：
 
 1. 交叉编译 Go Agent
-2. 部署到设备 `/oem/usr/bin/agent`
+2. 部署到设备 `/usr/lib/aiden/agent`
 3. 重启 Agent 服务
 4. 访问 `http://<DEVICE_IP>/user_files`
 

@@ -169,7 +169,7 @@ BASE_URL="http://192.168.1.100:8000"
 
 ota update \
   --manifest-url "$BASE_URL/manifest.json" \
-  --public-key /oem/etc/ota_pubkey.pem \
+  --public-key /usr/share/keyrings/aiden-ota.pem \
   --dry-run
 ```
 

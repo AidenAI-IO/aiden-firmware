@@ -48,7 +48,7 @@ This workflow will:
 5. Audit the application and shared-library bundle under `output/debian-apps/`.
 
 Use `./debian_build.sh` for the complete signed local firmware image set. It
-builds applications, the Debian rootfs, the RV1106 BSP, A/B images, and
+builds applications, the RV1106 BSP, the Debian rootfs with its business package, A/B images, and
 the local OTA manifest in one workflow.
 
 ```bash

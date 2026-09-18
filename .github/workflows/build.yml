@@ -271,7 +271,7 @@ jobs:
         cache: false
 
     - name: Prepare agent configuration
-      # The system stage installs an external agent.toml into the OEM image and never
+      # The system stage installs an external agent.toml into the userdata image and never
       # copies one out of the source tree. Validate it here so a bad secret
       # fails in seconds instead of an hour into the image assembly step.
       env:
@@ -472,7 +472,7 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        release_assets='boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
+        release_assets='boot_a.img.tar.gz boot_b.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
         prerelease_args=()
         if [ "$RELEASE_CHANNEL" != "debian-stable" ]; then
           prerelease_args=(--prerelease)

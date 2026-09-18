@@ -29,11 +29,11 @@ bash -n \
     "${SYSTEM_DIR}/container-assemble-images.sh" \
     "${SYSTEM_DIR}/container-install-ota-config.sh" \
     "${SYSTEM_DIR}/container-audit-images.sh"
-PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
-    "${SYSTEM_DIR}/canonicalize-ext4.py" \
-    "${SYSTEM_DIR}/canonicalize-bsp.py" \
-    "${SYSTEM_DIR}/generate-spdx.py" \
-    "${SYSTEM_DIR}/validate-ota-config.py"
+python3 - "${SYSTEM_DIR}" <<'PYTHON'
+import ast, pathlib, sys
+for path in pathlib.Path(sys.argv[1]).glob('*.py'):
+    ast.parse(path.read_text(), filename=str(path))
+PYTHON
 
 for script in \
     build.sh audit-bsp.sh canonicalize-bsp.py container-build-rootfs.sh container-assemble-images.sh \
@@ -76,7 +76,7 @@ if grep -Eq '^(net-tools|dhcpcd|dhcpcd-base|isc-dhcp-client|flash-kernel|initram
 fi
 grep -q 'Pin-Priority: -1' "${SYSTEM_DIR}/aiden-production.pref"
 
-grep -Fq '1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
+grep -Fq '1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)' \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
 grep -Fq 'RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"' \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
@@ -247,20 +247,19 @@ grep -Fq 'boot_${slot}.img contains multiple root arguments' \
 grep -Fq 'bsp-artifacts.sha256' "${SYSTEM_DIR}/audit-bsp.sh"
 grep -Fq -- '--check' "${SYSTEM_DIR}/audit-bsp.sh"
 
-grep -Fq 'overlay-debian-oem/' "${SYSTEM_DIR}/container-assemble-images.sh" \
-    || fail "production OEM staging no longer consumes the OEM overlay"
-test -x "${REPO_ROOT}/overlay-debian-oem/usr/bin/aiden-dynamic-keyboard" \
-    || fail "production OEM overlay is missing the dynamic keyboard helper"
+grep -Fq 'stage_platform' "${SYSTEM_DIR}/container-build-rootfs.sh"
+test -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-dynamic-keyboard" \
+    || fail "production platform overlay is missing the dynamic keyboard helper"
 for binary in abctl agent aiden-environment audio_service ble_service cpu_vad \
     frame_service ota rknn_vad ttyd; do
     if grep -Eq "/apps[^\n]*${binary}|usr/bin[^\n]*${binary}" \
         "${SYSTEM_DIR}/container-assemble-images.sh"; then
-        fail "business executable is still staged directly into OEM: ${binary}"
+        fail "business executable is still staged directly into platform: ${binary}"
     fi
 done
 if grep -Eq '^    (example_|hello$|trigger$|image_process$|audio_stream$)' \
     "${SYSTEM_DIR}/container-assemble-images.sh"; then
-    fail "diagnostic executable leaked into the production OEM allowlist"
+    fail "diagnostic executable leaked into the production platform allowlist"
 fi
 grep -Fq 'src/agent/config/skills/' "${REPO_ROOT}/scripts/debian-package/container-build.sh"
 grep -Fq 'src/config_web/web/' "${REPO_ROOT}/scripts/debian-package/container-build.sh"
@@ -270,32 +269,31 @@ grep -Fq '${AGENT_CONFIG_PATH}:/run/secrets/agent.toml:ro' \
 grep -Fq 'apps/bin/agent" config-check --format=json' "${SYSTEM_DIR}/build.sh"
 grep -Fq 'install -m 0600 "${AGENT_CONFIG}" "${USERDATA_ROOT}/agent/agent.toml"' \
     "${SYSTEM_DIR}/container-assemble-images.sh"
-grep -Fq 'overlay-debian-oem/' \
-    "${SYSTEM_DIR}/container-assemble-images.sh"
-[ -x "${REPO_ROOT}/overlay-debian-oem/usr/bin/aiden-dynamic-keyboard" ] \
-    || fail "Debian OEM dynamic keyboard helper is missing"
-[ -s "${REPO_ROOT}/overlay-debian-oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" ] \
-    || fail "Debian OEM VAD model is missing"
-[ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/audio/config_aivqe.json" ] \
-    || fail "Debian OEM VQE configuration is missing"
+test ! -e "${REPO_ROOT}/overlay-debian-oem"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-dynamic-keyboard" ] \
+    || fail "Debian platform dynamic keyboard helper is missing"
+[ -s "${REPO_ROOT}/assets/business/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn" ] \
+    || fail "Debian platform VAD model is missing"
+[ -s "${REPO_ROOT}/overlay-debian/usr/share/aiden/audio/config_aivqe.json" ] \
+    || fail "Debian platform VQE configuration is missing"
 for library in libaec_bf_process.so librkaudio_common.so; do
-    [ -s "${REPO_ROOT}/overlay-debian-oem/usr/lib/${library}" ] \
-        || fail "Debian OEM VQE runtime library is missing: ${library}"
+    [ -s "${REPO_ROOT}/overlay-debian/usr/lib/aiden/platform/lib/${library}" ] \
+        || fail "Debian platform VQE runtime library is missing: ${library}"
 done
-[ "$(sha256sum "${REPO_ROOT}/overlay-debian-oem/usr/lib/libaec_bf_process.so" | awk '{print $1}')" = \
+[ "$(sha256sum "${REPO_ROOT}/overlay-debian/usr/lib/aiden/platform/lib/libaec_bf_process.so" | awk '{print $1}')" = \
     3427abaa4b2ab7917d079e6cba46a68a836069bcc7f6b9e94630353fcd8c1a9a ] \
-    || fail "Debian OEM VQE AEC runtime checksum changed"
-[ "$(sha256sum "${REPO_ROOT}/overlay-debian-oem/usr/lib/librkaudio_common.so" | awk '{print $1}')" = \
+    || fail "Debian platform VQE AEC runtime checksum changed"
+[ "$(sha256sum "${REPO_ROOT}/overlay-debian/usr/lib/aiden/platform/lib/librkaudio_common.so" | awk '{print $1}')" = \
     de8ff824dd1f2e5ec1074b84490d2836ed9dc61d59d6a90d9cdf19386097263c ] \
-    || fail "Debian OEM RKAUDIO common runtime checksum changed"
+    || fail "Debian platform RKAUDIO common runtime checksum changed"
 grep -Fq 'VQE runtime library checksum mismatch' \
     "${SYSTEM_DIR}/container-audit-images.sh"
-[ -s "${REPO_ROOT}/overlay-debian-oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex" ] \
-    || fail "Debian OEM EDID is missing"
+[ -s "${REPO_ROOT}/overlay-debian/usr/share/aiden/edid/hdmi_1080p30_cta.hex" ] \
+    || fail "Debian platform EDID is missing"
 if grep -Fq '${REPO_ROOT}/overlay/' "${SYSTEM_DIR}/container-assemble-images.sh"; then
-    fail "Debian OEM assembler depends on the Buildroot overlay"
+    fail "Debian platform assembler depends on the Buildroot overlay"
 fi
-grep -Fq 'kernel_drv_ko/' "${SYSTEM_DIR}/container-assemble-images.sh"
+grep -Fq 'kernel_drv_ko/' "${SYSTEM_DIR}/container-build-rootfs.sh"
 grep -Fq '/userdata/debian/ota/config.json' "${SYSTEM_DIR}/build.sh"
 grep -Fq 'factory_partition_hashes' "${SYSTEM_DIR}/validate-ota-config.py"
 grep -Fq 'debian/ota/config.json' "${SYSTEM_DIR}/container-audit-images.sh"
@@ -326,11 +324,9 @@ grep -Fq 'passwordless sudo policy is present' \
 grep -Fq 'nondeterministic APT package cache leaked' "${SYSTEM_DIR}/container-audit-images.sh"
 grep -Fq 'nondeterministic APT source cache leaked' "${SYSTEM_DIR}/container-audit-images.sh"
 grep -Fq 'nondeterministic ldconfig cache leaked' "${SYSTEM_DIR}/container-audit-images.sh"
-grep -Fq 'unresolved OEM DT_NEEDED' "${SYSTEM_DIR}/container-audit-images.sh"
+grep -Fq 'unresolved runtime DT_NEEDED' "${SYSTEM_DIR}/container-audit-images.sh"
 grep -Fq 'generic OTA image is not empty' "${SYSTEM_DIR}/container-audit-images.sh"
-grep -Fq 'stage_oem_image()' "${SYSTEM_DIR}/container-audit-images.sh"
-grep -Fq 'rsync -aHAX --numeric-ids --delete' \
-    "${SYSTEM_DIR}/container-audit-images.sh"
+grep -Fq 'audit_platform_files()' "${SYSTEM_DIR}/container-audit-images.sh"
 grep -Fq 'unmount_mounts' "${SYSTEM_DIR}/container-audit-images.sh"
 if grep -Fq 'mount_image "${IMAGE_DIR}/userdata.img" "${USERDATA_MOUNT}"' \
     "${SYSTEM_DIR}/container-audit-images.sh" \
@@ -367,12 +363,11 @@ if "${SYSTEM_DIR}/build.sh" invalid-action >/dev/null 2>&1; then
 fi
 
 mkdir -p "${TEST_ROOT}/ota-config-images"
-for image in boot_a.img boot_b.img oem.img rootfs.img; do
+for image in boot_a.img boot_b.img rootfs.img; do
     printf '%s\n' "${image}" >"${TEST_ROOT}/ota-config-images/${image}"
 done
 boot_a_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/boot_a.img" | awk '{print $1}')
 boot_b_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/boot_b.img" | awk '{print $1}')
-oem_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/oem.img" | awk '{print $1}')
 rootfs_hash=$(sha256sum "${TEST_ROOT}/ota-config-images/rootfs.img" | awk '{print $1}')
 cat >"${TEST_ROOT}/ota-config.json" <<EOF
 {
@@ -382,8 +377,8 @@ cat >"${TEST_ROOT}/ota-config.json" <<EOF
   "factory_version": "20260817-120000-abcdef0",
   "factory_build_time": "2026-08-17T12:00:00Z",
   "factory_partition_hashes": {
-    "a": {"boot": "${boot_a_hash}", "oem": "${oem_hash}", "rootfs": "${rootfs_hash}"},
-    "b": {"boot": "${boot_b_hash}", "oem": "${oem_hash}", "rootfs": "${rootfs_hash}"}
+    "a": {"boot": "${boot_a_hash}", "rootfs": "${rootfs_hash}"},
+    "b": {"boot": "${boot_b_hash}", "rootfs": "${rootfs_hash}"}
   }
 }
 EOF
@@ -391,7 +386,6 @@ EOF
     --config "${TEST_ROOT}/ota-config.json" \
     --boot-a "${TEST_ROOT}/ota-config-images/boot_a.img" \
     --boot-b "${TEST_ROOT}/ota-config-images/boot_b.img" \
-    --oem "${TEST_ROOT}/ota-config-images/oem.img" \
     --rootfs "${TEST_ROOT}/ota-config-images/rootfs.img" \
     >"${TEST_ROOT}/ota-config-audit.txt"
 grep -qx "factory_partition_hashes.b.rootfs=${rootfs_hash}" \
@@ -402,7 +396,6 @@ if "${SYSTEM_DIR}/validate-ota-config.py" \
     --config "${TEST_ROOT}/bad-ota-config.json" \
     --boot-a "${TEST_ROOT}/ota-config-images/boot_a.img" \
     --boot-b "${TEST_ROOT}/ota-config-images/boot_b.img" \
-    --oem "${TEST_ROOT}/ota-config-images/oem.img" \
     --rootfs "${TEST_ROOT}/ota-config-images/rootfs.img" >/dev/null 2>&1; then
     fail "OTA config validator accepted a mismatched rootfs hash"
 fi
@@ -421,11 +414,16 @@ mock_output=${TEST_ROOT}/mock-output
 mock_log=${TEST_ROOT}/docker-args
 mock_apps=${TEST_ROOT}/mock-apps
 mkdir -p "${mock_output}" "${mock_apps}/rootfs-cli-tools" "${mock_apps}/apps" "${mock_apps}/apps-audit"
-printf '%s' mock-deb >"${mock_output}/aiden-business.deb"
+printf '%s' mock-deb >"${mock_output}/aiden-business_0.0.0-1_armhf.deb"
 printf 'status=pass\n' >"${mock_apps}/apps-audit/summary.txt"
 printf '%064d  fq\n' 0 >"${mock_apps}/rootfs-cli-tools/manifest.sha256"
 printf 'fq v0.17.0 linux/arm/v7 preserve\n' \
     >"${mock_apps}/rootfs-cli-tools/versions.txt"
+mkdir -p "${TEST_ROOT}/mock-sdk/output/out/sysdrv_out/kernel_drv_ko"
+git -C "${TEST_ROOT}" init -q mock-sdk
+git -C "${TEST_ROOT}/mock-sdk" -c user.name=Test -c user.email=test@example.invalid commit -q --allow-empty -m 'test: fixture'
+OTA_PUBLIC_KEY_PATH="${REPO_ROOT}/keys/ota_pubkey.pem" \
+DEBIAN_SYSTEM_SDK_DIR="${TEST_ROOT}/mock-sdk" \
 MOCK_DOCKER_LOG="${mock_log}" \
 PATH="${TEST_ROOT}/mock-bin:${PATH}" \
 DEBIAN_SYSTEM_OUTPUT_DIR="${mock_output}" \
@@ -443,3 +441,5 @@ grep -qx 'scripts/debian-system/container-build-rootfs.sh' \
 echo "Debian system static checks passed"
 
 "${REPO_ROOT}/scripts/test_debian_package.sh"
+
+"${REPO_ROOT}/scripts/test_debian_no_oem.sh"

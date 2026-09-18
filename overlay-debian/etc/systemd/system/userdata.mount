@@ -6,7 +6,7 @@ After=aiden-slot-resolve.service aiden-rootfs-grow.service
 Before=local-fs.target
 
 [Mount]
-What=/dev/mmcblk0p11
+What=/dev/mmcblk0p9
 Where=/userdata
 Type=ext4
 Options=noatime

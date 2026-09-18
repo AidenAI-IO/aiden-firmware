@@ -1,7 +1,7 @@
 [Unit]
 Description=Aiden audio capture and playback service
-Requires=oem.mount aiden-environment.service aiden-media-modules.service
-After=oem.mount aiden-environment.service aiden-media-modules.service sound.target
+Requires=aiden-environment.service aiden-media-modules.service
+After=aiden-environment.service aiden-media-modules.service sound.target
 StartLimitIntervalSec=60s
 StartLimitBurst=5
 ConditionPathExists=/usr/lib/aiden/audio_service

@@ -3,7 +3,6 @@ set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly OVERLAY=${REPO_ROOT}/overlay-debian
-readonly OEM_OVERLAY=${REPO_ROOT}/overlay-debian-oem
 readonly UNIT_DIR=${OVERLAY}/etc/systemd/system
 readonly TMPFILES=${OVERLAY}/etc/tmpfiles.d/aiden.conf
 readonly TEST_ROOT=$(mktemp -d)
@@ -42,7 +41,7 @@ if grep -Eq '^(Wants|Requires|After)=.*dev-rtc0\.device' \
 fi
 
 while IFS= read -r script; do
-    [ -x "${script}" ] || fail "helper is not executable: ${script#${REPO_ROOT}/}"
+    [ "${script##*/}" = aiden-log.sh ] || [ -x "${script}" ] || fail "helper is not executable: ${script#${REPO_ROOT}/}"
     sh -n "${script}"
 done < <(find "${OVERLAY}/usr/lib/aiden" -maxdepth 1 -type f | LC_ALL=C sort)
 
@@ -101,9 +100,9 @@ bypass_output=$(env -i AIDEN_WIFI_PROXY_ENABLED=0 \
 printf '%s\n' "${bypass_output}" \
     | grep -qx 'HTTP_PROXY=http://upstream.example:8080'
 
-grep -qx 'What=/run/aiden/oem-device' "${UNIT_DIR}/oem.mount"
-grep -qx 'What=/dev/mmcblk0p11' "${UNIT_DIR}/userdata.mount"
-grep -qx 'What=/dev/mmcblk0p12' "${UNIT_DIR}/userdata-ota.mount"
+test ! -e "${UNIT_DIR}/oem.mount"
+grep -qx 'What=/dev/mmcblk0p9' "${UNIT_DIR}/userdata.mount"
+grep -qx 'What=/dev/mmcblk0p10' "${UNIT_DIR}/userdata-ota.mount"
 grep -q 'aiden.slot_suffix' "${OVERLAY}/usr/lib/aiden/aiden-slot-resolve"
 grep -q 'Root slot.*disagrees' "${OVERLAY}/usr/lib/aiden/aiden-slot-resolve"
 grep -q 'rootfs${AIDEN_SLOT_SUFFIX}' "${OVERLAY}/usr/lib/aiden/aiden-rootfs-grow"
@@ -127,7 +126,7 @@ if rg -n 'networkctl reconfigure (usb0|"?\$\{?interface\}?")' \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-ecm-watchdog" \
     "${OVERLAY}/usr/lib/aiden/aiden-wait-interface-ip" \
-    "${OEM_OVERLAY}/usr/bin/aiden-dynamic-keyboard"; then
+    "${OVERLAY}/usr/lib/aiden/aiden-dynamic-keyboard"; then
     fail "USB helpers must not ask networkd to replace an address they just configured"
 fi
 grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \

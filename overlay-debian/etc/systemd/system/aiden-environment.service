@@ -1,7 +1,7 @@
 [Unit]
 Description=Generate the strict Aiden service environment
-Requires=oem.mount aiden-userdata-migrate.service aiden-machine-id.service
-After=oem.mount aiden-userdata-migrate.service aiden-machine-id.service aiden-oem-ldconfig.service
+Requires=aiden-userdata-migrate.service aiden-machine-id.service
+After=aiden-userdata-migrate.service aiden-machine-id.service aiden-platform-ldconfig.service
 Before=aiden-adb-host.service aiden-agent.service aiden-audio.service
 Before=aiden-ble.service aiden-config-web.service aiden-frame.service
 Before=aiden-ota-health-marker.service aiden-ota-health.service aiden-ttyd.service

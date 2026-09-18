@@ -11,7 +11,7 @@ OTA is accomplished through three layers: `debian_build.sh` orchestrates the Deb
 Production images use A/B layout:
 
 ```text
-32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)
+32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)
 ```
 
 | Partition | A/B | OTA Behavior |
@@ -21,7 +21,6 @@ Production images use A/B layout:
 | `uboot` | No | Not updated via OTA; old bootloader requires full flash update |
 | `misc` | No | Stores A/B metadata, OTA only modifies slot state |
 | `boot` | Yes | Write to inactive `boot_a` or `boot_b` |
-| `oem` | Yes | Write to inactive `oem_a` or `oem_b` |
 | `rootfs` | Yes | Write to inactive `rootfs_a` or `rootfs_b` |
 | `userdata` | No | Preserved across upgrades, stores non-OTA persistent data |
 | `ota` | No | Dedicated OTA config, state, health markers, and download cache; factory flash only |
@@ -34,12 +33,12 @@ Production images use A/B layout:
 4. Slot-specific FIT boot image provides `root=PARTLABEL=rootfs_a|rootfs_b` and `aiden.slot_suffix=_a|_b`.
 5. Linux mounts the matching `rootfs_*`.
 6. `aiden-slot-resolve.service` resolves stable partition paths for the active slot.
-7. `userdata.mount`, `userdata-ota.mount`, and `oem.mount` mount persistent data, the dedicated OTA workspace, and the active OEM slot.
+7. `userdata.mount` and `userdata-ota.mount` mount persistent data and the dedicated OTA workspace. Platform files and business binaries are already in the active rootfs.
 8. `aiden-ota-health-marker.service` aggregates application health, then `aiden-ota-health.service` processes pending OTA state once.
 
 ## Update Process
 
-1. `ota` reads `/userdata/debian/ota/config.json` and `/oem/etc/ota_pubkey.pem`.
+1. `ota` reads `/userdata/debian/ota/config.json` and `/usr/share/keyrings/aiden-ota.pem`.
 2. Fetch the manifest from the configured `manifest_url`. For older factory
    configurations that have no direct URL, the client retains a GitHub
    `releases/latest` fallback for compatibility; current local/self-hosted
@@ -50,7 +49,7 @@ Production images use A/B layout:
 6. Clean stale download cache and calculate the remaining bytes after verified cache and resumable partials.
 7. Read actual available bytes from the dedicated OTA filesystem and require the remaining downloads plus the configured safety margin.
 8. Download images and verify archive size, SHA256, extracted image hash, and target partition size.
-9. Write to inactive `boot_*`, `oem_*`, `rootfs_*`, and fsync.
+9. Write to inactive `boot_*` and `rootfs_*`, and fsync.
 10. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
 11. Modify `misc`, set target slot as active trial slot with default tries of 3.
 12. Reboot into target slot.
@@ -74,14 +73,14 @@ If the health window times out, `ota health` actively reboots, allowing SPL to c
 
 ## Manifest Convention
 
-`parts[].name` in the manifest can only be `boot`, `oem`, or `rootfs`. Each part uses one of the following asset forms:
+Manifest schema 2 is required; schema 1 and OEM parts are rejected. `parts[].name` in the manifest can only be `boot` or `rootfs`. Each part uses one of the following asset forms:
 
 - `asset`: slot-neutral `{name,size,sha256}`, only applicable to byte-identical images on both sides.
 - `asset_a` and `asset_b`: slot-specific `{name,size,sha256}`.
 
 For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. The required `image_sha256` field describes the extracted `.img`; OTA state and `requires_partitions` compare this extracted image hash.
 
-`boot` must use `asset_a` and `asset_b` because the boot image contains slot-specific DTB bootargs. `oem` and `rootfs` can use slot-specific assets or slot-neutral assets when confirmed as byte-identical.
+Production Debian OTA must include both boot and rootfs atomically. `boot` must use `asset_a` and `asset_b` because the boot image contains slot-specific DTB bootargs. `rootfs` can use slot-specific assets or slot-neutral assets when confirmed as byte-identical.
 
 ## Factory Baseline
 
@@ -94,13 +93,13 @@ repacks `update.img` before the final mounted-image audit.
 
 - `factory_version` - factory flash version number, used for downgrade protection and selective update verification
 - `factory_build_time` - factory flash build time
-- `factory_partition_hashes.a.boot|oem|rootfs` - SHA256 of each slot A partition
-- `factory_partition_hashes.b.boot|oem|rootfs` - SHA256 of each slot B partition
+- `factory_partition_hashes.a.boot|rootfs` - SHA256 of each slot A partition
+- `factory_partition_hashes.b.boot|rootfs` - SHA256 of each slot B partition
 
 Optional configuration fields:
 
 - `manifest_url` - directly specify the manifest URL (the current local/self-hosted path)
-- `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
+- `public_key_path` - override default public key path (default `/usr/share/keyrings/aiden-ota.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
 - `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)
 

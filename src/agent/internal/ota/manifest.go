@@ -80,8 +80,8 @@ func CanonicalManifestJSONBytes(encoded []byte) ([]byte, error) {
 }
 
 func (m Manifest) Validate() error {
-	if m.SchemaVersion != 1 {
-		return fmt.Errorf("schema_version %d, want 1", m.SchemaVersion)
+	if m.SchemaVersion != 2 {
+		return fmt.Errorf("schema_version %d, want 2 (boot/rootfs layout; fresh flash required for older firmware)", m.SchemaVersion)
 	}
 	if !manifestChannelRE.MatchString(m.Channel) {
 		return fmt.Errorf("invalid channel %q", m.Channel)
@@ -98,7 +98,7 @@ func (m Manifest) Validate() error {
 
 	seen := map[string]bool{}
 	for _, part := range m.Parts {
-		if part.Name != "boot" && part.Name != "oem" && part.Name != "rootfs" {
+		if part.Name != "boot" && part.Name != "rootfs" {
 			return fmt.Errorf("unknown part %q", part.Name)
 		}
 		if seen[part.Name] {
@@ -148,9 +148,9 @@ func requireAtomicProductionManifest(manifest Manifest) error {
 	for _, part := range manifest.Parts {
 		included[part.Name] = true
 	}
-	for _, name := range []string{"boot", "oem", "rootfs"} {
+	for _, name := range []string{"boot", "rootfs"} {
 		if !included[name] {
-			return fmt.Errorf("Debian OTA manifest must atomically include boot, oem, and rootfs; missing %s", name)
+			return fmt.Errorf("Debian OTA manifest must atomically include boot and rootfs; missing %s", name)
 		}
 	}
 	return nil

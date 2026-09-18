@@ -779,7 +779,7 @@ func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
 	}
 }
 
-func TestBundledSkillsDirCandidatesUseOEMOnly(t *testing.T) {
+func TestBundledSkillsDirCandidatesUseBusinessPackage(t *testing.T) {
 	want := []string{"/usr/share/aiden/skills"}
 	if got := bundledSkillsDirCandidates(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("bundledSkillsDirCandidates() = %#v, want %#v", got, want)

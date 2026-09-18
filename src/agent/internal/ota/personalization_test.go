@@ -163,14 +163,11 @@ func TestDebianUpdaterPersonalizesInactiveRootFSAndCommitsSidecarBeforeActivatio
 	assets := map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
 		"boot_b.img": []byte("boot-b-v2"),
-		"oem_a.img":  []byte("oem-a-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": genericRootFS,
 	}
 	manifest := env.signedManifest(assets, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{
 		"boot_b.img": []byte("boot-b-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": genericRootFS,
 	})
 	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"

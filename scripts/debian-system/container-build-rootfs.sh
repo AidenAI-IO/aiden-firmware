@@ -13,6 +13,8 @@ readonly ROOTFS_ARCHIVE=${OUTPUT_DIR}/rootfs.tar.zst
 readonly ROOTFS_CLI_TOOLS_DIR=/rootfs-cli-tools
 readonly SNAPSHOT=http://snapshot.debian.org/archive/debian/20260803T000000Z
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
+readonly SDK_DIR=/sdk
+readonly OTA_PUBLIC_KEY=/run/secrets/ota_pubkey.pem
 readonly ROOTFS_UUID=1d29a2d4-5488-4bea-a648-bf133c4b53d3
 readonly BINFMT_DIR=/proc/sys/fs/binfmt_misc
 
@@ -149,6 +151,54 @@ EOF
     unmount_all
 }
 
+validate_platform_inputs() {
+    grep -qx 'status=pass' /apps-audit/summary.txt || {
+        echo "application audit has not passed" >&2
+        exit 1
+    }
+    "${REPO_ROOT}/scripts/validate_ota_pubkey.sh" "${OTA_PUBLIC_KEY}"
+    test -d "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko" || {
+        echo "Missing SDK kernel modules; run the bsp action before rootfs" >&2
+        exit 1
+    }
+    test -s /apps/lib/librga.so.2.1.0
+    for image in boot_a.img boot_b.img env.img; do
+        test -s "${SDK_DIR}/output/image/${image}"
+    done
+}
+
+stage_platform() {
+    local platform=${ROOTFS_DIR}/usr/lib/aiden/platform
+    install -d -m 0755 "${platform}/lib" "${platform}/modules" \
+        "${ROOTFS_DIR}/usr/share/keyrings"
+    rsync -aH --chown=0:0 /apps/lib/ "${platform}/lib/"
+    rsync -aH --chown=0:0 \
+        "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko/" "${platform}/modules/"
+    install -m 0644 "${OTA_PUBLIC_KEY}" "${ROOTFS_DIR}/usr/share/keyrings/aiden-ota.pem"
+    find "${platform}" -type d -exec chmod 0755 {} +
+    find "${platform}" -type f -exec chmod 0644 {} +
+    # Runtime loaders use explicit insmod paths; vendor loader scripts are not
+    # installed because they contain paths for the vendor filesystem layout.
+    find "${platform}/modules" -type f -name '*.sh' -delete
+    if find "${platform}" \( -name '*.a' -o -name '*.la' -o -name '*.o' \
+        -o -name '*.map' -o -name '*.pc' -o -name CMakeFiles \
+        -o -name pkgconfig -o -name include \) -print -quit | grep -q .; then
+        echo "Development artifact leaked into production platform staging" >&2
+        exit 1
+    fi
+    (
+        cd "${ROOTFS_DIR}"
+        find usr/lib/aiden/platform usr/share/aiden/edid usr/share/aiden/audio/config_aivqe.json \
+            usr/share/keyrings/aiden-ota.pem -type f -print0 \
+            | LC_ALL=C sort -z | xargs -0 sha256sum
+    ) >"${OUTPUT_DIR}/platform-files.sha256"
+    (
+        cd "${SDK_DIR}/output/image"
+        sha256sum boot_a.img boot_b.img env.img
+    ) >"${OUTPUT_DIR}/rootfs-bsp-inputs.sha256"
+    sha256sum "${OTA_PUBLIC_KEY}" | awk '{print $1}' >"${OUTPUT_DIR}/ota-public-key.sha256"
+}
+
 configure_rootfs() {
     # Apply only the Debian-native overlay with root ownership. This scoped
     # chown does not touch Debian package files or their numeric UID/GID data.
@@ -174,7 +224,6 @@ configure_rootfs() {
     install -m 0644 "${ROOTFS_CLI_TOOLS_DIR}/versions.txt" \
         "${OUTPUT_DIR}/rootfs-cli-tools-versions.txt"
     install -d -m 0755 \
-        "${ROOTFS_DIR}/oem" \
         "${ROOTFS_DIR}/userdata" \
         "${ROOTFS_DIR}/userdata/ota" \
         "${ROOTFS_DIR}/var/lib/aiden"
@@ -196,10 +245,10 @@ EOF
         systemd-networkd.service systemd-resolved.service systemd-timesyncd.service \
         wpa_supplicant@wlan0.service ssh.service serial-getty@ttyFIQ0.service \
         aiden-slot-resolve.service aiden-rootfs-grow.service \
-        oem.mount userdata.mount userdata-ota.mount \
+        userdata.mount userdata-ota.mount \
         aiden-userdata-migrate.service aiden-machine-id.service \
         aiden-root-home.service aiden-user-home.service \
-        aiden-ssh-identity.service aiden-oem-ldconfig.service \
+        aiden-ssh-identity.service aiden-platform-ldconfig.service \
         aiden-environment.service aiden-zram.service aiden-swap.service \
         aiden-media-modules.service aiden-wifi-driver.service \
         aiden-bluetooth-state.service aiden-bluetooth-attach.service \
@@ -221,7 +270,9 @@ EOF
         apt-daily-upgrade.service apt-daily-upgrade.timer \
         e2scrub_all.timer e2scrub_reap.service || true
 
+    stage_platform
     mount_chroot_filesystems
+    chroot "${ROOTFS_DIR}" /sbin/ldconfig
     chroot "${ROOTFS_DIR}" dpkg-query -W \
         -f='${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${Maintainer}\n' \
         | LC_ALL=C sort >"${OUTPUT_DIR}/packages.txt"
@@ -291,7 +342,7 @@ create_ext4_image() {
     mkdir -p "${ROOTFS_IMPORT_DIR}"
     tar --zstd --acls --xattrs --xattrs-include='*' --numeric-owner \
         -xf "${ROOTFS_ARCHIVE}" -C "${ROOTFS_IMPORT_DIR}"
-    truncate -s 1536M "${ROOTFS_IMAGE}"
+    truncate -s 1792M "${ROOTFS_IMAGE}"
     mkfs.ext4 -F -L rootfs -U "${ROOTFS_UUID}" -m 1 \
         -E "lazy_itable_init=0,lazy_journal_init=0,hash_seed=${ROOTFS_UUID},root_owner=0:0" \
         -O "${feature_opts}" -d "${ROOTFS_IMPORT_DIR}" "${ROOTFS_IMAGE}"
@@ -372,12 +423,13 @@ finalize() {
         capabilities.txt xattrs.txt setid-files.txt sbom.spdx.json \
         dpkg-audit.txt rootfs-dumpe2fs.txt rootfs-import-audit.txt \
         rootfs-artifacts.sha256 rootfs-cli-tools.sha256 \
-        rootfs-cli-tools-versions.txt; do
+        rootfs-cli-tools-versions.txt platform-files.sha256 ota-public-key.sha256 rootfs-bsp-inputs.sha256; do
         chown "${HOST_UID:-0}:${HOST_GID:-0}" "${OUTPUT_DIR}/${path}"
     done
     rm -rf "${WORK_DIR}"
 }
 
+validate_platform_inputs
 bootstrap_rootfs
 configure_rootfs
 create_ext4_image
