@@ -22,6 +22,11 @@ for unit, number in [('userdata.mount',9),('userdata-ota.mount',10)]:
 assert not (root/'overlay-debian-oem').exists()
 assert not (root/'overlay-debian/oem').exists()
 assert not (root/'overlay-debian/etc/systemd/system/oem.mount').exists()
+for line in read('overlay-debian/etc/systemd/system-preset/90-aiden.preset').splitlines():
+    line = line.strip()
+    if not line or line.startswith('#'): continue
+    fields = line.split()
+    assert len(fields) >= 2 and fields[0] in ('enable', 'disable', 'ignore'), line
 for path in (root/'overlay-debian').rglob('*'):
     if not path.is_file(): continue
     try: text = path.read_text()

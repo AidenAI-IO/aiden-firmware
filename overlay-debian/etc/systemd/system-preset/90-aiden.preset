@@ -6,7 +6,6 @@ enable ssh.service
 enable serial-getty@ttyFIQ0.service
 enable aiden-slot-resolve.service
 enable aiden-rootfs-grow.service
-enable
 enable userdata.mount
 enable userdata-ota.mount
 enable aiden-ota-recovery.service
