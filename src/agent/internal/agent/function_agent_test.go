@@ -97,6 +97,46 @@ func TestChoiceWithOnlyToolCallDropsUnexecutedResponsesItems(t *testing.T) {
 	}
 }
 
+func TestChoiceWithOnlyToolCallDropsUnexecutedInteractionsSteps(t *testing.T) {
+	originalSteps := []json.RawMessage{
+		json.RawMessage(`{"type":"thought","signature":"sig_1","summary":[]}`),
+		json.RawMessage(`{"type":"model_output","content":[{"type":"text","text":"working"}]}`),
+		json.RawMessage(`{"type":"function_call","id":"call_1","name":"first","arguments":{}}`),
+		json.RawMessage(`{"type":"function_call","id":"call_2","name":"second","arguments":{}}`),
+	}
+	choice := llms.ContentChoice{
+		ToolCalls: []llms.ToolCall{
+			{ID: "call_1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "first", Arguments: `{}`}},
+			{ID: "call_2", Type: "function", FunctionCall: &llms.FunctionCall{Name: "second", Arguments: `{}`}},
+		},
+		GenerationInfo: map[string]any{
+			"interactions_steps": originalSteps,
+			"marker":             "original",
+		},
+	}
+
+	selected := choiceWithOnlyToolCall(choice, "call_2")
+	steps, ok := selected.GenerationInfo["interactions_steps"].([]json.RawMessage)
+	if !ok || len(steps) != 3 {
+		t.Fatalf("selected Interactions steps = %#v, want thought, model output, and selected call", selected.GenerationInfo["interactions_steps"])
+	}
+	joined := strings.Join([]string{string(steps[0]), string(steps[1]), string(steps[2])}, "\n")
+	if !strings.Contains(joined, `"type":"thought"`) || !strings.Contains(joined, `"type":"model_output"`) {
+		t.Fatalf("selected Interactions steps dropped non-function steps: %s", joined)
+	}
+	if strings.Contains(joined, `"id":"call_1"`) || !strings.Contains(joined, `"id":"call_2"`) {
+		t.Fatalf("selected Interactions steps kept the wrong function call: %s", joined)
+	}
+	selected.GenerationInfo["marker"] = "selected"
+	if choice.GenerationInfo["marker"] != "original" {
+		t.Fatal("original Interactions generation metadata map was mutated")
+	}
+	original, ok := choice.GenerationInfo["interactions_steps"].([]json.RawMessage)
+	if !ok || len(original) != 4 {
+		t.Fatal("original Interactions steps were mutated")
+	}
+}
+
 func TestFunctionAgentParseOutputUsesChoiceContentAsToolContent(t *testing.T) {
 	agent := &FunctionAgent{OutputKey: "output"}
 

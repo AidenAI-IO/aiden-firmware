@@ -114,7 +114,7 @@ function applyModelReasoningSpec(spec){
     if(budgetField)budgetField.classList.add('hidden');
     if(budgetInput)budgetInput.dataset.reasoningBudgetSupport='unknown';
     if(effortInput)hydrateSelectField('model','reasoning_effort',effortInput.value,true);
-    if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,true);
+    if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,false);
     return;
   }
   if(!reasoning.supported){
@@ -122,7 +122,7 @@ function applyModelReasoningSpec(spec){
     if(budgetField)budgetField.classList.add('hidden');
     if(effortInput)effortInput.value='';
     if(budgetInput){budgetInput.dataset.reasoningBudgetSupport='unsupported';budgetInput.value='';}
-    if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,true);
+    if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,false);
     return;
   }
   if(effortField)effortField.classList.remove('hidden');
@@ -143,7 +143,7 @@ function applyModelReasoningSpec(spec){
     else budgetInput.value='';
   }
   if(budgetField)budgetField.classList.toggle('hidden',!hasBudget);
-  if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,true);
+  if(apiModeInput)hydrateSelectField('model','api_mode',apiModeInput.value,false);
 }
 
 const ModelSelector = {

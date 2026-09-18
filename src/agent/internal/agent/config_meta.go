@@ -328,7 +328,7 @@ func ConfigMeta() ConfigMetadata {
 					// PlaceholderWhen overrides it for pinned models and native
 					// Gemini models that defer to Google's default.
 					{Key: "temperature", Label: "Temperature", Widget: WidgetNumber,
-						Help:            "Controls response randomness. Leave empty to use the model's recommended default; 0 is sent as an explicit value.",
+						Help:            "Controls response randomness. Leave empty to use the Agent-selected default; some models defer to their provider default. 0 is sent as an explicit value.",
 						PlaceholderWhen: modelTemperaturePlaceholders(),
 						Default:         defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Label: "Maximum response tokens", Widget: WidgetNumber,

@@ -143,7 +143,9 @@ registerRuntime({
   getActiveLocale: () => 'en-US',
   getRecordSectionFields: () => recordSectionFields,
   getSelectFieldOptions: () => selectFieldOptions,
-  hydrateSelectField(section, key) { hydratedSelectFields.push(section + '.' + key); },
+  hydrateSelectField(section, key, _preferredValue, preserveUnknown) {
+    hydratedSelectFields.push({path: section + '.' + key, preserveUnknown});
+  },
   isSectionEditing: (section) => section === 'model' && modelSectionEditing,
   optionValue: (option) => option.value,
   request: async (url, options) => {
@@ -171,6 +173,7 @@ const {
   rememberModelProvider,
   syncModelProvidersFromConfig,
   editSelectedProvider,
+  refreshCurrentModelReasoningSpec,
   TtsProvidersManager,
   SttProvidersManager,
 } = providersModule.namespace;
@@ -323,8 +326,18 @@ elements.set('model_api_mode', apiModeElement);
 hydratedSelectFields.length = 0;
 await ModelSelector.onProviderChange('openai-main');
 assert.ok(
-  hydratedSelectFields.includes('model.api_mode'),
+  hydratedSelectFields.some((call) => call.path === 'model.api_mode'),
   'switching provider must re-hydrate the api_mode options',
+);
+ModelSelector.modelSpecs[modelInput.value] = {reasoning: {supported: false}};
+refreshCurrentModelReasoningSpec();
+ModelSelector.modelSpecs[modelInput.value] = {reasoning: {supported: true, efforts: ['low']}};
+refreshCurrentModelReasoningSpec();
+const apiModeHydrations = hydratedSelectFields.filter((call) => call.path === 'model.api_mode');
+assert.equal(apiModeHydrations.length, 3, 'all reasoning states must re-hydrate api_mode');
+assert.ok(
+  apiModeHydrations.every((call) => call.preserveUnknown === false),
+  'api_mode hydration must discard values unsupported by the selected provider',
 );
 
 ModelProvidersManager.load({'rename-old': {type: 'openai'}});
