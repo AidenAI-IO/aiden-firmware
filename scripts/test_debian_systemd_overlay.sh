@@ -362,28 +362,46 @@ grep -qx 'User=aiden' "${UNIT_DIR}/aiden-ttyd.service"
 grep -qx 'Group=aiden' "${UNIT_DIR}/aiden-ttyd.service"
 grep -Fxq "IFS= read -r login_user" \
     "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
+grep -Fxq 'SU_BIN=${AIDEN_TTYD_SU_BIN:-/bin/su}' \
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
 grep -Fxq 'if [ -z "${login_user}" ] || ! getent passwd "${login_user}" >/dev/null; then' \
     "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
-grep -Fxq 'exec /bin/su --login -- "${login_user}"' \
+grep -Fxq 'exec "${SU_BIN}" --login -- "${login_user}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
 getent_mock=${TEST_ROOT}/getent
 getent_args=${TEST_ROOT}/getent-args
 cat >"${getent_mock}" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$@" >"${GETENT_ARGS_OUTPUT}"
-exit 2
+exit "${GETENT_RESULT:-2}"
 EOF
 chmod +x "${getent_mock}"
-set +e
-login_output=$(printf '%s\n' 'build$' | \
+if login_output=$(printf '%s\n' 'missing$' | \
     PATH="${TEST_ROOT}:${PATH}" GETENT_ARGS_OUTPUT="${getent_args}" \
-    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login" 2>&1)
-login_status=$?
-set -e
-[ "${login_status}" -eq 1 ]
-[ "${login_output}" = 'login: Invalid login name' ]
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login" 2>&1); then
+    fail "unknown ttyd login account unexpectedly succeeded"
+else
+    login_status=$?
+fi
+[ "${login_status}" -eq 1 ] || fail "unknown ttyd login account returned ${login_status}"
+[ "${login_output}" = 'login: Invalid login name' ] \
+    || fail "unexpected unknown-account output: ${login_output}"
 sed -n '1p' "${getent_args}" | grep -Fxq 'passwd'
-sed -n '2p' "${getent_args}" | grep -Fxq 'build$'
+sed -n '2p' "${getent_args}" | grep -Fxq 'missing$'
+su_mock=${TEST_ROOT}/su
+su_args=${TEST_ROOT}/su-args
+cat >"${su_mock}" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >"${SU_ARGS_OUTPUT}"
+EOF
+chmod +x "${su_mock}"
+printf '%s\n' 'build$' | \
+    GETENT_RESULT=0 AIDEN_TTYD_SU_BIN="${su_mock}" \
+    SU_ARGS_OUTPUT="${su_args}" PATH="${TEST_ROOT}:${PATH}" \
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login" >/dev/null
+grep -Fxq -- '--login' "${su_args}"
+grep -Fxq -- '--' "${su_args}"
+grep -Fxq -- 'build$' "${su_args}"
 grep -Fq 'ENABLE_TTYD=1' "${OVERLAY}/etc/aiden_boot.conf"
 ttyd_mock=${TEST_ROOT}/ttyd-mock
 ttyd_args=${TEST_ROOT}/ttyd-args
