@@ -4,11 +4,9 @@ set -eu
 printf 'login: '
 IFS= read -r login_user
 
-case "${login_user}" in
-    ''|-*|*[!A-Za-z0-9_.-]*)
-        printf 'Invalid login name\r\n' >&2
-        exit 1
-        ;;
-esac
+if [ -z "${login_user}" ] || ! getent passwd "${login_user}" >/dev/null; then
+    printf 'Invalid login name\r\n' >&2
+    exit 1
+fi
 
 exec /bin/su --login -- "${login_user}"

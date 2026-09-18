@@ -362,8 +362,28 @@ grep -qx 'User=aiden' "${UNIT_DIR}/aiden-ttyd.service"
 grep -qx 'Group=aiden' "${UNIT_DIR}/aiden-ttyd.service"
 grep -Fxq "IFS= read -r login_user" \
     "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
+grep -Fxq 'if [ -z "${login_user}" ] || ! getent passwd "${login_user}" >/dev/null; then' \
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
 grep -Fxq 'exec /bin/su --login -- "${login_user}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
+getent_mock=${TEST_ROOT}/getent
+getent_args=${TEST_ROOT}/getent-args
+cat >"${getent_mock}" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >"${GETENT_ARGS_OUTPUT}"
+exit 2
+EOF
+chmod +x "${getent_mock}"
+set +e
+login_output=$(printf '%s\n' 'build$' | \
+    PATH="${TEST_ROOT}:${PATH}" GETENT_ARGS_OUTPUT="${getent_args}" \
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login" 2>&1)
+login_status=$?
+set -e
+[ "${login_status}" -eq 1 ]
+[ "${login_output}" = 'login: Invalid login name' ]
+sed -n '1p' "${getent_args}" | grep -Fxq 'passwd'
+sed -n '2p' "${getent_args}" | grep -Fxq 'build$'
 grep -Fq 'ENABLE_TTYD=1' "${OVERLAY}/etc/aiden_boot.conf"
 ttyd_mock=${TEST_ROOT}/ttyd-mock
 ttyd_args=${TEST_ROOT}/ttyd-args
