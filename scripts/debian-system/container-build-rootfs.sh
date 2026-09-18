@@ -370,6 +370,8 @@ finalize() {
     rm -rf "${WORK_DIR}"
 }
 
+source "${SCRIPT_DIR}/configure-apt-cache.sh"
+configure_apt_cache_proxy "${SNAPSHOT}"
 bootstrap_rootfs
 configure_rootfs
 create_ext4_image

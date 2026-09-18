@@ -423,6 +423,7 @@ MOCK_DOCKER_LOG="${mock_log}" \
 PATH="${TEST_ROOT}/mock-bin:${PATH}" \
 DEBIAN_SYSTEM_OUTPUT_DIR="${mock_output}" \
 DEBIAN_APPS_OUTPUT_DIR="${mock_apps}" \
+DEBIAN_SYSTEM_APT_CACHE_PROXY=http://cache.example:3128 \
     "${SYSTEM_DIR}/build.sh" rootfs
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
 grep -qx -- '--privileged' "${TEST_ROOT}/docker-args.txt"
@@ -432,5 +433,8 @@ grep -qx "${mock_apps}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx 'scripts/debian-system/container-build-rootfs.sh' \
     "${TEST_ROOT}/docker-args.txt"
+grep -qx 'DEBIAN_SYSTEM_APT_CACHE_PROXY=http://cache.example:3128' \
+    "${TEST_ROOT}/docker-args.txt" \
+    || fail "the optional APT cache candidate was not passed to the rootfs container"
 
 echo "Debian system static checks passed"

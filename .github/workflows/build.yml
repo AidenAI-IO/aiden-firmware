@@ -27,6 +27,10 @@ on:
         description: 'Free up disk space before building (hosted runners only)'
         type: boolean
         default: false
+      apt_cache_proxy:
+        description: 'Optional HTTP cache proxy reachable from the rootfs container; defaults to repository variable DEBIAN_SYSTEM_APT_CACHE_PROXY'
+        type: string
+        default: ''
     secrets:
       OTA_ED25519_PRIVATE_KEY:
         required: true
@@ -159,7 +163,7 @@ jobs:
       run: |
         set -uo pipefail
         status=0
-        for policy_test in test_debian_apps test_debian_system test_debian_build; do
+        for policy_test in test_debian_apps test_debian_system test_debian_build test_debian_apt_cache; do
           script="scripts/${policy_test}.sh"
           if [ "$policy_test" = test_debian_build ] && ! command -v jq >/dev/null 2>&1; then
             # jq is required to run the Debian entrypoint contract test. Skipping
@@ -408,28 +412,14 @@ jobs:
           echo "::notice::No pre-provisioned Go toolchain at $go_root; the build will download its own"
         fi
 
-        # Stage 3 fetches ~55 MB per build from snapshot.debian.org, which
-        # rate-limits by source IP: a day of hourly builds got the runners a
-        # 509 on every debootstrap. A squid on the runner serves the immutable
-        # snapshot from cache after the first fill. It is addressed through
-        # the Docker bridge gateway because the rootfs container runs on the
-        # bridge network, where 127.0.0.1 is the container itself.
-        #
-        # http_proxy only, never https_proxy: everything else the build fetches
-        # (GitHub, the Go proxies, OpenCV) is https and must not go through it.
-        apt_cache="http://172.17.0.1:3128"
-        if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$apt_cache/" 2>/dev/null)" != "000" ]; then
-          echo "http_proxy=$apt_cache" >> "$GITHUB_ENV"
-          echo "Using the apt cache at $apt_cache"
-        else
-          echo "::notice::No apt cache at $apt_cache; Stage 3 will fetch from snapshot.debian.org directly"
-        fi
-
     - name: Run Debian firmware build
       id: firmware
       if: ${{ !inputs.dry_run }}
       env:
         RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
+        # The rootfs container validates this candidate against the signed
+        # snapshot metadata before using it. Existing proxies take precedence.
+        DEBIAN_SYSTEM_APT_CACHE_PROXY: ${{ inputs.apt_cache_proxy || vars.DEBIAN_SYSTEM_APT_CACHE_PROXY }}
         OTA_REPO: ${{ github.repository }}
         OTA_CHANNEL: ${{ steps.meta.outputs.channel }}
         OTA_BUILD_VERSION: ${{ steps.meta.outputs.version }}

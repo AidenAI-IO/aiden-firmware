@@ -106,7 +106,7 @@ DEBIAN_APPS_OUTPUT_DIR="${mock_output}" \
 DEBIAN_APPS_GO_ROOT="${TEST_ROOT}/go-root" \
 DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
 DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
-    "${APPS_DIR}/build-apps.sh" apps
+    env -u GOPROXY "${APPS_DIR}/build-apps.sh" apps
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
 grep -qx 'DEBIAN_APPS_BUILD_IMAGE_ID=sha256:mock-builder-image' \
     "${TEST_ROOT}/docker-args.txt"
@@ -136,14 +136,14 @@ fi
 : >"${mock_log}"
 MOCK_DOCKER_LOG="${mock_log}" \
 PATH="${TEST_ROOT}/mock-bin:${PATH}" \
-GOPROXY="https://goproxy.example/,direct" \
+GOPROXY="https://goproxy.example/|https://proxy.golang.org|direct" \
 DEBIAN_APPS_OUTPUT_DIR="${mock_output}" \
 DEBIAN_APPS_GO_ROOT="${TEST_ROOT}/go-root" \
 DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
 DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
     "${APPS_DIR}/build-apps.sh" apps
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/goproxy-docker-args.txt"
-grep -qx 'GOPROXY=https://goproxy.example/,direct' \
+grep -qx 'GOPROXY=https://goproxy.example/|https://proxy.golang.org|direct' \
     "${TEST_ROOT}/goproxy-docker-args.txt" \
     || fail "build-apps.sh did not forward GOPROXY into the apps container"
 
