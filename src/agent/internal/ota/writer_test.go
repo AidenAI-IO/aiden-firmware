@@ -290,6 +290,7 @@ func TestWriterPreservesDefaultLimitsWithPartialOverrides(t *testing.T) {
 	if err := os.WriteFile(src, make([]byte, 32<<20+1), 0o644); err != nil {
 		t.Fatalf("WriteFile(src) error = %v", err)
 	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"rootfs_b": 1}}
 	if err := w.WritePart("boot", SlotB, src); err == nil || !strings.Contains(err.Error(), "larger than partition") {
 		t.Fatalf("partial override oversize error = %v", err)
 	}

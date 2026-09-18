@@ -594,7 +594,7 @@ func TestUpdaterInitializesMissingStateFromFactoryConfig(t *testing.T) {
 	env.config.FactoryVersion = "factory-1"
 	env.config.FactoryBuildTime = "2026-05-21T10:00:00Z"
 	env.config.FactoryPartitionHashes = map[string]map[string]string{
-		"a": {"boot": testHashA, "rootfs": testHashB, "rootfs": testHashC},
+		"a": {"boot": testHashA, "rootfs": testHashC},
 		"b": {"boot": testHashB, "rootfs": testHashA},
 	}
 
