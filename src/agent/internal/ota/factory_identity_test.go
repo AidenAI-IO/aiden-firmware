@@ -207,6 +207,8 @@ func newFactoryIdentityTestEnv(t *testing.T, activeMachineID string, inactiveMac
 		MountInfoPath:        mountInfoPath,
 		BlockDir:             blockDir,
 		DebianMode:           true,
+		DebugfsPath:          requireE2fsprogs(t, "debugfs"),
+		E2fsckPath:           requireE2fsprogs(t, "e2fsck"),
 		MachineIDPath:        persistentPath,
 		RuntimeMachineIDPath: runtimePath,
 		FactoryIdentityPath:  markerPath,
