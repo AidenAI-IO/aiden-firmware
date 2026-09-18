@@ -10,7 +10,7 @@ export RK_BOOTARGS_CMA_SIZE="100M"
 # Keep the established wlan0/usb0 names. The isolated SDK patch appends this
 # value to both slot-specific FIT bootargs.
 export RK_KERNEL_CMDLINE_EXTRA=net.ifnames$'\x3d'0
-export RK_KERNEL_DTS=rv1106g-luckfox-pico-zero.dts
+export RK_KERNEL_DTS=rv1106g-aiden-custom.dts
 
 export RK_BOOT_MEDIUM=emmc
 export RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"
