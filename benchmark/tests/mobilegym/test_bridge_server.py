@@ -450,6 +450,23 @@ def test_setup_timeout_preserves_mobilegym_phase_diagnostic():
         assert "phase=waitForData" in body["error"]["message"]
 
 
+def test_submit_to_state_cancels_work_after_wait_timeout():
+    with RunningBridge() as bridge:
+        cancelled = threading.Event()
+
+        async def wait_forever():
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with pytest.raises(TimeoutError, match="bridge request timed out"):
+            bridge.server.submit_to_state(bridge.state, wait_forever(), timeout=0.01)
+
+        assert cancelled.wait(timeout=1)
+
+
 def test_api_screen_is_removed():
     with RunningBridge() as bridge:
         status, _ = request_text(bridge.base_url, "GET", "/screen")
