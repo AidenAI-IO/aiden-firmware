@@ -55,6 +55,27 @@ the local OTA manifest in one workflow.
 ./debian_build.sh
 ```
 
+### Debian archive mirror
+
+Both builder images and the device rootfs fetch Debian packages from
+`http://mirrors.ustc.edu.cn/debian` and `/debian-security`, declared once in
+`scripts/debian-apps/debian.sources` and `scripts/debian-system/debian.sources`
+(the latter is also installed into the device rootfs, so on-device `apt` uses
+the same mirror; `container-build-rootfs.sh` reads the debootstrap URI from it).
+Plain http is deliberate: apt verifies every InRelease signature against the
+Debian archive keyring, so https adds nothing to package integrity, and it
+keeps the fetches cacheable by an http proxy. Measured from Shanghai,
+`mirrors.aliyun.com` throttles HTTP/1.1 clients such as apt and debootstrap to
+about 300 kB/s (only its HTTP/2 path is fast, which curl-based speed tests
+show and apt never gets), while ustc serves apt at 5-10 MB/s.
+
+This is a live mirror, not a snapshot.debian.org timestamp: `trixie-security`
+moves daily, so two builds of the same commit can differ in package versions.
+Each build records what it consumed in
+`output/debian-system/build-metadata.json` (`debian_mirror`,
+`debian_release_version`, `debian_release_date`, `debian_security_date`) and
+in `packages.txt`.
+
 ### Optional CI APT Cache
 
 The reusable GitHub Actions workflow accepts an `apt_cache_proxy` input, or
@@ -63,7 +84,7 @@ empty. Set it to an HTTP cache proxy URL reachable from the rootfs container,
 such as `http://172.17.0.1:3128` on a runner with that Docker bridge gateway.
 No cache is selected by default, and the workflow does not install a proxy.
 
-The rootfs builder downloads the pinned snapshot's `InRelease` through the
+The rootfs builder downloads the mirror's `trixie` `InRelease` through the
 candidate proxy, verifies its Debian archive signature and checks its codename
 before selecting it. The probe has a 20-second limit. An unavailable or invalid
 cache leaves the original download settings in place. Existing `http_proxy`,

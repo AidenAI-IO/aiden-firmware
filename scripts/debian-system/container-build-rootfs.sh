@@ -11,7 +11,12 @@ readonly MOUNT_DIR=${WORK_DIR}/mnt
 readonly ROOTFS_IMAGE=${OUTPUT_DIR}/rootfs.ext4
 readonly ROOTFS_ARCHIVE=${OUTPUT_DIR}/rootfs.tar.zst
 readonly ROOTFS_CLI_TOOLS_DIR=/rootfs-cli-tools
-readonly SNAPSHOT=http://snapshot.debian.org/archive/debian/20260803T000000Z
+# debian.sources is the single definition of the archive mirrors; debootstrap
+# and the metadata below take their URIs from it. It is a live mirror, not a
+# pinned archive snapshot, so the archive state each build consumed is
+# recorded in build-metadata.json instead.
+readonly DEBIAN_MIRROR=$(sed -n 's/^URIs: //p' "${SCRIPT_DIR}/debian.sources" | sed -n 1p)
+readonly DEBIAN_SECURITY_MIRROR=$(sed -n 's/^URIs: //p' "${SCRIPT_DIR}/debian.sources" | sed -n 2p)
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 readonly ROOTFS_UUID=1d29a2d4-5488-4bea-a648-bf133c4b53d3
 readonly BINFMT_DIR=/proc/sys/fs/binfmt_misc
@@ -84,6 +89,45 @@ ensure_arm_binfmt() {
     fi
 }
 
+check_mirror_uris() {
+    local uri
+    for uri in "${DEBIAN_MIRROR}" "${DEBIAN_SECURITY_MIRROR}"; do
+        case "${uri}" in
+        http://?*/?* | https://?*/?*) ;;
+        *)
+            echo "debian.sources must list an archive URI and a security URI: '${uri}'" >&2
+            exit 1
+            ;;
+        esac
+    done
+}
+
+# apt names a list file after its URI with the scheme dropped and '/' as '_'.
+apt_list_file() {
+    printf '%s\n' "$1" | sed -e 's#^[a-z]*://##' -e 's#/#_#g'
+}
+
+# A live mirror moves under the build, so keep the InRelease Version and Date
+# of what this build actually consumed. They are read right after the chroot
+# apt-get update because configure_rootfs() removes the apt lists.
+inrelease_field() {
+    local release_uri=$1 field=$2 inrelease value
+    inrelease=${ROOTFS_DIR}/var/lib/apt/lists/$(apt_list_file "${release_uri}/InRelease")
+    value=$(grep -m1 "^${field}: " "${inrelease}" 2>/dev/null | cut -d' ' -f2-)
+    if [ -z "${value}" ]; then
+        echo "InRelease has no ${field} field: ${inrelease}" >&2
+        exit 1
+    fi
+    printf '%s\n' "${value}"
+}
+
+record_archive_state() {
+    DEBIAN_RELEASE_VERSION=$(inrelease_field "${DEBIAN_MIRROR}/dists/trixie" Version)
+    DEBIAN_RELEASE_DATE=$(inrelease_field "${DEBIAN_MIRROR}/dists/trixie" Date)
+    DEBIAN_SECURITY_DATE=$(inrelease_field \
+        "${DEBIAN_SECURITY_MIRROR}/dists/trixie-security" Date)
+}
+
 bootstrap_rootfs() {
     rm -rf "${WORK_DIR}"
     mkdir -p "${ROOTFS_DIR}" "${MOUNT_DIR}"
@@ -92,7 +136,7 @@ bootstrap_rootfs() {
         --arch=armhf \
         --variant=minbase \
         --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
-        trixie "${ROOTFS_DIR}" "${SNAPSHOT}"
+        trixie "${ROOTFS_DIR}" "${DEBIAN_MIRROR}"
 
     rm -f "${ROOTFS_DIR}/etc/apt/sources.list"
     install -d -m 0755 "${ROOTFS_DIR}/etc/apt/sources.list.d" \
@@ -113,6 +157,7 @@ EOF
     chroot "${ROOTFS_DIR}" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
         apt-get update
+    record_archive_state
     chroot "${ROOTFS_DIR}" /bin/sh -ec \
         'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-system-packages.list | xargs)'
     chroot "${ROOTFS_DIR}" /usr/bin/env \
@@ -343,7 +388,10 @@ write_metadata() {
 {
   "architecture": "armhf",
   "build_image_id": "${DEBIAN_SYSTEM_BUILD_IMAGE_ID:-unknown}",
-  "debian_snapshot": "20260803T000000Z",
+  "debian_mirror": "${DEBIAN_MIRROR}",
+  "debian_release_date": "${DEBIAN_RELEASE_DATE:?record_archive_state must run first}",
+  "debian_release_version": "${DEBIAN_RELEASE_VERSION}",
+  "debian_security_date": "${DEBIAN_SECURITY_DATE}",
   "hardware_demo_commit": "${app_commit}",
   "packages_sha256": "${packages_sha}",
   "pico_sdk_commit": "${source_commit}",
@@ -370,8 +418,9 @@ finalize() {
     rm -rf "${WORK_DIR}"
 }
 
+check_mirror_uris
 source "${SCRIPT_DIR}/configure-apt-cache.sh"
-configure_apt_cache_proxy "${SNAPSHOT}"
+configure_apt_cache_proxy "${DEBIAN_MIRROR}"
 bootstrap_rootfs
 configure_rootfs
 create_ext4_image

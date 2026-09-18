@@ -33,11 +33,16 @@ grep -Fq 'signal(SIGTERM, signal_handler)' "${REPO_ROOT}/src/example_audio_captu
 grep -Fq 'chown "${SUDO_UID}:${SUDO_GID}" "${RESULTS_ROOT}"' \
     "${APPS_DIR}/board-g0-remote.sh"
 
-grep -q 'snapshot.debian.org/archive/debian/20260803T000000Z' \
-    "${APPS_DIR}/debian.sources"
-grep -q 'snapshot.debian.org/archive/debian-security/20260803T000000Z' \
-    "${APPS_DIR}/debian.sources"
-grep -q '^Check-Valid-Until: no$' "${APPS_DIR}/debian.sources"
+# Plain http on purpose: apt verifies InRelease signatures itself, and this
+# mirror serves HTTP/1.1 clients such as apt at full speed (mirrors.aliyun.com
+# throttles HTTP/1.1 to ~300 kB/s; only its HTTP/2 path is fast).
+grep -qx 'URIs: http://mirrors.ustc.edu.cn/debian' "${APPS_DIR}/debian.sources" \
+    || fail "apps builder does not fetch the Debian archive from mirrors.ustc.edu.cn"
+grep -qx 'URIs: http://mirrors.ustc.edu.cn/debian-security' "${APPS_DIR}/debian.sources" \
+    || fail "apps builder does not fetch debian-security from mirrors.ustc.edu.cn"
+if grep -q '^Check-Valid-Until:' "${APPS_DIR}/debian.sources"; then
+    fail "a live mirror must keep the InRelease Valid-Until check"
+fi
 grep -q 'builder-packages.txt' "${APPS_DIR}/container-build-apps.sh"
 grep -q 'GOOS=linux GOARCH=arm GOARM=7' \
     "${APPS_DIR}/container-build-apps.sh"

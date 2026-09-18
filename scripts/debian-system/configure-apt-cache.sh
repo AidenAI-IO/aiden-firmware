@@ -3,7 +3,7 @@
 # Sourced in the rootfs builder so the probe uses the actual build network.
 # Only http_proxy is selected here; HTTPS downloads keep their own settings.
 configure_apt_cache_proxy() {
-    local snapshot=$1
+    local mirror=$1
     local candidate=${DEBIAN_SYSTEM_APT_CACHE_PROXY:-}
     local metadata
 
@@ -27,7 +27,7 @@ configure_apt_cache_proxy() {
     if http_proxy="${candidate}" HTTP_PROXY= all_proxy= ALL_PROXY= \
         no_proxy= NO_PROXY= \
         timeout 20 wget --quiet --timeout=5 --tries=1 --max-redirect=5 \
-            -O "${metadata}" "${snapshot}/dists/trixie/InRelease" \
+            -O "${metadata}" "${mirror}/dists/trixie/InRelease" \
         && gpgv --keyring /usr/share/keyrings/debian-archive-keyring.gpg \
             "${metadata}" >/dev/null 2>&1 \
         && grep -qx 'Codename: trixie' "${metadata}"; then
