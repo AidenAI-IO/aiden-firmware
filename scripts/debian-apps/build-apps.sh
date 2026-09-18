@@ -107,6 +107,8 @@ run_container_script() {
     # proxy.golang.org, which the self-hosted builders cannot resolve. Build
     # inputs that would change output (GOFLAGS) and the container-local
     # GOCACHE/GOMODCACHE/GOPATH/GOTOOLCHAIN are deliberately not forwarded.
+    # Submodule core.worktree paths are resolved from the host Git metadata.
+    # Preserve the checkout's absolute path as well as the /work build alias.
     docker run --rm \
         -u "$(id -u):$(id -g)" \
         -e "DEBIAN_APPS_OUTPUT_DIR=/out" \
@@ -119,6 +121,7 @@ run_container_script() {
         -e GOSUMDB \
         -e GONOSUMDB \
         -v "${REPO_ROOT}:/work" \
+        -v "${REPO_ROOT}:${REPO_ROOT}:ro" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${OUTPUT_DIR}:/out" \
         -v "${GO_ROOT}:/usr/local/go:ro" \

@@ -39,6 +39,10 @@ Build and audit the Debian armhf application bundle with:
 scripts/debian-apps/build-apps.sh all
 ```
 
+Git worktrees are supported. Build containers mount the checkout at both `/work`
+and its host path so Git can resolve the SDK submodule's `core.worktree` path
+when recording source provenance.
+
 This workflow will:
 
 1. Build the pinned Debian armhf toolchain container and opencv-mobile;

@@ -168,6 +168,7 @@ run_rootfs_container() {
         -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -e "PICO_SDK_COMMIT=${sdk_commit}" \
         -v "${REPO_ROOT}:/work:ro" \
+        -v "${REPO_ROOT}:${REPO_ROOT}:ro" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${SDK_DIR}:/sdk:ro" \
         -v "${OUTPUT_DIR}:/out" \

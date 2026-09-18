@@ -898,7 +898,7 @@ func TestUpdaterRejectsStaleTargetSlotForSelectiveUpdate(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	env.state.Slots["b"] = SlotPartitionInfo{Partitions: map[string]PartitionVersion{
 		"boot":   {Version: "factory", Hash: testHashA},
-		"rootfs": {Version: "factory", Hash: testHashA},
+		"rootfs": {Version: "older", Hash: testHashB},
 	}}
 	env.saveState(t)
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2")}, func(m *Manifest) {
