@@ -133,6 +133,36 @@ handlers share that budget so a hung env fails at the caller instead of
 continuing after the client has already given up. Action and setup requests
 may use a longer timeout.
 
+### `POST /state` and `POST /route`
+
+Environments that support deterministic state judging may expose a final state
+snapshot and the foreground route. Both requests use an empty JSON object and
+the same `benchmark-task-id` header as setup and provider calls.
+
+```json
+{"ok": true, "data": {"apps": {"scroll_lab": {"selectedItemId": "scroll-item-083"}}}}
+```
+
+```json
+{"ok": true, "data": {"app": "scroll_lab", "path": "/item/scroll-item-083"}}
+```
+
+The runner reads these endpoints only when a task declares
+`environment_assertions`. It combines both payloads so assertions can use dotted
+paths such as `apps.scroll_lab.selectedItemId` and `route.path`. A scalar value
+is compared by exact equality. An object whose keys are a subset of
+`{"min", "max"}` is treated as an inclusive numeric band, so a suite can assert
+a measured position without hard-coding one exact value:
+
+```json
+{
+  "apps.scroll_lab.firstVisibleOrdinal": {"min": 4, "max": 10}
+}
+```
+
+A state read failure is reported as `judge_error`; a successfully-read value
+mismatch is a deterministic task failure.
+
 ### `POST /api/providers/mnk`
 
 Executes one mouse/keyboard provider operation. Requests use the normalized
@@ -159,14 +189,16 @@ Optional request body:
 {
   "episode_id": "task-episode",
   "setup_token": "optional-idempotency-token",
-  "app_ids": ["settings"]
+  "app_ids": ["settings"],
+  "foreground_app_id": "settings"
 }
 ```
 
 `app_ids` is optional environment metadata. MobileGym uses it to preload only
-the data loaders required by the task. An omitted or empty list skips eager app
-data loading; apps still load their own data when opened. This avoids loading
-every registered app during each task reset.
+the named apps; an omitted or empty list skips eager loading. Apps still load
+their own data when opened. `foreground_app_id` is an optional exact app ID to
+open after reset; it is not inferred from the preload list. A failed launch
+fails setup.
 
 For bridges that do not need setup, return success with `setup: false`.
 

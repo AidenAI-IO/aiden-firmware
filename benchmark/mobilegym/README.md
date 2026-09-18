@@ -137,6 +137,11 @@ benchmark/mobilegym/
 }
 ```
 
+Use `benchmark/suites/mobilegym_scroll_regression.json` for the two fixed
+Scroll Lab targets (positions 24 and 83). Final selection and irreversible
+scroll overshoot are checked through `/state` and `/route`. The 100-depth
+`mobilegym_scroll_sweep.json` is optional calibration, not the regression gate.
+
 ## 🔧 配置说明
 
 ### Environment Bridge 模式

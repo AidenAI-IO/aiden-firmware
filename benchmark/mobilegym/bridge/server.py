@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.parse
 import uuid
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -59,6 +60,31 @@ def _setup_app_ids(payload: dict[str, Any]) -> list[str]:
     ):
         raise ValueError("app_ids must be a list of non-empty strings")
     return list(dict.fromkeys(item.strip() for item in value))
+
+
+def _foreground_app_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("foreground_app_id")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ValueError("foreground_app_id must be a non-empty app ID")
+    return value
+
+
+async def _foreground_app(env: Any, app_id: str) -> None:
+    page = getattr(env, "page", None)
+    if page is None:
+        raise RuntimeError("environment does not expose a browser page")
+    await page.evaluate(
+        """(appId) => {
+            const apps = window.__SIM__?.getState?.()?.os?.installedApps || [];
+            if (!apps.some(app => app.id === appId)) throw new Error(`app is not installed: ${appId}`);
+            if (!window.__OS__?.openApp) throw new Error('window.__OS__.openApp is unavailable');
+            window.__OS__.openApp(appId, '/');
+        }""",
+        app_id,
+    )
+    await asyncio.sleep(0.8)
 
 
 class BridgeServer:
@@ -113,11 +139,29 @@ class BridgeServer:
 
     def submit(self, coro: Any, *, timeout: float | None = None) -> Any:
         future = asyncio.run_coroutine_threadsafe(coro, self.state.owner_loop)
-        return future.result(timeout=self.request_timeout_sec if timeout is None else timeout)
+        return _future_result(
+            future,
+            self.request_timeout_sec if timeout is None else timeout,
+        )
 
     def submit_to_state(self, state: BridgeEpisodeState, coro: Any, *, timeout: float | None = None) -> Any:
         future = asyncio.run_coroutine_threadsafe(coro, state.owner_loop)
-        return future.result(timeout=self.request_timeout_sec if timeout is None else timeout)
+        return _future_result(
+            future,
+            self.request_timeout_sec if timeout is None else timeout,
+        )
+
+
+def _future_result(future: Any, timeout: float) -> Any:
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError as exc:
+        # A completed coroutine may itself raise TimeoutError with useful phase
+        # diagnostics. Only cancel when the caller stopped waiting first.
+        if future.done():
+            raise
+        future.cancel()
+        raise TimeoutError("bridge request timed out") from exc
 
 
 def _handler_for(bridge: BridgeServer):
@@ -204,17 +248,24 @@ def _handler_for(bridge: BridgeServer):
             task_id = benchmark_task_id_from_headers(self.headers)
             setup_token = setup_token_from_payload(payload)
             app_ids = _setup_app_ids(payload)
+            foreground_app_id = _foreground_app_id(payload)
 
             def setup() -> dict[str, Any]:
                 state = bridge.router.state_for_task_id(task_id)
-                return bridge.submit_to_state(
+                result = bridge.submit_to_state(
                     state,
                     state.reset_episode(episode_id, app_ids=app_ids),
                 )
+                if foreground_app_id:
+                    bridge.submit_to_state(
+                        state,
+                        state.run_env(lambda env: _foreground_app(env, foreground_app_id)),
+                    )
+                return result
 
             if setup_token:
                 result = bridge.setup_tokens.run(
-                    (task_id, setup_token, tuple(app_ids)),
+                    (task_id, setup_token, tuple(app_ids), foreground_app_id),
                     setup,
                 )
             else:
@@ -395,7 +446,16 @@ def _health_payload(bridge: BridgeServer) -> dict[str, Any]:
         "concurrent": len(bridge.router.states),
         "active_episode_id": bridge.state.active_episode_id,
         "active_routes": bridge.router.task_map(),
-        "interfaces": ["/api/tools", "/api/providers/screenshot", "/api/providers/mnk", "/api/setup", "/api/release", "/api/concurrent"],
+        "interfaces": [
+            "/api/tools",
+            "/api/providers/screenshot",
+            "/api/providers/mnk",
+            "/api/setup",
+            "/state",
+            "/route",
+            "/api/release",
+            "/api/concurrent",
+        ],
     }
 
 
