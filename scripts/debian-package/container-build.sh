@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 readonly REPO_ROOT=/work APPS_DIR=/apps OUTPUT_DIR=/out
+source "${REPO_ROOT}/scripts/debian-package/version.sh"
 readonly PKG_ROOT=${OUTPUT_DIR}/package-root
-readonly VERSION=${AIDEN_BUSINESS_VERSION:-0.0.0}
-readonly REVISION=${AIDEN_BUSINESS_REVISION:-1}
+readonly VERSION=${AIDEN_BUSINESS_VERSION}
+readonly REVISION=${AIDEN_BUSINESS_REVISION}
 readonly PACKAGE_VERSION=${VERSION}-${REVISION}
 readonly PACKAGE_NAME=aiden-business
 rm -rf "${PKG_ROOT}" "${OUTPUT_DIR}/${PACKAGE_NAME}_"*.deb
@@ -36,10 +37,13 @@ if [ "$1" = configure ] && command -v systemctl >/dev/null 2>&1; then systemctl 
 exit 0
 POST
 chmod 0755 "${PKG_ROOT}/DEBIAN/postinst"
-printf '%s\n' "{\"format\":1,\"product\":\"aiden\",\"artifact_kind\":\"debian-package\",\"package\":\"${PACKAGE_NAME}\",\"business_release\":\"${VERSION}\",\"package_revision\":\"${REVISION}\",\"architecture\":\"armhf\",\"required_platform_contract\":{\"min\":\"3.0.0\",\"max_exclusive\":\"4.0.0\"},\"config_schema\":{\"min_supported\":3,\"target\":4},\"business_epoch\":1}" >"${PKG_ROOT}/usr/share/doc/${PACKAGE_NAME}/release-manifest.json"
+printf '%s\n' "{\"format\":1,\"product\":\"aiden\",\"artifact_kind\":\"debian-package\",\"package\":\"${PACKAGE_NAME}\",\"business_release\":\"${VERSION}\",\"package_revision\":\"${REVISION}\",\"architecture\":\"armhf\",\"required_platform_contract\":{\"min\":\"1.0.0\",\"max_exclusive\":\"2.0.0\"},\"config_schema\":{\"min_supported\":3,\"target\":4},\"business_epoch\":1}" >"${PKG_ROOT}/usr/share/doc/${PACKAGE_NAME}/release-manifest.json"
 find "${PKG_ROOT}" -type d -exec chmod 0755 {} +
 find "${PKG_ROOT}" -type f ! -path '*/DEBIAN/*' -exec chmod 0644 {} +
 for binary in agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd; do chmod 0755 "${PKG_ROOT}/usr/lib/aiden/${binary}"; done
 dpkg-deb --build --root-owner-group "${PKG_ROOT}" "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb"
 dpkg-deb --info "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" >"${OUTPUT_DIR}/${PACKAGE_NAME}.deb.info"
 dpkg-deb --contents "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" >"${OUTPUT_DIR}/${PACKAGE_NAME}.deb.contents"
+chown "${HOST_UID:-0}:${HOST_GID:-0}" \
+    "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" \
+    "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.info" "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.contents"

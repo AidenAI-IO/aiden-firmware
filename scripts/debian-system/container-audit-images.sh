@@ -148,6 +148,11 @@ audit_rootfs_cli_tools() {
 }
 
 audit_rootfs() {
+    grep -qx 'LANG=C.UTF-8' "${ROOTFS_MOUNT}/etc/default/locale" \
+        || fail "default UTF-8 locale is missing"
+    cmp "${REPO_ROOT}/overlay-debian/usr/lib/aiden/platform/contract.json" \
+        "${ROOTFS_MOUNT}/usr/lib/aiden/platform/contract.json" \
+        || fail "platform contract does not match the base image"
     grep -qx 'status=pass' "${OUTPUT_DIR}/rootfs-import-audit.txt" \
         || fail "rootfs import attribute audit did not pass"
     test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}")" = 0:0:755 \

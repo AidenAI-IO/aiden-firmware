@@ -48,6 +48,8 @@ jobs:
           bash scripts/test_ota_manifest_generation.sh
           bash scripts/test_github_release_upload.sh
           bash scripts/test_reusable_rootfs_release_asset.sh
+          bash scripts/test_debian_package.sh
+          python3 scripts/test_debian_package_release.py
       - name: Verify normalized UI coordinates
         run: |
           python3 scripts/check_normalized_coords.py

@@ -3,7 +3,7 @@ set -euo pipefail
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 - "${REPO_ROOT}" <<'PYTHON'
 from pathlib import Path
-import re, sys
+import json, re, sys
 root = Path(sys.argv[1])
 def read(name): return (root/name).read_text()
 board = read('scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk')
@@ -22,6 +22,10 @@ for unit, number in [('userdata.mount',9),('userdata-ota.mount',10)]:
 assert not (root/'overlay-debian-oem').exists()
 assert not (root/'overlay-debian/oem').exists()
 assert not (root/'overlay-debian/etc/systemd/system/oem.mount').exists()
+assert read('overlay-debian/etc/default/locale') == 'LANG=C.UTF-8\n'
+contract = json.loads(read('overlay-debian/usr/lib/aiden/platform/contract.json'))
+assert contract['platform_contract'] == '1.0.0'
+assert contract['architecture'] == 'armhf'
 for line in read('overlay-debian/etc/systemd/system-preset/90-aiden.preset').splitlines():
     line = line.strip()
     if not line or line.startswith('#'): continue

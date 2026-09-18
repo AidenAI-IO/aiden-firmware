@@ -59,6 +59,11 @@ the local OTA manifest in one workflow.
 ./debian_build.sh
 ```
 
+To build and stage only the business `.deb` (default `0.0.1-1`), run
+`scripts/debian-package/release.sh build` on Linux amd64. See
+[Debian business package](../08-ota/debian-package.md) for independent GitHub
+Release publication and installation.
+
 ## macOS Apple Silicon + Colima
 
 On Apple Silicon, it's recommended to use a native `aarch64` Colima VM and run the Luckfox image via Docker with `--platform linux/amd64`:
