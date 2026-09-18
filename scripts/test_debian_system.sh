@@ -29,6 +29,34 @@ bash -n \
     "${SYSTEM_DIR}/container-assemble-images.sh" \
     "${SYSTEM_DIR}/container-install-ota-config.sh" \
     "${SYSTEM_DIR}/container-audit-images.sh"
+
+bsp_image_mock_bin=${TEST_ROOT}/bsp-image-mock-bin
+bsp_image_mock_log=${TEST_ROOT}/bsp-image-docker.log
+bsp_image_state=${TEST_ROOT}/bsp-image-present
+mkdir -p "${bsp_image_mock_bin}"
+cat >"${bsp_image_mock_bin}/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${MOCK_DOCKER_LOG}"
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+    [ -e "${MOCK_DOCKER_IMAGE_STATE}" ] || exit 1
+    printf 'sha256:mock-bsp-builder\n'
+elif [ "${1:-}" = pull ]; then
+    : >"${MOCK_DOCKER_IMAGE_STATE}"
+fi
+EOF
+chmod +x "${bsp_image_mock_bin}/docker"
+MOCK_DOCKER_LOG="${bsp_image_mock_log}" \
+MOCK_DOCKER_IMAGE_STATE="${bsp_image_state}" \
+PATH="${bsp_image_mock_bin}:${PATH}" \
+    bash -c 'set -euo pipefail
+source "$1"
+ensure_bsp_build_image
+ensure_bsp_build_image' _ "${SYSTEM_DIR}/build.sh"
+[ "$(grep -Fc 'pull luckfoxtech/luckfox_pico:1.0' \
+    "${bsp_image_mock_log}")" -eq 1 ] \
+    || fail "a missing BSP builder image is not pulled exactly once"
+
 PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
     "${SYSTEM_DIR}/canonicalize-ext4.py" \
     "${SYSTEM_DIR}/canonicalize-bsp.py" \
@@ -425,6 +453,7 @@ MOCK_DOCKER_LOG="${mock_log}" \
 PATH="${TEST_ROOT}/mock-bin:${PATH}" \
 DEBIAN_SYSTEM_OUTPUT_DIR="${mock_output}" \
 DEBIAN_APPS_OUTPUT_DIR="${mock_apps}" \
+DEBIAN_SYSTEM_APT_CACHE_PROXY=http://cache.example:3128 \
     "${SYSTEM_DIR}/build.sh" rootfs
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
 grep -qx -- '--privileged' "${TEST_ROOT}/docker-args.txt"
@@ -434,5 +463,8 @@ grep -qx "${mock_apps}/rootfs-cli-tools:/rootfs-cli-tools:ro" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx 'scripts/debian-system/container-build-rootfs.sh' \
     "${TEST_ROOT}/docker-args.txt"
+grep -qx 'DEBIAN_SYSTEM_APT_CACHE_PROXY=http://cache.example:3128' \
+    "${TEST_ROOT}/docker-args.txt" \
+    || fail "the optional APT cache candidate was not passed to the rootfs container"
 
 echo "Debian system static checks passed"

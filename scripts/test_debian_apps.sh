@@ -105,6 +105,27 @@ printf '%s\0' "$@" >>"${MOCK_DOCKER_LOG}"
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
     printf 'sha256:mock-builder-image\n'
 fi
+if [ "${1:-}" = run ]; then
+    # Record the environment Docker would pass for both -e NAME=value and
+    # -e NAME. Keep the raw argument log separate for mount/command checks.
+    : >"${MOCK_DOCKER_LOG}.env"
+    previous=
+    for argument in "$@"; do
+        if [ "${previous}" = -e ]; then
+            case "${argument}" in
+            *=*) printf '%s\0' "${argument}" >>"${MOCK_DOCKER_LOG}.env" ;;
+            *)
+                if [ "${!argument+x}" = x ]; then
+                    printf '%s\0' "${argument}=${!argument}" >>"${MOCK_DOCKER_LOG}.env"
+                fi
+                ;;
+            esac
+            previous=
+        else
+            previous=${argument}
+        fi
+    done
+fi
 EOF
 chmod +x "${TEST_ROOT}/mock-bin/docker"
 
@@ -116,7 +137,7 @@ DEBIAN_APPS_OUTPUT_DIR="${mock_output}" \
 DEBIAN_APPS_GO_ROOT="${TEST_ROOT}/go-root" \
 DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
 DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
-    "${APPS_DIR}/build-apps.sh" apps
+    env -u GOPROXY "${APPS_DIR}/build-apps.sh" apps
 tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/docker-args.txt"
 grep -qx 'DEBIAN_APPS_BUILD_IMAGE_ID=sha256:mock-builder-image' \
     "${TEST_ROOT}/docker-args.txt"
@@ -133,6 +154,30 @@ grep -qx "${TEST_ROOT}/go-mod-cache:/go-mod-cache" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx 'scripts/debian-apps/container-build-apps.sh' \
     "${TEST_ROOT}/docker-args.txt"
+# Bare -e GOPROXY flags must leave it undefined when the caller has not set
+# it. Inspect the effective environment rather than just the argument names.
+tr '\0' '\n' <"${mock_log}.env" >"${TEST_ROOT}/docker-env.txt"
+if grep -q '^GOPROXY=' "${TEST_ROOT}/docker-env.txt"; then
+    fail "build-apps.sh forwarded a GOPROXY that was not set"
+fi
+
+# With one set, the container must receive it verbatim: a cold module cache
+# otherwise downloads straight from proxy.golang.org, which the self-hosted
+# runners cannot reliably reach.
+: >"${mock_log}"
+MOCK_DOCKER_LOG="${mock_log}" \
+PATH="${TEST_ROOT}/mock-bin:${PATH}" \
+GOPROXY="https://goproxy.example/|https://proxy.golang.org|direct" \
+DEBIAN_APPS_OUTPUT_DIR="${mock_output}" \
+DEBIAN_APPS_GO_ROOT="${TEST_ROOT}/go-root" \
+DEBIAN_APPS_GO_BUILD_CACHE="${TEST_ROOT}/go-build-cache" \
+DEBIAN_APPS_GO_MODULE_CACHE="${TEST_ROOT}/go-mod-cache" \
+    "${APPS_DIR}/build-apps.sh" apps
+tr '\0' '\n' <"${mock_log}" >"${TEST_ROOT}/goproxy-docker-args.txt"
+tr '\0' '\n' <"${mock_log}.env" >"${TEST_ROOT}/goproxy-docker-env.txt"
+grep -qx 'GOPROXY=https://goproxy.example/|https://proxy.golang.org|direct' \
+    "${TEST_ROOT}/goproxy-docker-env.txt" \
+    || fail "build-apps.sh did not forward GOPROXY into the apps container"
 
 : >"${mock_log}"
 MOCK_DOCKER_LOG="${mock_log}" \
