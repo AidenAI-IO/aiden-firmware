@@ -665,12 +665,14 @@ def generate_report_html(run_dir: Path) -> str:
         status = t["status"]
         badge_cls = "pass" if status == "passed" else "fail" if status in {"failed", "timeout", "judge_error"} else "skip"
         badge_label = "Pass" if status == "passed" else "Fail" if status == "failed" else status.title()
+        tool_calls = t.get('tool_calls_count')
+        tool_calls_str = str(int(tool_calls)) if tool_calls is not None else "0"
         rows_html += f"""<tr data-task="{i}">
   <td><span class="task-id">{_esc(t['id'])}</span></td>
   <td>{_esc(t['category'])}</td>
   <td><span class="badge {badge_cls}">{badge_label}</span></td>
   <td class="mono">{t['rubric_pass']}/{t['rubric_total']}</td>
-  <td class="mono">{int(t['tool_calls_count'])}</td>
+  <td class="mono">{tool_calls_str}</td>
   <td class="mono">{_fmt_time_ms(t['wall_ms'])}</td>
 </tr>\n"""
 
