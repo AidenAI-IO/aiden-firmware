@@ -185,6 +185,40 @@ func TestLookupModelSpecDoubaoSeedDefaults(t *testing.T) {
 	}
 }
 
+// TestLookupModelSpecGeminiTemperatureDefaults guards the Gemini 3 temperature
+// pin. Google documents 1.0 as the default for these models and warns that a
+// lower value may cause looping or degraded reasoning, so the spec must not fall
+// through to the global 0.2 fallback. Gemini 2.5 has no documented constant and
+// stays unpinned.
+func TestLookupModelSpecGeminiTemperatureDefaults(t *testing.T) {
+	tests := []struct {
+		provider string
+		model    string
+		want     *float64
+	}{
+		{provider: "gemini", model: "gemini-3.8-flash", want: floatPtr(1)},
+		{provider: "gemini", model: "gemini-3.7-flash", want: floatPtr(1)},
+		{provider: "gemini", model: "gemini-3.6-flash", want: floatPtr(1)},
+		{provider: "gemini", model: "gemini-3.5-flash", want: floatPtr(1)},
+		{provider: "gemini", model: "gemini-3.5-pro", want: floatPtr(1)},
+		// Routed through OpenRouter the pin must survive the provider-prefixed id.
+		{provider: "openrouter", model: "google/gemini-3.8-flash", want: floatPtr(1)},
+		{provider: "gemini", model: "gemini-2.5-flash", want: nil},
+		{provider: "gemini", model: "gemini-2.5-pro", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {
+			spec, ok := LookupModelSpec(tt.provider, tt.model)
+			if !ok {
+				t.Fatalf("LookupModelSpec(%q, %q): expected ok", tt.provider, tt.model)
+			}
+			if !floatPtrEqual(spec.DefaultTemperature, tt.want) {
+				t.Errorf("DefaultTemperature = %v, want %v", formatFloatPtr(spec.DefaultTemperature), formatFloatPtr(tt.want))
+			}
+		})
+	}
+}
+
 func TestLookupModelSpecCaseInsensitive(t *testing.T) {
 	spec, ok := LookupModelSpec("OpenRouter", "GOOGLE/Gemini-3.5-Flash")
 	if !ok {

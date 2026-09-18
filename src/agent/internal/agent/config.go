@@ -847,8 +847,9 @@ type ModelConfig struct {
 	ResponsesInclude []string `toml:"responses_include,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
-	// (see applyModelTemperatureDefault); an explicit value, including 0, is
-	// always honored and sent to the provider.
+	// or left to providers whose defaults Aiden does not know (see
+	// applyModelTemperatureDefault). An explicit value, including 0, is always
+	// honored and sent to the provider.
 	Temperature       *float64 `toml:"temperature,omitempty"`
 	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool     `toml:"log_raw_http,omitempty"`
@@ -1034,12 +1035,14 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 }
 
 // applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
-// the model when the user has not set it. The default is sourced
-// from the model's metadata (some models, e.g. Kimi K3, require a fixed
-// temperature) and falls back to defaultModelTemperature. An explicit
-// model.temperature always takes precedence. This is only called in
-// LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps temperature unset
-// so the editor displays empty and saves without baking defaults into agent.toml.
+// the model when the user has not set it. The default is sourced from the
+// model's metadata (some models, e.g. Kimi K3, require a fixed temperature).
+// Native Gemini models without a documented default stay unset so Google can
+// choose the model default; other providers fall back to
+// defaultModelTemperature. An explicit model.temperature always takes
+// precedence. This is only called in LoadRuntimeConfig; LoadResolvedConfig
+// (config editor) keeps temperature unset so the editor displays empty and saves
+// without baking defaults into agent.toml.
 func applyRuntimeModelTemperatureDefaults(cfg *Config) {
 	if cfg == nil {
 		return
@@ -1055,6 +1058,14 @@ func applyModelTemperatureDefault(m *ModelConfig) {
 		// Copy the value rather than aliasing the registry pointer.
 		temp := *spec.DefaultTemperature
 		m.Temperature = &temp
+		return
+	}
+	// Some native providers recommend using each model's own default. If the
+	// model registry has no reliable value for one of those providers, omit
+	// temperature rather than substituting Aiden's cross-provider fallback. The
+	// provider has already been resolved by applyRuntimeModelProviders, including
+	// named provider records.
+	if modelProviderUsesProviderTemperatureDefault(m.Provider) {
 		return
 	}
 	temp := defaultModelTemperature

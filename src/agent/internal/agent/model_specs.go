@@ -52,16 +52,27 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// low/medium/high; 3.6 and 3.5 Flash additionally take minimal. No Gemini
 	// model here can disable thinking, so none set CanDisable. Pin low on the
 	// current Flash models to keep voice interactions responsive.
-	"google/gemini-3.8-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
-	"gemini-3.8-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
-	"google/gemini-3.7-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
-	"gemini-3.7-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
-	"google/gemini-3.6-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
-	"gemini-3.6-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
-	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
-	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
-	"google/gemini-3.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536},
-	"gemini-3.5-pro":          {ContextWindow: 1_048_576, MaxOutput: 65_536},
+	//
+	// The Gemini 3 models pin DefaultTemperature to their documented default of
+	// 1.0. Google strongly recommends leaving temperature there for all Gemini 3
+	// models, warning that setting it below 1.0 may cause looping or degraded
+	// performance on complex reasoning and math tasks. Without this pin the
+	// global defaultModelTemperature (0.2) applies, so every request would ship
+	// the exact value Google advises against. The 2.5 models are deliberately
+	// left unpinned: their default is per-model metadata reported by models.get
+	// rather than a documented constant, and Google's migration note treats an
+	// explicit low temperature on 2.5 as a legitimate prior pattern. An explicit
+	// model.temperature still wins for every entry.
+	"google/gemini-3.8-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
+	"gemini-3.8-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
+	"google/gemini-3.7-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
+	"gemini-3.7-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
+	"google/gemini-3.6-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
+	"gemini-3.6-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
+	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
+	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1), Reasoning: effortReasoning([]string{"minimal", "low", "medium", "high"}, false)},
+	"google/gemini-3.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1)},
+	"gemini-3.5-pro":          {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultTemperature: floatPtr(1)},
 	"google/gemini-2.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
 	"gemini-2.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},
 	"google/gemini-2.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536, DefaultReasoningEffort: stringPtr("low"), Reasoning: effortReasoning([]string{"low", "medium", "high"}, false)},

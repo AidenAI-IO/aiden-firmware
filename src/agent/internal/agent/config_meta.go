@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"sort"
+
 	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agent/tts"
 )
@@ -79,6 +81,53 @@ func realtimeProviderPlaceholders(field string) []ConditionalPlaceholder {
 	return placeholders
 }
 
+// modelTemperaturePlaceholders derives the temperature placeholder from the
+// model spec registry so the editor advertises the value the runtime will
+// actually resolve for the selected model. Without it the field shows the global
+// defaultModelTemperature for every model, which contradicts the runtime
+// wherever a spec pins its own default: the Gemini 3 models pin Google's
+// documented 1.0 (Google warns a lower value may cause looping or degraded
+// reasoning) and Kimi K3 pins the temperature it requires. Native Gemini models
+// without a registered default get an empty placeholder because the runtime
+// omits temperature and lets Google choose.
+//
+// This is a placeholder, not a Default, so an untouched field still saves as
+// unset and keeps the resolve-at-load contract in applyModelTemperatureDefault
+// instead of baking a value into agent.toml.
+//
+// Ids are grouped by pinned value so one condition covers every spelling the
+// registry holds (bare name and provider-prefixed). The registry stays the
+// single source of truth: pinning a new model in model_specs.go extends this
+// automatically.
+func modelTemperaturePlaceholders() []ConditionalPlaceholder {
+	grouped := map[float64][]string{}
+	for id, spec := range modelSpecRegistry {
+		if spec.DefaultTemperature == nil {
+			continue
+		}
+		grouped[*spec.DefaultTemperature] = append(grouped[*spec.DefaultTemperature], id)
+	}
+	temperatures := make([]float64, 0, len(grouped))
+	for temperature := range grouped {
+		temperatures = append(temperatures, temperature)
+	}
+	// Map iteration order is random; sort so `agent config-meta` output is stable.
+	sort.Float64s(temperatures)
+	providerDefaultTypes := modelProviderTypesUsingProviderTemperatureDefault()
+	placeholders := make([]ConditionalPlaceholder, 0, len(grouped)+len(providerDefaultTypes))
+	for _, temperature := range temperatures {
+		ids := grouped[temperature]
+		sort.Strings(ids)
+		placeholders = append(placeholders, placeholderWhen(temperature, in("model.model", ids...)))
+	}
+	// Keep provider-level rules after model-specific rules so a known model
+	// default wins. The provider registry owns which provider types defer.
+	for _, providerType := range providerDefaultTypes {
+		placeholders = append(placeholders, placeholderWhen(nil, providerTypeIs("model.provider", providerType)))
+	}
+	return placeholders
+}
+
 // Range describes the bounds for a numeric field. When a number field also
 // carries a Range, the UI renders it as a select of discrete steps.
 type Range struct {
@@ -92,7 +141,7 @@ type Range struct {
 // Field is a dotted path like "model.provider" or "agent.input_mode".
 type Condition struct {
 	Field  string   `json:"field"`
-	Op     string   `json:"op"`               // eq | ne | in | notIn | truthy
+	Op     string   `json:"op"`               // eq | ne | in | notIn | truthy | providerType
 	Value  string   `json:"value,omitempty"`  // for eq / ne
 	Values []string `json:"values,omitempty"` // for in / notIn
 }
@@ -164,6 +213,9 @@ func enumOptions(values ...string) []EnumOption {
 func eq(field, value string) Condition { return Condition{Field: field, Op: "eq", Value: value} }
 func ne(field, value string) Condition { return Condition{Field: field, Op: "ne", Value: value} }
 func truthy(field string) Condition    { return Condition{Field: field, Op: "truthy"} }
+func providerTypeIs(field, value string) Condition {
+	return Condition{Field: field, Op: "providerType", Value: value}
+}
 func in(field string, vs ...string) Condition {
 	return Condition{Field: field, Op: "in", Values: vs}
 }
@@ -272,10 +324,13 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(in("model.api_mode", "responses", "responses_stateful")),
 						Default:     defaults.Model.ResponsesInclude},
 					// The effective default is model-dependent (resolved at load
-					// time); show the global fallback here as the UI placeholder.
+					// time). Default carries the non-Gemini global fallback;
+					// PlaceholderWhen overrides it for pinned models and native
+					// Gemini models that defer to Google's default.
 					{Key: "temperature", Label: "Temperature", Widget: WidgetNumber,
-						Help:    "Controls response randomness. Lower values are more deterministic; 0 is sent as an explicit value.",
-						Default: defaultModelTemperature, Nullable: true},
+						Help:            "Controls response randomness. Leave empty to use the model's recommended default; 0 is sent as an explicit value.",
+						PlaceholderWhen: modelTemperaturePlaceholders(),
+						Default:         defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Label: "Maximum response tokens", Widget: WidgetNumber,
 						Help:    "Maximum number of tokens allowed in one model response.",
 						Default: defaults.Model.MaxResponseTokens},

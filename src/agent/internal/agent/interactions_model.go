@@ -141,9 +141,8 @@ type interactionsRequest struct {
 }
 
 // interactionsGenerationConfig mirrors the Interactions API GenerationConfig.
-// temperature is not in the published schema or in Google's own SDK, but the live
-// API accepts it and Google describes generation_config as the home for sampling
-// behavior, so Aiden keeps forwarding the configured value.
+// Google documents temperature here; Aiden forwards a resolved or explicit value
+// and leaves it absent when runtime configuration delegates to the model default.
 type interactionsGenerationConfig struct {
 	MaxOutputTokens   int      `json:"max_output_tokens,omitempty"`
 	Seed              int      `json:"seed,omitempty"`

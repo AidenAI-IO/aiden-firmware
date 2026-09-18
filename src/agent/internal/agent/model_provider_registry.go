@@ -23,12 +23,13 @@ type ModelBuildContext struct {
 type ModelProviderBuilder func(ModelBuildContext, ModelConfig) (llms.Model, error)
 
 type modelProviderDefinition struct {
-	providerType                 string
-	allowsCustomBaseURL          bool
-	supportsResponses            bool
-	supportsResponsesStateful    bool
-	supportsInteractions         bool
-	supportsInteractionsStateful bool
+	providerType                   string
+	allowsCustomBaseURL            bool
+	usesProviderTemperatureDefault bool
+	supportsResponses              bool
+	supportsResponsesStateful      bool
+	supportsInteractions           bool
+	supportsInteractionsStateful   bool
 	// chatCompletionsUnsupported marks a provider that has no usable
 	// OpenAI-compatible /chat/completions transport, so an explicit
 	// api_mode=chat_completions must be rejected instead of silently building a
@@ -89,12 +90,13 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		build:               buildOllamaModel,
 	},
 	{
-		providerType:                 "gemini",
-		allowsCustomBaseURL:          true,
-		supportsInteractions:         true,
-		supportsInteractionsStateful: true,
-		chatCompletionsUnsupported:   true,
-		build:                        buildGeminiModel,
+		providerType:                   "gemini",
+		allowsCustomBaseURL:            true,
+		usesProviderTemperatureDefault: true,
+		supportsInteractions:           true,
+		supportsInteractionsStateful:   true,
+		chatCompletionsUnsupported:     true,
+		build:                          buildGeminiModel,
 	},
 	{
 		providerType:              "fake",
@@ -312,6 +314,21 @@ func modelProviderTypes() []string {
 	types := make([]string, 0, len(modelProviderDefinitions))
 	for _, definition := range modelProviderDefinitions {
 		types = append(types, definition.providerType)
+	}
+	return types
+}
+
+func modelProviderUsesProviderTemperatureDefault(providerType string) bool {
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.usesProviderTemperatureDefault
+}
+
+func modelProviderTypesUsingProviderTemperatureDefault() []string {
+	types := make([]string, 0, len(modelProviderDefinitions))
+	for _, definition := range modelProviderDefinitions {
+		if definition.usesProviderTemperatureDefault {
+			types = append(types, definition.providerType)
+		}
 	}
 	return types
 }

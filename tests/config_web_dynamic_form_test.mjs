@@ -302,7 +302,10 @@ buildConfigMeta({sections: [
   {name: 'model', fields: [
     {key: 'provider', label: 'provider', widget: 'select', layout: 'wide'},
     {key: 'model', label: 'model', widget: 'text', layout: 'wide'},
-    {key: 'temperature', label: 'temperature', widget: 'number'},
+    {key: 'temperature', label: 'temperature', widget: 'number', nullable: true, default: 0.2, placeholderWhen: [
+      {value: 1, when: {all: [{field: 'model.model', op: 'in', values: ['gemini-3.8-flash']}]}},
+      {value: null, when: {all: [{field: 'model.provider', op: 'providerType', value: 'gemini'}]}},
+    ]},
     {key: 'api_mode', label: 'api_mode', widget: 'select', layout: 'wide', enum: [
       {value: '', label: 'Chat Completions (compatible)', excludeProviders: ['gemini']},
       {value: 'responses', label: 'Responses (local context)', providers: ['openai']},
@@ -442,6 +445,23 @@ assert.equal(apiModeSelect().value, '', 'providers with a compatible transport k
 modelProviderSelect.value = 'gemini';
 hydrateSelectField('model', 'api_mode', 'interactions_stateful', false);
 assert.equal(apiModeSelect().value, 'interactions_stateful', 'an explicit Gemini mode is preserved');
+
+// Temperature placeholders follow the resolved provider type, including a
+// named provider record. Known Gemini defaults win over the provider-level rule;
+// unknown defaults remain empty instead of inheriting the global 0.2 fallback.
+stateModule.namespace.modelProvidersByName['google-main'] = {type: 'gemini'};
+configMetaModule.namespace.ensureSelectOption(modelProviderSelect, 'google-main');
+modelProviderSelect.value = 'google-main';
+document.getElementById('model_model').value = 'gemini-2.5-flash';
+configMetaModule.namespace.applyFieldVisibility(false, 'model.provider');
+assert.equal(document.getElementById('model_temperature').dataset.configDefaultPlaceholder, '', 'named native Gemini providers defer unknown defaults to Google');
+document.getElementById('model_model').value = 'gemini-3.8-flash';
+configMetaModule.namespace.applyFieldVisibility(false, 'model.model');
+assert.equal(document.getElementById('model_temperature').dataset.configDefaultPlaceholder, '1', 'known Gemini model defaults override provider-level omission');
+modelProviderSelect.value = 'openai';
+document.getElementById('model_model').value = 'custom-model';
+configMetaModule.namespace.applyFieldVisibility(false, 'model.provider');
+assert.equal(document.getElementById('model_temperature').dataset.configDefaultPlaceholder, '0.2', 'non-Gemini models retain the global fallback');
 
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);

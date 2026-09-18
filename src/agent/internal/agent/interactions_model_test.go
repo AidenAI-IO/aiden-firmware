@@ -60,9 +60,10 @@ func TestInteractionsModelUsesNativeRequestShape(t *testing.T) {
 		t.Fatalf("input step = %#v", inputStep)
 	}
 	config := raw["generation_config"].(map[string]any)
-	// temperature is absent from the published Interactions schema and from
-	// Google's own SDK, but the live API accepts it, so the configured sampling
-	// value stays on the wire instead of being silently dropped.
+	// temperature is a documented generation_config field for Interactions, so
+	// the configured sampling value stays on the wire. Gemini 3 models resolve to
+	// Google's documented default of 1.0 via model_specs.go rather than the
+	// global 0.2 fallback; an explicit config value (0.7 here) still wins.
 	if config["max_output_tokens"] != float64(128) || config["thinking_level"] != "low" || config["temperature"] != 0.7 {
 		t.Fatalf("generation_config = %#v", config)
 	}
@@ -75,6 +76,33 @@ func TestInteractionsModelUsesNativeRequestShape(t *testing.T) {
 	}
 	if response.Choices[0].GenerationInfo["llm_response_id"] != "ix_1" {
 		t.Fatalf("generation info = %#v", response.Choices[0].GenerationInfo)
+	}
+}
+
+func TestInteractionsModelOmitsUnsetTemperature(t *testing.T) {
+	var raw map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ix_default","status":"completed","steps":[]}`))
+	}))
+	defer server.Close()
+
+	model := newInteractionsModel(server.URL+"/v1", "gemini-test", "gemini-key", server.Client(), interactionsModelOptions{})
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+	}, llms.WithMaxTokens(8)); err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	config, ok := raw["generation_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("generation_config = %#v", raw["generation_config"])
+	}
+	if _, exists := config["temperature"]; exists {
+		t.Fatalf("generation_config unexpectedly includes temperature: %#v", config)
 	}
 }
 

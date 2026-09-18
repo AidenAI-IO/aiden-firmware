@@ -36,6 +36,32 @@ func TestInternalConfigReloadAppliesLoopbackRevision(t *testing.T) {
 	}
 }
 
+func TestInternalConfigReloadKeepsUnknownGeminiTemperatureUnset(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.toml")
+	contents := `[model_settings.model]
+provider = "gemini"
+model = "gemini-2.5-flash"
+`
+	if err := os.WriteFile(configPath, []byte(contents), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{config: Config{ConfigDir: dir}}
+	defer runtime.Close()
+	server := &Server{runtime: runtime}
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/config/reload", strings.NewReader(fmt.Sprintf(`{"revision":%d}`, configFileRevision(configPath))))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	server.handleInternalConfigReload(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForConfigApplied(t, runtime)
+	if temperature := runtime.ConfigSnapshot().Model.Temperature; temperature != nil {
+		t.Fatalf("reloaded model.temperature = %v, want nil", formatFloatPtr(temperature))
+	}
+}
+
 func TestRuntimeConfigSnapshotIsSafeDuringReload(t *testing.T) {
 	runtime := &Runtime{config: Config{ConfigDir: t.TempDir()}}
 	var wg sync.WaitGroup
