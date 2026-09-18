@@ -3,7 +3,7 @@
 import {byId, runtimeFunction} from './state.js';
 
 const t = runtimeFunction('t');
-const STEPS = ['backup-intro', 'restore-intro', 'restore-plan', 'progress', 'done'];
+const STEPS = ['backup-intro', 'restore-intro', 'progress', 'done'];
 
 const modal = () => byId('dataBackupModal');
 
@@ -55,23 +55,16 @@ export function setCardStatus(message, error = false) {
   element.style.display = message ? 'block' : 'none';
 }
 
+// Progress is reported as text only (phase and byte counts); there is no
+// progress bar in the wizard or on the card.
 export function setBackupProgress(current, total, message, indeterminate = false) {
   const percent = total > 0 ? Math.min(100, Math.round(current * 100 / total)) : 0;
-  [byId('dataBackupCardProgressBar'), byId('dataBackupModalProgressBar')].forEach(bar => {
-    if (!bar) return;
-    bar.style.width = indeterminate ? '100%' : `${percent}%`;
-    bar.classList.toggle('indeterminate', !!indeterminate);
-  });
-  const track = byId('dataBackupCardProgress');
-  if (track) track.hidden = false;
   [byId('dataBackupProgressText'), byId('dataBackupCardProgressText')].forEach(text => {
     if (text) text.textContent = message || (indeterminate ? '' : `${percent}%`);
   });
 }
 
 export function hideCardProgress() {
-  const track = byId('dataBackupCardProgress');
-  if (track) track.hidden = true;
   const text = byId('dataBackupCardProgressText');
   if (text) text.textContent = '';
 }
