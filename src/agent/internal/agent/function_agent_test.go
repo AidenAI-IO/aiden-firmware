@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"aiden-agent/internal/agent/messages"
+
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -97,7 +99,10 @@ func TestChoiceWithOnlyToolCallDropsUnexecutedResponsesItems(t *testing.T) {
 	}
 }
 
-func TestChoiceWithOnlyToolCallDropsUnexecutedInteractionsSteps(t *testing.T) {
+// Native Interactions steps are the provider's own record and every function_call
+// in it needs a function_result, so the turn keeps all of its calls and the
+// runtime answers the unexecuted ones instead of rewriting the step list.
+func TestChoiceWithOnlyToolCallKeepsUnexecutedInteractionsSteps(t *testing.T) {
 	originalSteps := []json.RawMessage{
 		json.RawMessage(`{"type":"thought","signature":"sig_1","summary":[]}`),
 		json.RawMessage(`{"type":"model_output","content":[{"type":"text","text":"working"}]}`),
@@ -116,24 +121,34 @@ func TestChoiceWithOnlyToolCallDropsUnexecutedInteractionsSteps(t *testing.T) {
 	}
 
 	selected := choiceWithOnlyToolCall(choice, "call_2")
+	if len(selected.ToolCalls) != 2 {
+		t.Fatalf("selected tool calls = %#v, want both calls for Interactions replay", selected.ToolCalls)
+	}
+	if selected.FuncCall == nil || selected.FuncCall.Name != "second" {
+		t.Fatalf("selected FuncCall = %#v, want second", selected.FuncCall)
+	}
 	steps, ok := selected.GenerationInfo["interactions_steps"].([]json.RawMessage)
-	if !ok || len(steps) != 3 {
-		t.Fatalf("selected Interactions steps = %#v, want thought, model output, and selected call", selected.GenerationInfo["interactions_steps"])
+	if !ok || len(steps) != len(originalSteps) {
+		t.Fatalf("selected Interactions steps = %#v, want the provider step list unchanged", selected.GenerationInfo["interactions_steps"])
 	}
-	joined := strings.Join([]string{string(steps[0]), string(steps[1]), string(steps[2])}, "\n")
-	if !strings.Contains(joined, `"type":"thought"`) || !strings.Contains(joined, `"type":"model_output"`) {
-		t.Fatalf("selected Interactions steps dropped non-function steps: %s", joined)
+	joined := strings.Join([]string{string(steps[0]), string(steps[1]), string(steps[2]), string(steps[3])}, "\n")
+	for _, want := range []string{`"type":"thought"`, `"signature":"sig_1"`, `"type":"model_output"`, `"id":"call_1"`, `"id":"call_2"`} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("selected Interactions steps lost %s: %s", want, joined)
+		}
 	}
-	if strings.Contains(joined, `"id":"call_1"`) || !strings.Contains(joined, `"id":"call_2"`) {
-		t.Fatalf("selected Interactions steps kept the wrong function call: %s", joined)
+
+	// The unexecuted calls are answered in the tool result instead.
+	results := unexecutedInteractionToolResults(messages.ConvertChoiceToContextManagerMessage(selected), "call_2")
+	if len(results) != 1 || results[0].ToolCallID != "call_1" || results[0].Name != "first" {
+		t.Fatalf("unexecuted call results = %#v, want one result for call_1", results)
 	}
-	selected.GenerationInfo["marker"] = "selected"
-	if choice.GenerationInfo["marker"] != "original" {
-		t.Fatal("original Interactions generation metadata map was mutated")
+	if results[0].Content != unexecutedInteractionToolResult {
+		t.Fatalf("unexecuted call content = %q", results[0].Content)
 	}
-	original, ok := choice.GenerationInfo["interactions_steps"].([]json.RawMessage)
-	if !ok || len(original) != 4 {
-		t.Fatal("original Interactions steps were mutated")
+	executedOnly := messages.Message{ToolCalls: []messages.ToolCall{{ID: "call_2", Name: "second"}}}
+	if extra := unexecutedInteractionToolResults(executedOnly, "call_2"); len(extra) != 0 {
+		t.Fatalf("results for the executed call = %#v, want none", extra)
 	}
 }
 

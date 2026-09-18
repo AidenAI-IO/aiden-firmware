@@ -853,11 +853,7 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 			firstValid = &call
 		}
 		if toolID != "" && strings.TrimSpace(call.ID) == toolID {
-			choice.ToolCalls = []llms.ToolCall{call}
-			choice.FuncCall = call.FunctionCall
-			choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, call.ID)
-			choice.GenerationInfo = interactionsGenerationInfoForToolCall(choice.GenerationInfo, call.ID)
-			return choice
+			return selectToolCall(choice, call)
 		}
 	}
 	if firstValid == nil {
@@ -865,42 +861,24 @@ func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.Conte
 		choice.FuncCall = nil
 		return choice
 	}
-	choice.ToolCalls = []llms.ToolCall{*firstValid}
-	choice.FuncCall = firstValid.FunctionCall
-	choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, firstValid.ID)
-	choice.GenerationInfo = interactionsGenerationInfoForToolCall(choice.GenerationInfo, firstValid.ID)
-	return choice
+	return selectToolCall(choice, *firstValid)
 }
 
-// interactionsGenerationInfoForToolCall removes unexecuted native Gemini
-// function-call steps from local StepList replay. The agent executes one tool
-// call per loop iteration, so every retained function_call must have a matching
-// function_result before the next Interactions request.
-func interactionsGenerationInfoForToolCall(info map[string]any, toolID string) map[string]any {
-	toolID = strings.TrimSpace(toolID)
-	items, ok := info["interactions_steps"].([]json.RawMessage)
-	if !ok || len(items) == 0 || toolID == "" {
-		return info
+// selectToolCall points the choice at the call this iteration executes. Stateless
+// Responses replay drops the calls that stay unexecuted, because a replayed
+// function call without its output makes the next request invalid. A native
+// Interactions turn keeps every call instead: the API answers with all the calls
+// the model decided on and requires a function_result for each of them, so the
+// runtime reports the unexecuted calls as such (see
+// unexecutedInteractionToolResults) rather than rewriting the provider's steps.
+func selectToolCall(choice llms.ContentChoice, call llms.ToolCall) llms.ContentChoice {
+	choice.FuncCall = call.FunctionCall
+	if steps, ok := choice.GenerationInfo["interactions_steps"].([]json.RawMessage); ok && len(steps) > 0 {
+		return choice
 	}
-	filtered := make([]json.RawMessage, 0, len(items))
-	for _, item := range items {
-		var metadata struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-		}
-		if json.Unmarshal(item, &metadata) != nil || metadata.Type != "function_call" || strings.TrimSpace(metadata.ID) == toolID {
-			filtered = append(filtered, item)
-		}
-	}
-	if len(filtered) == len(items) {
-		return info
-	}
-	cloned := make(map[string]any, len(info))
-	for key, value := range info {
-		cloned[key] = value
-	}
-	cloned["interactions_steps"] = filtered
-	return cloned
+	choice.ToolCalls = []llms.ToolCall{call}
+	choice.GenerationInfo = responsesGenerationInfoForToolCall(choice.GenerationInfo, call.ID)
+	return choice
 }
 
 // responsesGenerationInfoForToolCall removes unexecuted parallel function-call
@@ -965,6 +943,10 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		step.Action.Tool,
 		prepared,
 	)}
+	contextMessages[1].ToolResults = append(
+		contextMessages[1].ToolResults,
+		unexecutedInteractionToolResults(toolCall, step.Action.ToolID)...,
+	)
 	for _, followup := range followups {
 		contextMessages = append(contextMessages, visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup))
 	}
@@ -972,6 +954,38 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		return fmt.Errorf("failed to append tool call and result messages: %w", err)
 	}
 	return nil
+}
+
+// unexecutedInteractionToolResult answers a native Interactions function call the
+// iteration did not run.
+const unexecutedInteractionToolResult = "Not executed: this runtime runs one tool call per turn. Call it again if it is still needed."
+
+// unexecutedInteractionToolResults answers the native Interactions function calls
+// the iteration did not execute. Aiden runs one tool call per iteration so that
+// every action is gated and observed on its own, while the Interactions API
+// returns all the calls the model decided on and requires a function_result for
+// each call_id. The remaining calls are reported as unexecuted instead of being
+// deleted from the provider's step list, which keeps local StepList replay valid
+// and leaves no call unanswered in a stored interaction. Other transports narrow
+// the tool-call message to the executed call, so this reports nothing for them.
+func unexecutedInteractionToolResults(toolCall messages.Message, executedToolCallID string) []messages.ToolResult {
+	if len(toolCall.ToolCalls) < 2 {
+		return nil
+	}
+	executedToolCallID = strings.TrimSpace(executedToolCallID)
+	results := make([]messages.ToolResult, 0, len(toolCall.ToolCalls)-1)
+	for _, call := range toolCall.ToolCalls {
+		id := strings.TrimSpace(call.ID)
+		if id == "" || id == executedToolCallID {
+			continue
+		}
+		results = append(results, messages.ToolResult{
+			ToolCallID: id,
+			Name:       call.Name,
+			Content:    unexecutedInteractionToolResult,
+		})
+	}
+	return results
 }
 
 func (l *AgentLoop) touchPointerModeMismatchFinalAnswer(step schema.AgentStep) string {
