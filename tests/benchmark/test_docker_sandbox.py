@@ -67,10 +67,13 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertNotIn("ARG TTYD_VERSION", dockerfile)
         self.assertNotIn("node:16-bookworm", dockerfile)
 
-    def test_runtime_defaults_to_stt_without_credentials(self):
+    def test_runtime_leaves_voice_unconfigured_without_credentials(self):
         config = read_repo_file("docker/dev/agent.toml")
 
-        self.assertIn('input_mode = "stt"', config)
+        # The sandbox configures no STT/TTS provider, and both stt and realtime
+        # require their own. An unset input_mode is valid and keeps the agent
+        # reachable through the Web UI and HTTP API.
+        self.assertNotIn("input_mode =", config)
         self.assertIn('device_type = "iOS"', config)
         self.assertNotIn("api_key", config)
 
