@@ -15,6 +15,9 @@ readonly SNAPSHOT=http://snapshot.debian.org/archive/debian/20260803T000000Z
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 readonly ROOTFS_UUID=1d29a2d4-5488-4bea-a648-bf133c4b53d3
 readonly BINFMT_DIR=/proc/sys/fs/binfmt_misc
+readonly WGETRC_PATH=/tmp/aiden-debootstrap-wgetrc
+readonly DEBOOTSTRAP_ATTEMPTS=3
+readonly APT_RETRIES=3
 
 mounts=()
 
@@ -84,15 +87,57 @@ ensure_arm_binfmt() {
     fi
 }
 
-bootstrap_rootfs() {
-    rm -rf "${WORK_DIR}"
-    mkdir -p "${ROOTFS_DIR}" "${MOUNT_DIR}"
-    ensure_arm_binfmt
+# debootstrap shells out to wget per package and passes no retry options, and
+# wget by default treats an HTTP error status as final. snapshot.debian.org
+# answers a bulk fetch with 429/503 once it decides to throttle, so a single
+# throttled response aborts the whole bootstrap with "Couldn't download
+# packages". Retrying those statuses is what makes the pinned snapshot usable
+# from a shared runner. WGETRC only replaces the per-user file, so the image's
+# /etc/wgetrc still applies.
+configure_wget_retries() {
+    cat >"${WGETRC_PATH}" <<'EOF'
+tries = 5
+timeout = 30
+waitretry = 10
+retry_connrefused = on
+retry_on_host_error = on
+retry_on_http_error = 429,500,502,503,504
+EOF
+    export WGETRC=${WGETRC_PATH}
+}
+
+run_debootstrap() {
     debootstrap \
         --arch=armhf \
         --variant=minbase \
         --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
         trixie "${ROOTFS_DIR}" "${SNAPSHOT}"
+}
+
+# A failed debootstrap leaves a partial tree it cannot resume, so each attempt
+# starts from an empty target.
+bootstrap_base_system() {
+    local attempt
+    for ((attempt = 1; attempt <= DEBOOTSTRAP_ATTEMPTS; attempt++)); do
+        rm -rf "${ROOTFS_DIR}"
+        mkdir -p "${ROOTFS_DIR}"
+        if run_debootstrap; then
+            return 0
+        fi
+        echo "debootstrap attempt ${attempt}/${DEBOOTSTRAP_ATTEMPTS} failed" >&2
+        [ "${attempt}" -lt "${DEBOOTSTRAP_ATTEMPTS}" ] || break
+        sleep $((attempt * 30))
+    done
+    echo "debootstrap failed after ${DEBOOTSTRAP_ATTEMPTS} attempts" >&2
+    return 1
+}
+
+bootstrap_rootfs() {
+    rm -rf "${WORK_DIR}"
+    mkdir -p "${ROOTFS_DIR}" "${MOUNT_DIR}"
+    ensure_arm_binfmt
+    configure_wget_retries
+    bootstrap_base_system
 
     rm -f "${ROOTFS_DIR}/etc/apt/sources.list"
     install -d -m 0755 "${ROOTFS_DIR}/etc/apt/sources.list.d" \
@@ -109,12 +154,16 @@ exit 101
 EOF
     chmod 0755 "${ROOTFS_DIR}/usr/sbin/policy-rc.d"
 
+    # These two also fetch from the pinned snapshot, and apt ships
+    # Acquire::Retries=0. Passed on the command line rather than written to
+    # apt.conf.d so the retry policy stays out of the produced rootfs.
     mount_chroot_filesystems
     chroot "${ROOTFS_DIR}" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
-        apt-get update
+        apt-get -o "Acquire::Retries=${APT_RETRIES}" update
     chroot "${ROOTFS_DIR}" /bin/sh -ec \
-        'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-system-packages.list | xargs)'
+        'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get -o "Acquire::Retries=$1" install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-system-packages.list | xargs)' \
+        sh "${APT_RETRIES}"
     chroot "${ROOTFS_DIR}" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 \
         dpkg --configure -a

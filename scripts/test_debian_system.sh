@@ -64,9 +64,9 @@ grep -Eq '^[[:space:]]*debootstrap \\' \
     "${SYSTEM_DIR}/container-build-rootfs.sh"
 
 for package in \
-    systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 iputils-arping \
-    wpasupplicant bluez systemd-resolved systemd-timesyncd dnsmasq-base \
-    e2fsprogs v4l-utils libdrm2 python3 python3-pip; do
+    systemd-sysv udev dbus kmod libpam-systemd openssh-server sudo adb iproute2 \
+    iputils-arping wpasupplicant bluez systemd-resolved systemd-timesyncd \
+    dnsmasq-base e2fsprogs v4l-utils libdrm2 python3 python3-pip; do
     grep -qx "${package}" "${SYSTEM_DIR}/packages.list" \
         || fail "production package list is missing ${package}"
 done
