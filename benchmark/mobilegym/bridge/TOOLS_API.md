@@ -92,7 +92,7 @@ curl -X POST http://localhost:8888/api/providers/mnk \
 curl -X POST http://localhost:8888/api/setup \
   -H "Content-Type: application/json" \
   -H "benchmark-task-id: suite.json:task-1" \
-  -d '{"app_ids":["settings"]}'
+  -d '{"app_ids":["settings"],"foreground_app_id":"settings"}'
 
 curl -X POST http://localhost:8888/api/release \
   -H "Content-Type: application/json" \
@@ -106,6 +106,11 @@ for later tasks.
 `app_ids` is optional. Missing or empty `app_ids` skips eager app data loading;
 non-empty lists preload only the named apps. The app launch path still loads an
 app's data on demand.
+
+`foreground_app_id` is an optional exact installed app ID. Setup opens it after
+reset and fails if it cannot be launched. The preload list does not determine
+the foreground app. The agent's Phone Bridge `open_app` tool is not routed
+through MobileGym's `/api/tools` catalog.
 
 ## Deterministic State And Route
 
@@ -125,8 +130,8 @@ curl -X POST http://localhost:8888/route \
   -d '{}'
 ```
 
-For example, `mobilegym_list_search.json` checks both the selected record and
-its detail route:
+For example, `mobilegym_scroll_regression.json` checks both the selected record
+and its detail route:
 
 ```json
 {
@@ -152,11 +157,9 @@ band is expressed as an object with `min`/`max` keys:
 }
 ```
 
-`mobilegym_scroll_sweep.json` applies that bound once per list row: the agent must
-scroll to ordinal N and open it, and the run fails if row N was ever pushed off
-the top of the screen. The high-water mark survives a scroll-back, so an
-overshoot the agent recovers from still fails, which is the "scrolled past it and
-lost the information" failure the sweep measures.
+`mobilegym_scroll_regression.json` checks ordinals 24 and 83. The optional
+`mobilegym_scroll_sweep.json` applies that bound to every row for calibration.
+The high-water mark survives a scroll-back, so a recovered overshoot still fails.
 
 ## Concurrency
 

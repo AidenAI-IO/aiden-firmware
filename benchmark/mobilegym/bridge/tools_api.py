@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import os
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -32,126 +31,6 @@ MAX_SWIPE_STEPS = 1_000
 MAX_MOUSE_SCROLL_DELTA = 127
 MOUSE_SCROLL_BASE_DURATION_MS = 300
 MOUSE_SCROLL_DURATION_STEP_MS = 75
-
-SCROLLBACK_BLOCK_ENV = "AIDEN_MOBILEGYM_BLOCK_SCROLLBACK"
-SCROLLBACK_BLOCK_ERROR = (
-    "error: scroll-back is disabled for this run; the list only scrolls forward"
-)
-
-
-def scrollback_blocked() -> bool:
-    """True when the environment refuses gestures that scroll content back up.
-
-    Read per call so tests can toggle the mode without reimporting the module.
-    """
-    return str(os.environ.get(SCROLLBACK_BLOCK_ENV, "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _scrolls_content_back_up(start: dict[str, float], end: dict[str, float]) -> bool:
-    """A finger moving down the screen pulls earlier content back into view.
-
-    Gesture direction names describe finger travel, so ``direction="down"``
-    resolves to an end point below the start. Comparing the resolved points
-    therefore covers both the ``direction`` shorthand and explicit coordinates.
-    """
-    return float(end["y"]) > float(start["y"])
-
-
-# Tool names the Go agent may use to launch an installed app through the
-# environment bridge. Without them the agent has no way to open an app and
-# falls back to hunting for launcher icons, which dominates scroll-sweep
-# failures before any scrolling happens.
-OPEN_APP_TOOLS = ("open_app", "bridge_open_app", "search_launch_app")
-OPEN_APP_SETTLE_SEC = 0.8
-OPEN_APP_JS = """(appId) => {
-    if (!window.__OS__?.openApp) throw new Error('window.__OS__.openApp is unavailable');
-    window.__OS__.openApp(appId, '/');
-}"""
-
-
-def open_app_args_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "app": {
-                "type": "string",
-                "description": "Installed app id or display name, for example scroll_lab or 列表实验室.",
-            }
-        },
-        "required": ["app"],
-    }
-
-
-def _normalize_app_token(value: str) -> str:
-    return "".join(ch for ch in value.strip().lower() if ch.isalnum())
-
-
-def _match_app_id(requested: str, entries: list[tuple[str, str]]) -> str | None:
-    """Match a requested app against installed (id, display name) pairs."""
-    want = requested.strip()
-    if not want:
-        return None
-    for app_id, _name in entries:
-        if app_id == want:
-            return app_id
-    for app_id, name in entries:
-        if name and name.strip().lower() == want.lower():
-            return app_id
-    want_token = _normalize_app_token(want)
-    if not want_token:
-        return None
-    for app_id, name in entries:
-        if want_token in {_normalize_app_token(app_id), _normalize_app_token(name)}:
-            return app_id
-    for app_id, name in entries:
-        if want_token in _normalize_app_token(name) or want_token in _normalize_app_token(app_id):
-            return app_id
-    return None
-
-
-async def _resolve_mobilegym_app_id(env: Any, requested: str) -> str | None:
-    page = getattr(env, "page", None)
-    if page is None:
-        return None
-    installed = await page.evaluate(
-        """() => {
-            const state = window.__SIM__?.getState?.() || {};
-            return (state.os?.installedApps || []).map((app) => ({ id: app.id, name: app.name }));
-        }"""
-    )
-    entries = [
-        (str(entry.get("id") or ""), str(entry.get("name") or ""))
-        for entry in (installed or [])
-        if isinstance(entry, dict)
-    ]
-    return _match_app_id(requested, entries)
-
-
-async def open_app_in_env(env: Any, requested: str) -> tuple[str, str]:
-    """Bring an installed app to the foreground.
-
-    Returns ``(app_id, error)``: ``app_id`` is empty on failure and ``error`` is
-    empty on success, so callers can either raise or report the failure.
-
-    The agent's own ``open_app`` tool has no environment-bridge route, so a
-    benchmark task that must start inside an app cannot rely on it and the
-    environment has to establish that state itself.
-    """
-    page = getattr(env, "page", None)
-    if page is None:
-        return "", "environment does not expose a browser page"
-    app_id = await _resolve_mobilegym_app_id(env, requested)
-    if app_id is None:
-        return "", f"app is not installed: {requested}"
-    await page.evaluate(OPEN_APP_JS, app_id)
-    await asyncio.sleep(OPEN_APP_SETTLE_SEC)
-    return app_id, ""
 
 US_KEYBOARD_TEXT_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
@@ -348,21 +227,6 @@ class ToolsAPIHandler:
                         {"required": ["list"], "properties": {"list": {"const": True}}},
                     ],
                 },
-            },
-            {
-                "name": "open_app",
-                "description": "Launch an installed MobileGym app by id or display name and return a screenshot.",
-                "args_schema": open_app_args_schema(),
-            },
-            {
-                "name": "bridge_open_app",
-                "description": "Launch an installed MobileGym app by id or display name and return a screenshot.",
-                "args_schema": open_app_args_schema(),
-            },
-            {
-                "name": "search_launch_app",
-                "description": "Launch an installed MobileGym app by id or display name and return a screenshot.",
-                "args_schema": open_app_args_schema(),
             },
         ]
 
@@ -562,8 +426,6 @@ class ToolsAPIHandler:
             return self._call_mouse_scroll(state, tool_input, episode_id)
         elif tool_name == "quick_action":
             return self._call_quick_action(state, tool_input, episode_id)
-        elif tool_name in OPEN_APP_TOOLS:
-            return self._call_open_app(state, tool_input, episode_id)
         else:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
 
@@ -620,8 +482,6 @@ class ToolsAPIHandler:
                     )
                     duration_value = tool_input.get("duration_ms")
                     duration_ms = 700 if duration_value is None else _swipe_duration_arg(duration_value)
-                if scrollback_blocked() and _scrolls_content_back_up(start, end):
-                    return {"output": SCROLLBACK_BLOCK_ERROR, "is_error": True}
                 timing = _swipe_timing_options(tool_input)
                 action = build_action(
                     gesture_type,
@@ -915,25 +775,6 @@ class ToolsAPIHandler:
         future = asyncio.run_coroutine_threadsafe(state.run_env(step_env), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
 
-    def _call_open_app(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
-        """Launch an installed MobileGym app and return a screenshot of the result."""
-        requested = str(tool_input.get("app") or "").strip()
-        if not requested:
-            return {"output": "error: app is required", "is_error": True}
-
-        async def open_app(env: Any) -> dict[str, Any]:
-            state.require_active(episode_id)
-            app_id, error = await open_app_in_env(env, requested)
-            if error:
-                raise RuntimeError(error)
-            return await _ok_with_screenshot(env, app=app_id)
-
-        future = asyncio.run_coroutine_threadsafe(state.run_env(open_app), state.owner_loop)
-        try:
-            return future.result(timeout=self.request_timeout_sec)
-        except Exception as exc:
-            return {"output": f"error: {exc}", "is_error": True}
-
     def _call_noop_with_screenshot(self, state: BridgeEpisodeState, episode_id: str) -> dict[str, Any]:
         async def get_screenshot(env: Any) -> dict[str, Any]:
             state.require_active(episode_id)
@@ -965,21 +806,6 @@ async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
     return value
-
-
-async def _ok_with_screenshot(env: Any, **extra: Any) -> dict[str, Any]:
-    """Build an ok tool result carrying the current screen plus caller metadata."""
-    observation = await _maybe_await(env.get_observation())
-    screenshot = _encode_observation_screenshot(observation)
-    output_data = {
-        "action_output": "ok",
-        **extra,
-        "data": screenshot["data"],
-        "width": screenshot["width"],
-        "height": screenshot["height"],
-        "format": screenshot.get("format", "jpeg"),
-    }
-    return {"output": json.dumps(output_data), "is_error": False}
 
 
 def _encode_observation_screenshot(observation: Any) -> dict[str, Any]:

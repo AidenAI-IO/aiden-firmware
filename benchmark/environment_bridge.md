@@ -189,14 +189,16 @@ Optional request body:
 {
   "episode_id": "task-episode",
   "setup_token": "optional-idempotency-token",
-  "app_ids": ["settings"]
+  "app_ids": ["settings"],
+  "foreground_app_id": "settings"
 }
 ```
 
 `app_ids` is optional environment metadata. MobileGym uses it to preload only
-the data loaders required by the task. An omitted or empty list skips eager app
-data loading; apps still load their own data when opened. This avoids loading
-every registered app during each task reset.
+the named apps; an omitted or empty list skips eager loading. Apps still load
+their own data when opened. `foreground_app_id` is an optional exact app ID to
+open after reset; it is not inferred from the preload list. A failed launch
+fails setup.
 
 For bridges that do not need setup, return success with `setup: false`.
 

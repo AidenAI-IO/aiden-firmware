@@ -365,6 +365,72 @@ def test_setup_treats_null_app_ids_as_empty():
         assert bridge.env.reset_app_ids == [[]]
 
 
+def test_setup_foregrounds_only_explicit_app_id():
+    class Page:
+        def __init__(self):
+            self.calls = []
+
+        async def evaluate(self, script, app_id):
+            self.calls.append(app_id)
+            if app_id != "scroll_lab":
+                raise RuntimeError(f"app is not installed: {app_id}")
+
+    with RunningBridge() as bridge:
+        bridge.env.page = Page()
+        status, body = request_json(
+            bridge.base_url, "POST", "/api/setup",
+            {"app_ids": ["settings"], "foreground_app_id": "scroll_lab"},
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert bridge.env.reset_app_ids == [["settings"]]
+        assert bridge.env.page.calls == ["scroll_lab"]
+
+
+def test_setup_fails_when_foreground_app_cannot_open():
+    with RunningBridge() as bridge:
+        status, body = request_json(
+            bridge.base_url, "POST", "/api/setup",
+            {"foreground_app_id": "scroll_lab"},
+        )
+        assert status == 500
+        assert body["ok"] is False
+        assert "browser page" in body["error"]["message"]
+
+
+def test_setup_token_cache_includes_foreground_app_id():
+    class Page:
+        def __init__(self):
+            self.calls = []
+
+        async def evaluate(self, script, app_id):
+            self.calls.append(app_id)
+
+    with RunningBridge() as bridge:
+        bridge.env.page = Page()
+        for app_id in ("scroll_lab", "settings"):
+            status, body = request_json(
+                bridge.base_url,
+                "POST",
+                "/api/setup",
+                {"setup_token": "same-token", "foreground_app_id": app_id},
+            )
+            assert status == 200
+            assert body["ok"] is True
+
+        assert bridge.env.reset_calls == 2
+        assert bridge.env.page.calls == ["scroll_lab", "settings"]
+
+
+@pytest.mark.parametrize("value", ["", " scroll_lab ", 42, []])
+def test_setup_rejects_invalid_foreground_app_id(value):
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"foreground_app_id": value})
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+        assert bridge.env.reset_calls == 0
+
+
 def test_setup_timeout_preserves_mobilegym_phase_diagnostic():
     with RunningBridge() as bridge:
         async def timeout_reset(app_ids=None):

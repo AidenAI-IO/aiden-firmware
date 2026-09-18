@@ -44,6 +44,18 @@ def test_load_suite_parses_environment_assertions(tmp_path: Path):
     assert task.environment_assertions["route.path"] == "/item/scroll-item-083"
 
 
+def test_load_suite_rejects_duplicate_normalized_assertion_paths(tmp_path: Path):
+    fixture = json.loads(json.dumps(FIXTURE))
+    fixture["tasks"][0]["environment_assertions"] = {
+        " route.path": "/item/scroll-item-024",
+        "route.path": "/item/scroll-item-083",
+    }
+    path = tmp_path / "duplicates.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    with pytest.raises(SuiteValidationError, match="duplicate environment_assertions path"):
+        load_suite(path)
+
+
 @pytest.mark.parametrize("value", [{}, [], {"bad..path": "x"}])
 def test_load_suite_rejects_invalid_environment_assertions(tmp_path: Path, value):
     fixture = json.loads(json.dumps(FIXTURE))
@@ -373,6 +385,7 @@ def test_load_suite_parses_task_app_ids(tmp_path: Path):
             {
                 **FIXTURE["tasks"][0],
                 "app_ids": ["settings"],
+                "foreground_app_id": "scroll_lab",
             }
         ],
     }
@@ -382,6 +395,17 @@ def test_load_suite_parses_task_app_ids(tmp_path: Path):
     suite = load_suite(path)
 
     assert suite.tasks[0].app_ids == ["settings"]
+    assert suite.tasks[0].foreground_app_id == "scroll_lab"
+
+
+@pytest.mark.parametrize("value", ["", " scroll_lab ", 123, []])
+def test_load_suite_rejects_invalid_foreground_app_id(tmp_path: Path, value):
+    fixture = json.loads(json.dumps(FIXTURE))
+    fixture["tasks"][0]["foreground_app_id"] = value
+    path = tmp_path / "bad_foreground.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    with pytest.raises(SuiteValidationError, match="foreground_app_id"):
+        load_suite(path)
 
 
 def test_load_suite_rejects_invalid_task_app_ids(tmp_path: Path):

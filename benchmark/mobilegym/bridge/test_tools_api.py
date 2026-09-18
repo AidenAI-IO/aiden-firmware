@@ -10,25 +10,6 @@ import pytest
 from .episode import BridgeEpisodeState, BridgeTaskRouter
 from .actions import action_to_dict
 from .server import BridgeServer
-from .tools_api import _match_app_id
-
-
-@pytest.mark.parametrize(
-    ("requested", "expected"),
-    [
-        ("列表实验室", "scroll_lab"),
-        ("scroll_lab", "scroll_lab"),
-        ("scroll lab", "scroll_lab"),
-        ("scrolllab", "scroll_lab"),
-        ("Scroll Lab", "scroll_lab"),
-        ("时钟", "clock"),
-        ("不存在的应用", None),
-        ("", None),
-    ],
-)
-def test_match_app_id_resolves_ids_names_and_loose_spellings(requested, expected):
-    entries = [("clock", "时钟"), ("scroll_lab", "列表实验室")]
-    assert _match_app_id(requested, entries) == expected
 
 
 @pytest.fixture
@@ -108,15 +89,7 @@ def test_get_tools_catalog(bridge_server):
         "mouse_move",
         "mouse_scroll",
         "quick_action",
-        "open_app",
-        "bridge_open_app",
-        "search_launch_app",
     }
-    for open_app_name in ("open_app", "bridge_open_app", "search_launch_app"):
-        open_app_schema = tools[open_app_name]["args_schema"]
-        assert open_app_schema["additionalProperties"] is False
-        assert open_app_schema["required"] == ["app"]
-        assert open_app_schema["properties"]["app"]["type"] == "string"
 
     assert tools["touch_gesture"]["args_schema"]["additionalProperties"] is False
     touch_props = tools["touch_gesture"]["args_schema"]["properties"]
@@ -750,68 +723,6 @@ def test_mouse_scroll_preserves_delta_direction_and_magnitude(
             "duration": duration_ms,
         },
     }
-
-
-def _invoke_swipe(bridge_server, payload, episode_id):
-    server, base_url, state = bridge_server
-    state.active_episode_id = episode_id
-    req = Request(
-        f"{base_url}/api/tools/touch_gesture",
-        data=json.dumps({"input": payload}).encode(),
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    with urlopen(req, timeout=5) as resp:
-        assert resp.status == 200
-        return json.loads(resp.read().decode())
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"type": "swipe", "start": {"x": 500, "y": 200}, "end": {"x": 500, "y": 800}},
-        {"type": "swipe", "start": {"x": 500, "y": 200}, "direction": "down"},
-    ],
-)
-def test_scrollback_block_rejects_finger_down_swipe(bridge_server, monkeypatch, payload):
-    """Finger-down swipes pull earlier content back, so the block refuses them."""
-    monkeypatch.setenv("AIDEN_MOBILEGYM_BLOCK_SCROLLBACK", "1")
-    server, base_url, state = bridge_server
-
-    data = _invoke_swipe(bridge_server, payload, "test-scrollback-blocked")
-
-    assert data["is_error"] is True
-    assert "scroll-back is disabled" in data["output"]
-    # The gesture must not reach the environment at all.
-    assert state.env.last_action is None
-
-
-def test_scrollback_block_allows_forward_swipe(bridge_server, monkeypatch):
-    monkeypatch.setenv("AIDEN_MOBILEGYM_BLOCK_SCROLLBACK", "1")
-    server, base_url, state = bridge_server
-
-    data = _invoke_swipe(
-        bridge_server,
-        {"type": "swipe", "start": {"x": 500, "y": 800}, "end": {"x": 500, "y": 200}},
-        "test-scrollback-forward",
-    )
-
-    assert data["is_error"] is False
-    assert action_to_dict(state.env.last_action)["action_type"] == "SWIPE"
-
-
-def test_scrollback_is_allowed_when_block_disabled(bridge_server, monkeypatch):
-    monkeypatch.delenv("AIDEN_MOBILEGYM_BLOCK_SCROLLBACK", raising=False)
-    server, base_url, state = bridge_server
-
-    data = _invoke_swipe(
-        bridge_server,
-        {"type": "swipe", "start": {"x": 500, "y": 200}, "end": {"x": 500, "y": 800}},
-        "test-scrollback-off",
-    )
-
-    assert data["is_error"] is False
-    assert action_to_dict(state.env.last_action)["action_type"] == "SWIPE"
 
 
 def test_invoke_without_token_still_works(bridge_server):

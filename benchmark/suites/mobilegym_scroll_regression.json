@@ -1,0 +1,77 @@
+{
+  "name": "mobilegym_scroll_regression",
+  "suite_category": "MobileGym",
+  "version": "1.0",
+  "description": "Scroll overshoot regression at medium and deep list positions.",
+  "prompt_prefix": "",
+  "global_reset": {},
+  "trace_observations": [],
+  "tasks": [
+    {
+      "id": "find_item_024",
+      "category": "multi_step",
+      "prompt": "在“列表实验室”的长列表中，必要时向下滚动，找到第 24 项（标题为“取回蓝色雨伞”），打开它的详情页。不要使用搜索。",
+      "description_for_judge": "Open Scroll Lab item 24 of 100, titled 取回蓝色雨伞, with preview 周四下班前去前台领取，报登记尾号 7312。 and record code SL-024. Scrolling past it and back still counts as an overshoot.",
+      "rubric": [
+        {
+          "id": "opened_target_item",
+          "check": "Post-screenshot shows the Scroll Lab detail page for item 24 / 100, code SL-024."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 40,
+        "must_complete_within_sec": 240,
+        "required_tools": [
+          "touch_gesture"
+        ]
+      },
+      "app_ids": [
+        "scroll_lab"
+      ],
+      "foreground_app_id": "scroll_lab",
+      "environment_assertions": {
+        "route.app": "scroll_lab",
+        "route.path": "/item/scroll-item-024",
+        "apps.scroll_lab.selectedItemId": "scroll-item-024",
+        "apps.scroll_lab.maxFirstVisibleOrdinal": {
+          "max": 24
+        }
+      },
+      "repeats": 1
+    },
+    {
+      "id": "find_item_083",
+      "category": "multi_step",
+      "prompt": "在“列表实验室”的长列表中，必要时向下滚动，找到第 83 项（标题为“冷链样品交接”），打开它的详情页。不要使用搜索。",
+      "description_for_judge": "Open Scroll Lab item 83 of 100, titled 冷链样品交接, with preview 到北门 3 号柜领取银色保温箱，核验码 K4M7。 and record code SL-083. Scrolling past it and back still counts as an overshoot.",
+      "rubric": [
+        {
+          "id": "opened_target_item",
+          "check": "Post-screenshot shows the Scroll Lab detail page for item 83 / 100, code SL-083."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 40,
+        "must_complete_within_sec": 240,
+        "required_tools": [
+          "touch_gesture"
+        ]
+      },
+      "app_ids": [
+        "scroll_lab"
+      ],
+      "foreground_app_id": "scroll_lab",
+      "environment_assertions": {
+        "route.app": "scroll_lab",
+        "route.path": "/item/scroll-item-083",
+        "apps.scroll_lab.selectedItemId": "scroll-item-083",
+        "apps.scroll_lab.maxFirstVisibleOrdinal": {
+          "max": 83
+        }
+      },
+      "repeats": 1
+    }
+  ]
+}

@@ -30,7 +30,7 @@ from .protocol import (
     encode_provider_frame,
     encode_screenshot,
 )
-from .tools_api import ToolsAPIHandler, open_app_in_env
+from .tools_api import ToolsAPIHandler
 
 
 ACTION_ENDPOINTS = {"tap", "swipe", "drag", "type_text", "key", "back", "home", "wait"}
@@ -59,6 +59,31 @@ def _setup_app_ids(payload: dict[str, Any]) -> list[str]:
     ):
         raise ValueError("app_ids must be a list of non-empty strings")
     return list(dict.fromkeys(item.strip() for item in value))
+
+
+def _foreground_app_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("foreground_app_id")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ValueError("foreground_app_id must be a non-empty app ID")
+    return value
+
+
+async def _foreground_app(env: Any, app_id: str) -> None:
+    page = getattr(env, "page", None)
+    if page is None:
+        raise RuntimeError("environment does not expose a browser page")
+    await page.evaluate(
+        """(appId) => {
+            const apps = window.__SIM__?.getState?.()?.os?.installedApps || [];
+            if (!apps.some(app => app.id === appId)) throw new Error(`app is not installed: ${appId}`);
+            if (!window.__OS__?.openApp) throw new Error('window.__OS__.openApp is unavailable');
+            window.__OS__.openApp(appId, '/');
+        }""",
+        app_id,
+    )
+    await asyncio.sleep(0.8)
 
 
 class BridgeServer:
@@ -204,6 +229,7 @@ def _handler_for(bridge: BridgeServer):
             task_id = benchmark_task_id_from_headers(self.headers)
             setup_token = setup_token_from_payload(payload)
             app_ids = _setup_app_ids(payload)
+            foreground_app_id = _foreground_app_id(payload)
 
             def setup() -> dict[str, Any]:
                 state = bridge.router.state_for_task_id(task_id)
@@ -211,30 +237,16 @@ def _handler_for(bridge: BridgeServer):
                     state,
                     state.reset_episode(episode_id, app_ids=app_ids),
                 )
-                # Foreground the task's primary app so the task starts inside
-                # the app instead of on the launcher. The agent's own open_app
-                # tool has no environment-bridge route, so the environment must
-                # establish this state rather than leaving it to the agent.
-                if app_ids:
-                    async def _foreground_primary_app(env: Any) -> str:
-                        if getattr(env, "page", None) is None:
-                            # Environments without a browser page (mock envs)
-                            # have no way to launch an app; skip quietly.
-                            return ""
-                        _app_id, error = await open_app_in_env(env, app_ids[0])
-                        return error
-
-                    foreground_error = bridge.submit_to_state(
+                if foreground_app_id:
+                    bridge.submit_to_state(
                         state,
-                        state.run_env(_foreground_primary_app),
+                        state.run_env(lambda env: _foreground_app(env, foreground_app_id)),
                     )
-                    if foreground_error:
-                        result = {**result, "foreground_error": foreground_error}
                 return result
 
             if setup_token:
                 result = bridge.setup_tokens.run(
-                    (task_id, setup_token, tuple(app_ids)),
+                    (task_id, setup_token, tuple(app_ids), foreground_app_id),
                     setup,
                 )
             else:

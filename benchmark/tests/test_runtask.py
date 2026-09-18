@@ -5,6 +5,7 @@ from PIL import Image
 
 from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
+from runner.metrics import aggregate
 from runner.models import RubricVerdict
 from runner.reset import SetupAssertionError
 from runner.runtask import run_one_task
@@ -157,10 +158,33 @@ def test_run_one_task_applies_environment_state_assertions(tmp_path: Path, monke
 
     assert result.status == "failed"
     assert result.hard_assertions.environment_state is False
+    assert result.metrics["success"] is False
+    assert result.metrics["agent_eligible"] is True
+    assert result.metrics["quality_score"] == 0.0
+    assert aggregate([result])["pass_at_1"]["value"] == 0.0
     assert [failure.id for failure in result.hard_assertion_failures] == [
         "environment_state:apps.scroll_lab.selectedItemId"
     ]
     assert (tmp_path / "artifacts" / "environment_state.json").exists()
+
+
+def test_missing_environment_state_invalidates_success_metrics():
+    task = TaskSpec(
+        id="missing_state", category="multi_step", description_for_judge="", prompt="",
+        rubric=[], hard_assertions=HardAssertions(),
+        environment_assertions={"route.path": "/item/scroll-item-083"},
+    )
+    result = runtask_mod.TaskResult(
+        suite="mobilegym", run_id="run", task_id=task.id, category=task.category,
+        attempt=1, status="passed", rubric=[],
+        metrics={"success": True, "agent_eligible": True, "quality_score": 1.0},
+    )
+    runtask_mod._apply_environment_assertions(result, task, None, "state unavailable")
+    assert result.status == "judge_error"
+    assert result.metrics["success"] is None
+    assert result.metrics["agent_eligible"] is False
+    assert result.metrics["failure_class"] == "evaluation"
+    assert result.metrics["quality_score"] is None
 
 
 def test_run_one_task_includes_static_screenshot_dimensions(tmp_path: Path):

@@ -682,8 +682,15 @@ def _apply_environment_assertions(
     if error or state is None:
         result.hard_assertions.environment_state = None
         result.metrics["environment_state_error"] = error or "environment state unavailable"
-        if result.status == "passed":
-            result.status = "judge_error"
+        result.status = "judge_error"
+        result.metrics["quality_score"] = None
+        _set_outcome_metrics(
+            result,
+            success=None,
+            eligible=False,
+            failure_class="evaluation",
+            stage="evaluation",
+        )
         result.finished_at = now_iso()
         return result
 
@@ -705,6 +712,14 @@ def _apply_environment_assertions(
             )
         if result.status == "passed":
             result.status = "failed"
+            result.metrics["quality_score"] = 0.0
+            _set_outcome_metrics(
+                result,
+                success=False,
+                eligible=True,
+                failure_class="agent",
+                stage=_failure_stage(result),
+            )
     result.finished_at = now_iso()
     return result
 

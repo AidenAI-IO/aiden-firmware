@@ -137,9 +137,10 @@ benchmark/mobilegym/
 }
 ```
 
-长列表滚动实验可直接使用 `benchmark/suites/mobilegym_list_search.json`。
-它在“列表实验室”的 100 项固定列表中提供第 24 和第 83 项两个目标，并通过
-`/state` 与 `/route` 校验最终选择，不只依赖截图文字判断。
+Use `benchmark/suites/mobilegym_scroll_regression.json` for the two fixed
+Scroll Lab targets (positions 24 and 83). Final selection and irreversible
+scroll overshoot are checked through `/state` and `/route`. The 100-depth
+`mobilegym_scroll_sweep.json` is optional calibration, not the regression gate.
 
 ## 🔧 配置说明
 

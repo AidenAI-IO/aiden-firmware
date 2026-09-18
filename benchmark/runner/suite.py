@@ -119,6 +119,7 @@ class TaskSpec:
     expected_recalled_memory_tool: str = "recall_memory"
     expected_recall_from_consolidation: bool = False
     app_ids: list[str] = dc.field(default_factory=list)
+    foreground_app_id: str | None = None
     environment_assertions: dict[str, Any] = dc.field(default_factory=dict)
     consolidation_expectation: ConsolidationExpectation | None = None
 
@@ -268,6 +269,13 @@ def load_suite(path: Path) -> Suite:
         ):
             raise SuiteValidationError(f"task {tid}: app_ids must be a list of non-empty strings")
         app_ids = list(dict.fromkeys(item.strip() for item in raw_app_ids))
+        foreground_app_id = raw.get("foreground_app_id")
+        if foreground_app_id is not None and (
+            not isinstance(foreground_app_id, str)
+            or not foreground_app_id.strip()
+            or foreground_app_id != foreground_app_id.strip()
+        ):
+            raise SuiteValidationError(f"task {tid}: foreground_app_id must be a non-empty app ID")
         environment_assertions = _parse_environment_assertions(
             raw.get("environment_assertions"), tid
         )
@@ -351,6 +359,7 @@ def load_suite(path: Path) -> Suite:
             expected_recalled_memory_tool=expected_recalled_memory_tool,
             expected_recall_from_consolidation=expected_recall_from_consolidation,
             app_ids=app_ids,
+            foreground_app_id=foreground_app_id,
             environment_assertions=environment_assertions,
             consolidation_expectation=consolidation_expectation,
         ))
@@ -566,6 +575,10 @@ def _parse_environment_assertions(raw: Any, task_id: str) -> dict[str, Any]:
                 f"task {task_id}: environment_assertions paths must be non-empty strings"
             )
         normalized = path.strip()
+        if normalized in assertions:
+            raise SuiteValidationError(
+                f"task {task_id}: duplicate environment_assertions path {normalized!r}"
+            )
         if any(not part for part in normalized.split(".")):
             raise SuiteValidationError(
                 f"task {task_id}: invalid environment_assertions path {path!r}"
