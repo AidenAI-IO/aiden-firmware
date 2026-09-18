@@ -62,11 +62,13 @@ def _safe_child_path(root: Path, *parts: str) -> Path | None:
 
 def _fmt_time_ms(ms: float | int | str | None) -> str:
     """Format milliseconds as a human-readable time string."""
+    if not ms:
+        return "0ms"
     try:
-        ms_num = float(ms) if ms is not None else 0
+        ms_num = float(ms)
     except (TypeError, ValueError):
-        # If conversion fails, return the value as-is (might be malicious HTML that will be escaped)
-        return str(ms) + "ms" if ms else "0ms"
+        # If conversion fails, escape and return the value with ms suffix
+        return _esc(str(ms)) + "ms"
 
     if ms_num < 1000:
         return f"{int(ms_num)}ms"
@@ -211,24 +213,29 @@ def _capability_metrics_html(run_dir: Path) -> str:
         return value_text, coverage
 
     def fmt_num(value: Any) -> str:
+        """Format numbers - use integers for counts, decimals for rates."""
         if value is None:
             return "n/a"
         if isinstance(value, float):
+            # If the value is a whole number (count), show as integer
+            if value == int(value):
+                return str(int(value))
+            # Otherwise show with appropriate decimal places
             return f"{value:.1f}" if value >= 10 else f"{value:.2f}"
         return str(value)
 
+    def fmt_count(value: Any) -> str:
+        """Format count metrics as integers (always round, never show decimals)."""
+        if value is None:
+            return "n/a"
+        return str(int(round(value)))
+
     def fmt_time(stat_dict: dict[str, Any] | None) -> str:
-        """Format time from milliseconds to seconds with decimal places."""
+        """Format time from milliseconds using human-readable format."""
         if not stat_dict or stat_dict.get("p50") is None:
             return "n/a"
         ms = stat_dict['p50']
-        sec = ms / 1000.0
-        if sec < 1:
-            return f"{sec:.2f}s"
-        elif sec < 10:
-            return f"{sec:.2f}s"
-        else:
-            return f"{sec:.1f}s"
+        return _fmt_time_ms(ms)
 
     pass_at_1, pass_at_1_detail = rate("pass_at_1")
     pass_at_k, pass_at_k_detail = rate("pass_at_k")
@@ -260,9 +267,9 @@ def _capability_metrics_html(run_dir: Path) -> str:
     wall_str = f"{wall_p50 / 1000:.2f}s" if wall_p50 else "n/a"
     cost_str = f"${cost_p50:.4f}" if cost_p50 else "n/a"
 
-    # Efficiency metrics
-    tool_calls_p50 = fmt_num((aggregate.get("tool_calls") or {}).get("p50"))
-    llm_calls_p50 = fmt_num((aggregate.get("llm_calls") or {}).get("p50"))
+    # Efficiency metrics (counts should be integers)
+    tool_calls_p50 = fmt_count((aggregate.get("tool_calls") or {}).get("p50"))
+    llm_calls_p50 = fmt_count((aggregate.get("llm_calls") or {}).get("p50"))
     task_wall_p50 = fmt_time(aggregate.get("task_wall_ms"))
     llm_time_p50 = fmt_time(aggregate.get("llm_time_ms"))
     device_exec_p50 = fmt_time(aggregate.get("device_execution_ms"))
@@ -327,7 +334,7 @@ def _capability_metrics_html(run_dir: Path) -> str:
             first_icon = "✓" if first_passed is True else ("✗" if first_passed is False else "-")
             score_str = f"{avg_score:.2f}" if avg_score is not None else "n/a"
             best_score_str = f"{best_score:.2f}" if best_score is not None else "n/a"
-            wall_str = f"{avg_wall / 1000:.1f}s" if avg_wall is not None else "n/a"
+            wall_str = _fmt_time_ms(avg_wall) if avg_wall is not None else "n/a"
 
             status_class = "passed" if pass_rate == 1.0 else ("failed" if pass_rate == 0.0 else "partial")
 
@@ -346,18 +353,18 @@ def _capability_metrics_html(run_dir: Path) -> str:
         per_task_section = f"""
 <section class="per-task-results">
   <h2>Per-Task Results</h2>
-  <p class="section-desc">Individual task performance (sorted by pass rate, lowest first)</p>
+  <p class="section-desc">Individual task performance across k attempts (sorted by pass rate, lowest first). Quality Score = rubric pass count / total rubric items (0-1 scale, higher is better).</p>
   <div class="table-wrap">
     <table class="per-task-table">
       <thead>
         <tr>
           <th>Task ID</th>
-          <th class="text-center">Status</th>
-          <th class="text-center">Pass Rate</th>
-          <th class="text-center">1st✓</th>
-          <th class="text-right">Avg Score</th>
-          <th class="text-right">Best Score</th>
-          <th class="text-right">Avg Time</th>
+          <th class="text-center" title="Number of passed attempts / total eligible attempts">Passed/Total</th>
+          <th class="text-center" title="Percentage of attempts that passed">Pass Rate</th>
+          <th class="text-center" title="✓ = first attempt passed, ✗ = first attempt failed">1st Attempt</th>
+          <th class="text-right" title="Average quality score across all attempts (0-1 scale)">Avg Quality</th>
+          <th class="text-right" title="Best quality score among all attempts (0-1 scale)">Best Quality</th>
+          <th class="text-right" title="Average wall-clock time per attempt">Avg Latency</th>
         </tr>
       </thead>
       <tbody>
@@ -419,17 +426,17 @@ def _capability_metrics_html(run_dir: Path) -> str:
 
   <div class="efficiency-grid">
     <div class="efficiency-group">
-      <h3>Execution</h3>
-      <div class="metric-row"><span class="metric-label">Task wall time (p50)</span><span class="metric-value">{_esc(task_wall_p50)}</span></div>
-      <div class="metric-row"><span class="metric-label">Tool calls (p50)</span><span class="metric-value">{_esc(tool_calls_p50)}</span></div>
-      <div class="metric-row"><span class="metric-label">LLM calls (p50)</span><span class="metric-value">{_esc(llm_calls_p50)}</span></div>
-      <div class="metric-row"><span class="metric-label">Screenshot capture (p50)</span><span class="metric-value">{_esc(screenshot_p50)}</span></div>
+      <h3>Call Counts</h3>
+      <div class="metric-row"><span class="metric-label">Tool calls (p50)</span><span class="metric-value">{_esc(tool_calls_p50)} calls</span></div>
+      <div class="metric-row"><span class="metric-label">LLM calls (p50)</span><span class="metric-value">{_esc(llm_calls_p50)} calls</span></div>
     </div>
 
     <div class="efficiency-group">
-      <h3>Latency</h3>
+      <h3>Timing</h3>
+      <div class="metric-row"><span class="metric-label">Task wall time (p50)</span><span class="metric-value">{_esc(task_wall_p50)}</span></div>
       <div class="metric-row"><span class="metric-label">LLM time (p50)</span><span class="metric-value">{_esc(llm_time_p50)}</span></div>
-      <div class="metric-row"><span class="metric-label">Device exec (p50)</span><span class="metric-value">{_esc(device_exec_p50)}</span></div>
+      <div class="metric-row"><span class="metric-label">Device exec time (p50)</span><span class="metric-value">{_esc(device_exec_p50)}</span></div>
+      <div class="metric-row"><span class="metric-label">Screenshot capture time (p50)</span><span class="metric-value">{_esc(screenshot_p50)}</span></div>
     </div>
 
     <div class="efficiency-group">
@@ -658,7 +665,7 @@ def generate_report_html(run_dir: Path) -> str:
   <td>{_esc(t['category'])}</td>
   <td><span class="badge {badge_cls}">{badge_label}</span></td>
   <td class="mono">{t['rubric_pass']}/{t['rubric_total']}</td>
-  <td class="mono">{t['tool_calls_count']}</td>
+  <td class="mono">{int(t['tool_calls_count'])}</td>
   <td class="mono">{_fmt_time_ms(t['wall_ms'])}</td>
 </tr>\n"""
 
@@ -727,6 +734,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   --muted: oklch(54% 0.012 250);
   --border: oklch(92% 0.005 250);
   --accent: oklch(58% 0.18 255);
+  --green: oklch(58% 0.16 145);
+  --red: oklch(60% 0.18 28);
+  --yellow: oklch(70% 0.14 75);
   --font-body: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
 }}
@@ -751,15 +761,15 @@ body {{ min-height: 100vh; background: linear-gradient(to bottom, var(--surface)
 .progress-head .count {{ font-family: var(--font-mono); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums }}
 .progress-bar {{ display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: color-mix(in oklch, var(--bg) 60%, var(--border)) }}
 .progress-bar .seg {{ height: 100% }}
-.progress-bar .seg.pass {{ background: oklch(58% 0.16 145) }}
-.progress-bar .seg.fail {{ background: oklch(60% 0.18 28) }}
-.progress-bar .seg.skip {{ background: oklch(70% 0.14 75) }}
+.progress-bar .seg.pass {{ background: var(--green) }}
+.progress-bar .seg.fail {{ background: var(--red) }}
+.progress-bar .seg.skip {{ background: var(--yellow) }}
 .progress-legend {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--muted) }}
 .progress-legend span {{ display: inline-flex; align-items: center; gap: 5px }}
 .progress-legend i {{ width: 9px; height: 9px; border-radius: 3px; display: inline-block }}
-.progress-legend i.pass {{ background: oklch(58% 0.16 145) }}
-.progress-legend i.fail {{ background: oklch(60% 0.18 28) }}
-.progress-legend i.skip {{ background: oklch(70% 0.14 75) }}
+.progress-legend i.pass {{ background: var(--green) }}
+.progress-legend i.fail {{ background: var(--red) }}
+.progress-legend i.skip {{ background: var(--yellow) }}
 .capability-metrics {{ border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 14px 16px; margin-bottom: 20px }}
 .capability-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 12px }}
 .capability-head h2 {{ font-size: 14px; margin-bottom: 4px }}
@@ -806,7 +816,7 @@ body {{ min-height: 100vh; background: linear-gradient(to bottom, var(--surface)
 .analysis {{ border: 1px solid var(--border); border-radius: 16px; background: var(--surface); padding: 16px; margin-bottom: 20px }}
 .analysis h2 {{ font-size: 14px; margin-bottom: 10px }}
 .analysis pre {{ white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--fg) }}
-.analysis.warning {{ border-color: color-mix(in oklch, oklch(60% 0.18 28) 35%, var(--border)) }}
+.analysis.warning {{ border-color: color-mix(in oklch, var(--red) 35%, var(--border)) }}
 .panel {{ border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden }}
 .panel-header {{ display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border) }}
 .panel-title {{ font-size: 14px; font-weight: 650 }}
@@ -819,9 +829,9 @@ body {{ min-height: 100vh; background: linear-gradient(to bottom, var(--surface)
 .task-id {{ font-family: var(--font-mono); font-size: 12px; color: var(--muted) }}
 .mono {{ font-family: var(--font-mono); font-variant-numeric: tabular-nums }}
 .badge {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; font-weight: 700 }}
-.badge.pass {{ color: oklch(42% 0.13 150); border-color: color-mix(in oklch, oklch(58% 0.16 145) 32%, var(--border)); background: color-mix(in oklch, oklch(58% 0.16 145) 8%, white) }}
-.badge.fail {{ color: oklch(48% 0.16 28); border-color: color-mix(in oklch, oklch(60% 0.18 28) 28%, var(--border)); background: color-mix(in oklch, oklch(60% 0.18 28) 7%, white) }}
-.badge.skip {{ color: oklch(48% 0.12 75); border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)); background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white) }}
+.badge.pass {{ color: oklch(42% 0.13 150); border-color: color-mix(in oklch, var(--green) 32%, var(--border)); background: color-mix(in oklch, var(--green) 8%, white) }}
+.badge.fail {{ color: oklch(48% 0.16 28); border-color: color-mix(in oklch, var(--red) 28%, var(--border)); background: color-mix(in oklch, var(--red) 7%, white) }}
+.badge.skip {{ color: oklch(48% 0.12 75); border-color: color-mix(in oklch, var(--yellow) 34%, var(--border)); background: color-mix(in oklch, var(--yellow) 10%, white) }}
 .drawer-backdrop {{ position: fixed; inset: 0; z-index: 40; background: color-mix(in oklch, var(--fg) 18%, transparent); opacity: 0; pointer-events: none; transition: opacity 180ms ease }}
 .drawer {{ position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; width: min(720px, 100vw); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -24px 0 80px color-mix(in oklch, var(--fg) 10%, transparent); transform: translateX(100%); transition: transform 220ms ease; display: flex; flex-direction: column }}
 body.open .drawer-backdrop {{ opacity: 1; pointer-events: auto }}
@@ -853,14 +863,14 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .assertion-detail {{ display: grid; grid-template-columns: 92px 1fr; gap: 4px 8px; color: var(--muted) }}
 .assertion-detail strong {{ color: var(--text); font-weight: 650 }}
 .assertion-row b {{ text-align: right; color: oklch(48% 0.16 28); font-variant-numeric: tabular-nums }}
-.error-block {{ border-color: color-mix(in oklch, oklch(60% 0.18 28) 28%, var(--border)) }}
-.error-block .block-head {{ background: color-mix(in oklch, oklch(60% 0.18 28) 7%, white); border-bottom-color: color-mix(in oklch, oklch(60% 0.18 28) 20%, var(--border)) }}
+.error-block {{ border-color: color-mix(in oklch, var(--red) 28%, var(--border)) }}
+.error-block .block-head {{ background: color-mix(in oklch, var(--red) 7%, white); border-bottom-color: color-mix(in oklch, var(--red) 20%, var(--border)) }}
 .error-item {{ padding: 8px 0; border-bottom: 1px solid var(--border) }}
 .error-item:last-child {{ border-bottom: 0 }}
 .error-type {{ font-weight: 650; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: oklch(48% 0.16 28); margin-bottom: 4px }}
 .error-msg {{ font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.5 }}
-.warning-block {{ border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)) }}
-.warning-block .block-head {{ background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white); border-bottom-color: color-mix(in oklch, oklch(70% 0.14 75) 25%, var(--border)) }}
+.warning-block {{ border-color: color-mix(in oklch, var(--yellow) 34%, var(--border)) }}
+.warning-block .block-head {{ background: color-mix(in oklch, var(--yellow) 10%, white); border-bottom-color: color-mix(in oklch, var(--yellow) 25%, var(--border)) }}
 .trace-actions {{ display: flex; justify-content: flex-start; margin-bottom: 12px }}
 .trace-toggle {{ height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--fg); color: white; padding: 0 12px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer }}
 .trace-toggle:hover {{ background: color-mix(in oklch, var(--fg) 88%, var(--accent)) }}
@@ -929,7 +939,14 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
   </div>
   <div style="overflow:auto">
     <table class="task-table">
-      <thead><tr><th>Task ID</th><th>Category</th><th>Status</th><th>Rubric</th><th>Tools</th><th>Latency</th></tr></thead>
+      <thead><tr>
+        <th>Task ID</th>
+        <th>Category</th>
+        <th>Status</th>
+        <th title="Rubric checks passed / total">Rubric</th>
+        <th title="Number of tool invocations">Tool Calls</th>
+        <th title="Wall-clock execution time">Latency</th>
+      </tr></thead>
       <tbody>{rows_html}</tbody>
     </table>
   </div>
@@ -990,9 +1007,9 @@ function openDrawer(i) {{
   document.getElementById("dChips").innerHTML =
     '<span class="chip">' + esc(t.category) + '</span>' +
     '<span class="chip">' + esc(t.status) + '</span>' +
-    '<span class="chip">' + esc(String(t.tool_calls_count)) + ' tools</span>' +
+    '<span class="chip">' + Math.floor(t.tool_calls_count) + ' tools</span>' +
     '<span class="chip">' + formatTime(t.wall_ms) + '</span>' +
-    (t.screenshots_taken ? '<span class="chip">' + esc(String(t.screenshots_taken)) + ' screenshots</span>' : '');
+    (t.screenshots_taken ? '<span class="chip">' + Math.floor(t.screenshots_taken) + ' screenshots</span>' : '');
   var body = "";
   body += '<div class="block"><div class="block-head"><strong>Prompt</strong><span>user input</span></div><pre class="block-body">' + esc(t.prompt) + '</pre></div>';
   body += '<div class="block"><div class="block-head"><strong>Task Description</strong><span>for judge</span></div><div class="block-body">' + esc(t.description) + '</div></div>';

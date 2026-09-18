@@ -34,7 +34,6 @@ from runner.report import (
 )
 from runner.recovery import (
     DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
-    recover_agent_after_timeout,
     wait_for_agent_ready,
 )
 from runner.reset import (
@@ -469,7 +468,11 @@ def _run_target_platform(units: list[TaskRunUnit], fallback: str = "") -> str:
 
 
 def _planned_metrics_k(units: list[TaskRunUnit]) -> int:
-    """Use the common planned repeat prefix when tasks have different repeats."""
+    """Determine metrics_k from task units.
+
+    Returns the minimum number of repeats across all tasks, which represents
+    the k value for fixed-k evaluation (pass@k, pass^k metrics).
+    """
     repeats = [unit.repeats for unit in units if unit.repeats > 0]
     return min(repeats, default=1)
 
@@ -1061,13 +1064,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "totals": _result_totals(results, total_runs),
                 })
 
-                if r.status in {"timeout", "skipped", "judge_error", "failed"}:
-                    if not recover_agent_after_timeout(
-                        client, timeout_sec=args.agent_recovery_timeout_sec
-                    ):
-                        wait_for_agent_ready(
-                            client, timeout_sec=args.agent_recovery_timeout_sec
-                        )
                 if args.inter_task_cooldown_sec > 0:
                     time.sleep(args.inter_task_cooldown_sec)
             finally:

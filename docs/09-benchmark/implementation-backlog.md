@@ -19,8 +19,8 @@ P0 builds on that mechanism. `repeat` is execution configuration, not a metric.
 ## P0: reliable offline metrics
 
 P0 adds one machine-readable `metrics.json` artifact and a concise English
-section in `summary.md`. The existing HTML report and `compare` command remain
-unchanged.
+section in `summary.md`. The HTML report includes capability metrics, per-task
+statistics tables, and formatted timing displays.
 
 ### Outcome and denominator
 
