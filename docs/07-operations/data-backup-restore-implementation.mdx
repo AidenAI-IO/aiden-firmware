@@ -1037,12 +1037,12 @@ Back up Agent data and settings to this computer or phone, or restore a validate
 卡片中增加以下常驻元素：
 
 - 最近一次操作状态；
-- 当前任务进度条和阶段文案；
-- 运行中的备份和恢复任务均只提供 Hide，不显示 Cancel operation；恢复计划确认后不可由 Config Web 取消；
+- 当前任务状态和阶段文案；主页面和弹窗均不显示进度条；
+- 运行中的备份和恢复任务不提供 Hide 或 Cancel operation；恢复开始后不可由 Config Web 取消；
 - `Agent configuration only` 高级折叠区，承载原 TOML Export/Import；
 - SD 缺失、空间不足、设备身份不匹配等警告区。
 
-备份和恢复向导的标题栏只显示标题，不提供右上角 Close。用户在参数页通过底部 Cancel 退出，在运行页通过 Hide 收起对话框，完成页通过 Close 关闭结果。
+备份和恢复向导的标题栏只显示标题，不提供右上角 Close。用户在开始前通过底部 Cancel 直接退出，无二次确认；运行页不提供关闭或隐藏入口，完成页通过 Close 关闭结果。运行期间保持页面打开和 USB 连接。
 
 页面通过非 USB 网络访问时，完整数据 Create backup 和 Restore backup 按钮保持禁用，并提示用户通过 USB 连接设备。TOML 配置功能是否允许非 USB 访问继续沿用现有 Config Web 策略。
 
@@ -1109,10 +1109,10 @@ src/config_web/web/assets/js/config/backup-checksum.js
 1. 选择 `.aiden-backup`；
 2. 读取固定大小公共头，确认格式版本和明文 frame 校验参数；
 3. 不要求密码，拒绝未经确认的来源；旧版加密归档提示使用原客户端；
-4. 创建 restore job 并获得 chunk size；
-5. 上传首部块，第 0 块完成后尽早检查 frame 摘要；
-6. 解出 manifest 后暂停上传，显示来源设备、备份时间、目标空间和 SD UUID；Config Web 自动选择全部组件并固定 `allow_different`。计划页点击 Cancel 时直接取消任务并清理暂存内容，不显示二次确认；点击“开始恢复”时显示一次确认弹窗，取消弹窗则留在计划页；
-7. 用户确认后调用 `plan`，SD 数据恢复到当前插入并挂载的 SD 卡；恢复进度页不显示 Cancel，Config Web 不再提供用户取消入口；
+4. 单一恢复入口页显示文件名、大小、备份时间、全量恢复与当前 SD 卡策略说明，以及设备身份显式确认勾选框。公共头不含完整 manifest，入口页不声称已校验来源身份或 SD UUID。按钮显示 `Restore`，不再提供单独的 Upload and verify 或 Start restore 页面；
+5. 点击 Restore 后显示一次确认弹窗，说明连续执行上传、校验和恢复、音频冲突文件均保留、开始后无法取消及可能自动重启。取消确认则留在入口页，不创建任务；确认后创建 restore job 并获得 chunk size，进入运行页；
+6. 上传首部块，第 0 块完成后尽早检查 frame 摘要。解出 manifest 后自动提交 `plan`，选择全部 manifest 组件并固定 `allow_different`；`confirm_conflicts=true` 对应入口页及弹窗已说明的音频保留策略，`confirm_identity` 使用开始时用户勾选状态。SD 数据恢复到当前插入并挂载的 SD 卡；
+7. 不显示中间计划页，无需再次点击按钮。后端仍校验设备身份、pending OTA boot、SD 和容量；拒绝计划或校验失败时自动清理任务及暂存数据并显示失败，不继续 apply；
 8. 精确容量预检通过后继续严格按序上传，设备端同步校验并展开到 `new/`，显示上传和暂存进度；
 9. 上传完成后调用 `validate`，完成 footer、组件摘要和暂存树校验；
 10. 校验成功后自动携带 plan digest 调用 `apply`，不显示 RESTORE 文本输入步骤；
@@ -1120,7 +1120,7 @@ src/config_web/web/assets/js/config/backup-checksum.js
 12. 状态为 `reboot_required` 时显示自动重启和重新连接提示；只有设备明确报告未自动重启时才提供手动 Reboot 按钮；
 13. 重启后页面重新连接并查询恢复结果。
 
-接收第一个块前进入 `restore_ingest` 维护阶段，暂停存储自动清理并保留空间；具备可靠存储保护租约时 Agent 可以继续运行，缺少该能力时从第一个块开始停止 Agent。apply 前必须停止全部相关写入服务。Config Web 仅允许在恢复计划确认前从计划页取消；确认后不再显示或执行用户取消。服务端仍保留失败、超时和内部中止所需的清理路径，在 committing 阶段只能等待完成或由事务恢复逻辑处理。
+接收第一个块前进入 `restore_ingest` 维护阶段，暂停存储自动清理并保留空间；具备可靠存储保护租约时 Agent 可以继续运行，缺少该能力时从第一个块开始停止 Agent。apply 前必须停止全部相关写入服务。Config Web 仅允许在恢复开始前退出入口页；开始后不再显示或执行用户取消。服务端仍保留失败、超时和内部中止所需的清理路径，在 committing 阶段只能等待完成或由事务恢复逻辑处理。
 
 截图所示设备仅剩 0.5 GiB 可用空间时，页面应在上传前突出显示恢复空间风险。备份导出采用直接流式传输；恢复也不保存完整 upload 文件，但仍需要 `new`、rollback 和安全余量空间，必须在任务创建时粗略预检，并在解出 manifest 后精确预检。
 
@@ -1205,7 +1205,7 @@ window.AidenHostCapabilities = {
 - 页面顶部显示维护状态；
 - 离开页面前提示任务仍在进行，但离开页面不取消任务；
 - 重新进入页面后通过 `GET /api/maintenance/current` 恢复进度；
-- Config Web banner 只用于短消息，长任务使用卡片内固定进度区域；
+- Config Web banner 只用于短消息，长任务使用弹窗及卡片的文字状态，不显示进度条；
 - `423 Locked` 响应统一跳转到当前任务状态，不显示普通网络错误。
 
 ## 15. 电脑客户端
@@ -1394,10 +1394,10 @@ Config Web 前端测试：
 - capability 到自动全量备份、job 创建和下载触发流程，不显示备份组件、模式或密码控件；
 - 浏览器下载路径不调用 `response.blob()`；
 - restore 使用 `File.slice()` 按块上传；
-- manifest 就绪后暂停上传，自动提交全部组件和 `allow_different` SD 策略，页面不显示相应选择控件；
-- 恢复计划页以一次确认弹窗代替 RESTORE 文本输入；确认后恢复进度页不显示取消按钮，直接 validate 并 apply；
-- 备份和恢复向导标题栏不显示 Close；恢复计划页 Cancel 直接取消且不显示确认弹窗；
-- 创建备份开始后进度页只显示 Hide，不显示 Cancel operation；
+- 恢复只有一个入口页，按钮显示 Restore；开始前确认一次，随后连续执行 upload、自动 plan、validate、apply，无中间计划页及 RESTORE 文本输入；
+- manifest 就绪后自动提交全部组件和 `allow_different` SD 策略；身份确认使用入口页勾选状态，后端拒绝时清理暂存数据且不 apply；
+- 备份和恢复向导标题栏不显示 Close；开始前 Cancel 直接退出且不显示确认弹窗；
+- 运行页不显示 Hide 或 Cancel operation；弹窗及主页面不显示进度条，保留文字状态；
 - 页面刷新后的恢复上传提示从头重试，不尝试连续 gzip 续传；
 - 页面刷新后通过 `/api/maintenance/current` 恢复进度；
 - HTTP 下 UUID v4 和 SHA-256 后备、会话过期续建；`423 Locked`、运行阶段不显示取消入口、摘要错误、SD 缺失和空间不足页面；
@@ -1564,7 +1564,7 @@ yarn lint
 | pending boot 拒绝 identity 恢复、硬件 ID 不可用时要求显式确认、跨设备拒绝 | 完成 | `TestRestorePlanRejectsIdentityDuringPendingBootAndOnForeignDevice` |
 | identity 提交后执行 `ota provision-identity`，`reboot_required` 时先落盘再自动重启 | 完成 | 设备端未经硬件验证 |
 | `agent_config` 复用 TOML 导入校验，提交后重新应用 frame/storage 配置；`system_environment` 恢复后重启 `aiden-environment.service` | 完成 | |
-| Config Web 页面：自动全量同设备备份、无密码、恢复 plan/confirm、卡片进度、刷新重绑、HTTP UUID/SHA-256 后备、会话续建、维护互斥、EN/ZH 文案 | 完成 | 本次修改的验证结果见测试记录；原有全链路验证需随运行实例更新重跑 |
+| Config Web 页面：自动全量同设备备份、无密码、单页一键上传/校验/恢复、自动 plan、文字状态且无进度条及 Hide、刷新重绑、HTTP UUID/SHA-256 后备、会话续建、维护互斥、EN/ZH 文案 | 完成 | 本次修改的验证结果见测试记录；原有全链路验证需随运行实例更新重跑 |
 | 电脑 CLI | 完成 | 新版创建固定全量同设备，create/verify/restore 不提示密码；旧版加密归档需要原客户端 |
 | Bridge App WebView 原生桥接（阶段三） | 未实现 | 页面已按 §14.6 的消息协议预留 `host-transfer.js` 适配层 |
 | 硬件测试（§18.3）、断电故障注入 | 未执行 | 新归档不使用 Argon2id；仍需真实板卡容量和断电验证 |
@@ -1586,3 +1586,7 @@ git diff --check
 ```
 
 新增测试覆盖无密码归档往返、frame 损坏和 footer 截断、全部 advanced components 默认纳入、CLI 无密码校验、HTTP cookie 与 UUID v4，以及 HTTP 下 SHA-256 和会话续建。HTTP 前端回归测试为 4 项。此记录只证明源码和构建验证；运行中的板卡需要部署新的 Agent 二进制和 Config Web 资源后才会生效，部署后应重新验证真实设备备份链路。不要使用真实用户数据执行破坏性恢复测试。
+
+### 22.2 2026-09-18 单页恢复交互验证
+
+Ubuntu 上执行 `node --test src/config_web/web/tests/backup-http.test.mjs`，6 项测试全部通过。新增单页恢复测试覆盖浏览器成功链路、取消开始确认时不创建任务、身份计划拒绝与完整性校验拒绝时清理任务且不 apply，以及原生传输适配路径。DOM 检查覆盖单一 Restore 按钮、无中间计划页、运行页无 Hide/取消按钮和页面无进度条。修改的 JavaScript 模块语法检查及 `git diff --check` 通过。本次仅更新 Config Web 源码和文档，不修改归档格式及后端事务协议；尚未部署到板卡或执行真实数据恢复测试。

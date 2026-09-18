@@ -26,7 +26,7 @@ import {applySystemEnv, refreshSystemEnvApplication, cancelSystemEnvEdit, enterS
 import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
 import {VISIBLE_FIELDS} from './field-visibility.js';
 import {SECTION_TO_GROUP_MAP} from './config-groups.js';
-import {cancelDataBackup, chooseDataRestore, closeDataBackup, continueDataRestore, createDataBackup, initBackup, startDataBackup, startDataRestore} from './backup.js';
+import {cancelDataBackup, chooseDataRestore, closeDataBackup, createDataBackup, initBackup, startDataBackup, startDataRestore} from './backup.js';
 
 const simpleActions = {
   'export-logs': exportLogs,
@@ -49,7 +49,6 @@ const simpleActions = {
   'choose-data-restore': chooseDataRestore,
   'start-data-backup': startDataBackup,
   'start-data-restore': startDataRestore,
-  'continue-data-restore': continueDataRestore,
   'cancel-data-backup': cancelDataBackup,
   'close-data-backup': closeDataBackup,
   'edit-system-env': enterSystemEnvEdit,

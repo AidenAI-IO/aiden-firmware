@@ -6,7 +6,7 @@ import {byId, appState, runtimeFunction} from './state.js';
 import {createMaintenanceRequestID} from './backup-session.js';
 import {
   openBackupModal, closeBackupModal, isBackupModalOpen, showStep, setBackupStatus, setCardStatus,
-  setBackupProgress, hideCardProgress, renderManifestSummary,
+  setBackupProgress, hideCardProgress,
   setRestoreFileInfo, setDoneMessage, formatBytes,
 } from './backup-modal.js';
 import {
@@ -26,21 +26,13 @@ const MAINTENANCE_LOCKED_IDS = ['dataBackupExportBtn', 'dataRestoreImportBtn'];
 let maintenanceSession = null;
 let activeJob = null;      // {kind: 'backup'|'restore', job_id, transfer_token, state, ...}
 let activeFile = null;
-let restorePlanComponents = [];
-let planGate = null;       // deferred resolved by continueDataRestore
+let restoreIdentityConfirmed = false;
 let restoreCancellationDisabled = false;
 let pollTimer = null;
 let usbBlocked = false;
 
 function requestID() {
   return createMaintenanceRequestID();
-}
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
-  return {promise, resolve, reject};
 }
 
 function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -275,6 +267,11 @@ export async function startDataBackup() {
     setBackupStatus(errorText(error), true);
     setDetails(error.message);
     if (activeJob && !TERMINAL.has(activeJob.state)) setActiveJob({...activeJob, state: 'failed'});
+    const message = t('backup.create_failed', {error: errorText(error)});
+    setCardStatus(message, true);
+    hideCardProgress();
+    setDoneMessage(message, true);
+    showStep('done');
     applyMaintenanceLock();
   } finally {
     if (button) button.disabled = false;
@@ -294,6 +291,9 @@ export async function restoreFileSelected(file) {
   if (!file) return;
   activeFile = file;
   restoreCancellationDisabled = false;
+  restoreIdentityConfirmed = false;
+  const identity = byId('dataRestoreIdentityConfirm');
+  if (identity) identity.checked = false;
   openBackupModal('restore');
   showStep('restore-intro');
   setRestoreFileInfo(file);
@@ -316,16 +316,21 @@ export async function restoreFileSelected(file) {
 export async function startDataRestore() {
   const file = activeFile;
   if (!file || !file.header) return;
+  if (activeJob && !TERMINAL.has(activeJob.state)) return;
+  if (!window.confirm(t('backup.restore_confirm'))) return;
+  restoreIdentityConfirmed = !!byId('dataRestoreIdentityConfirm')?.checked;
+  restoreCancellationDisabled = true;
   const button = byId('dataRestoreStartBtn');
   if (button) button.disabled = true;
+  showStep('progress');
+  setBackupStatus('');
+  setBackupProgress(0, 0, t('backup.phase.ready'), true);
   try {
     const created = await maintenanceRequest('/api/restore/jobs', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({format_version: 1, archive_size: file.size, public_header: file.header, protection: {mode: 'none'}}),
     });
     setActiveJob({kind: 'restore', ...created, archive_size: file.size});
-    showStep('progress');
-    setBackupStatus('');
     setCardStatus(t('backup.restore_started'));
     setBackupProgress(0, file.size, t('backup.phase.restore_ingest'));
     if (file.native && hasNativeTransfer()) {
@@ -360,7 +365,7 @@ async function handleChunkResponse(response, offset, total) {
   updateJob(response);
   if (response.error) throw Object.assign(new Error(response.error.message || response.error.code), {error: response.error.code});
   renderJobProgress({...response, received_bytes: offset, archive_size: total});
-  if (response.state === 'awaiting_plan') await presentRestorePlan(response);
+  if (response.state === 'awaiting_plan') await submitRestorePlan(response);
 }
 
 async function waitForNativeUpload(jobId) {
@@ -371,55 +376,29 @@ async function waitForNativeUpload(jobId) {
     updateJob(payload);
     renderJobProgress(payload);
     if (payload.error) throw Object.assign(new Error(payload.error.message || payload.error.code), {error: payload.error.code});
-    if (payload.state === 'awaiting_plan' && !activeJob.plan_digest) await presentRestorePlan(payload);
+    if (payload.state === 'awaiting_plan' && !activeJob.plan_digest) await submitRestorePlan(payload);
     if (payload.state === 'validating' || payload.state === 'prepared') return;
     if (TERMINAL.has(payload.state)) throw new Error(t('backup.error.upload_interrupted'));
     await delay(1000);
   }
 }
 
-async function presentRestorePlan(payload) {
+async function submitRestorePlan(payload) {
   const manifest = payload.manifest || (await jobRequest(jobPath('restore', activeJob.job_id))).manifest;
+  if (!manifest || !Array.isArray(manifest.components)) throw new Error('manifest_invalid');
   const components = manifest?.components || [];
-  restorePlanComponents = components.map(item => item.id);
-  renderManifestSummary({...manifest, conflicts: manifest?.conflicts}, activeFile);
-  const conflictRow = byId('dataRestoreConflictRow');
-  if (conflictRow) conflictRow.hidden = !manifest?.conflicts;
-  const identityRow = byId('dataRestoreIdentityRow');
-  if (identityRow) identityRow.hidden = !components.some(item => item.id === 'device_identity');
-  showStep('restore-plan');
-  planGate = deferred();
-  await planGate.promise;
-  showStep('progress');
-}
-
-export async function continueDataRestore() {
-  if (!activeJob || !planGate) return;
-  if (!window.confirm(t('backup.restore_confirm'))) return;
-  restoreCancellationDisabled = true;
-  const button = byId('dataRestorePlanBtn');
-  if (button) button.disabled = true;
-  try {
-    const response = await maintenanceRequest(jobPath('restore', activeJob.job_id, '/plan'), {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        components: restorePlanComponents,
-        sd_strategy: RESTORE_SD_STRATEGY,
-        confirm_conflicts: !!byId('dataRestoreConflictConfirm')?.checked,
-        confirm_identity: !!byId('dataRestoreIdentityConfirm')?.checked,
-      }),
-    });
-    updateJob(response);
-    setBackupStatus('');
-    const gate = planGate;
-    planGate = null;
-    gate.resolve(response);
-  } catch (error) {
-    restoreCancellationDisabled = false;
-    setBackupStatus(errorText(error), true);
-  } finally {
-    if (button) button.disabled = false;
-  }
+  // The entry page confirms the complete operation before any upload. Keep
+  // the backend plan/space/identity checks without another interactive step.
+  const response = await maintenanceRequest(jobPath('restore', activeJob.job_id, '/plan'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      components: components.map(item => item.id),
+      sd_strategy: RESTORE_SD_STRATEGY,
+      confirm_conflicts: true,
+      confirm_identity: restoreIdentityConfirmed,
+    }),
+  });
+  updateJob(response);
 }
 
 async function validateAndApply(jobId) {
@@ -457,7 +436,6 @@ export async function cancelDataBackup() {
   try {
     cancelNativeTransfer(activeJob.job_id);
     const payload = await maintenanceRequest(jobPath(activeJob.kind, activeJob.job_id), {method: 'DELETE'});
-    if (planGate) planGate.reject(new Error(t('backup.cancelled')));
     updateJob(payload);
     if (TERMINAL.has(payload.state)) finishJob(payload);
   } catch (error) {
@@ -466,16 +444,7 @@ export async function cancelDataBackup() {
 }
 
 export function closeDataBackup() {
-  if (activeJob && !TERMINAL.has(activeJob.state) && !planGate) {
-    closeBackupModal();
-    return;
-  }
-  if (planGate) {
-    // Leaving the wizard mid-plan abandons the upload: the device discards
-    // staging when the job is deleted.
-    cancelDataBackup();
-    return;
-  }
+  if (activeJob && !TERMINAL.has(activeJob.state)) return;
   closeBackupModal();
 }
 
