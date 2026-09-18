@@ -591,6 +591,11 @@ func realtimeProviderType(cfg agent.Config) string {
 }
 
 func realtimeProviderSessionConfig(cfg agent.Config, runtime *agent.Runtime) realtimevoice.SessionConfig {
+	return realtimeProviderSessionConfigWithTools(cfg, runtime, nil)
+}
+
+func realtimeProviderSessionConfigWithTools(cfg agent.Config, runtime *agent.Runtime, runtimeTools []langtools.Tool) realtimevoice.SessionConfig {
+	nativeReasoning := cfg.UsesNativeRealtimeReasoning()
 	voice := cfg.VoiceModel.Voice
 	inputFormat := cfg.VoiceModel.InputAudioFormat
 	if inputFormat == "" {
@@ -605,7 +610,9 @@ func realtimeProviderSessionConfig(cfg agent.Config, runtime *agent.Runtime) rea
 		turnType = "server_vad"
 	}
 	instructions := strings.TrimSpace(cfg.VoiceModel.Instructions)
-	if instructions == "" {
+	if nativeReasoning && (instructions == "" || instructions == agent.DefaultRealtimeVoiceInstructions) {
+		instructions = agent.DefaultNativeRealtimeVoiceInstructions
+	} else if instructions == "" {
 		instructions = agent.DefaultRealtimeVoiceInstructions
 	}
 	instructions = strings.TrimSpace(strings.Join([]string{instructions, agent.ResponseLanguageGuidance(cfg.LocaleOrDefault())}, "\n\n"))
@@ -617,7 +624,7 @@ func realtimeProviderSessionConfig(cfg agent.Config, runtime *agent.Runtime) rea
 	return realtimevoice.SessionConfig{APIKey: cfg.VoiceModel.APIKey, Model: cfg.VoiceModel.Model, Voice: voice, Instructions: instructions,
 		InputAudioFormat: inputFormat, OutputAudioFormat: outputFormat, MaxHistoryTurns: realtimeContextReplayTurns,
 		TurnDetection: turnType, TurnDetectionThresh: cfg.VoiceModel.TurnDetectionThreshold, TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
-		EnableSpeechEmotion: enableEmotion, Tools: realtimeVoiceToolDefinitions(runtime)}
+		EnableSpeechEmotion: enableEmotion, Tools: realtimeVoiceToolDefinitionsWithTools(cfg, runtime, runtimeTools)}
 }
 
 // realtimeClientTurnEndpoint tracks a local speech turn when a provider
@@ -666,8 +673,14 @@ func (e *realtimeClientTurnEndpoint) Reset() {
 // anonymous response before Gemini emits response.created. Provider VAD and
 // interruption events remain authoritative once the explicit response has
 // started.
-func shouldTrackRealtimeAdmissionSpeech(state *realtimeTurnState, chatPending bool) bool {
-	return state != nil && !chatPending && !state.responseRequestPending
+func shouldTrackRealtimeAdmissionSpeech(state *realtimeTurnState, chatPending, serverAuthoritativeInterruption bool) bool {
+	if state == nil || chatPending || state.responseRequestPending {
+		return false
+	}
+	if serverAuthoritativeInterruption && (state.responseActive || state.responseTerminalPending) {
+		return false
+	}
+	return true
 }
 
 func pcm16MeanAbs(pcm []byte) int {
@@ -709,7 +722,20 @@ var realtimeDelegatedTools = []string{
 	realtimeAudioVolumeTool,
 }
 
-func realtimeVoiceToolDefinitions(runtime *agent.Runtime) []realtimevoice.Tool {
+var realtimeNativeExcludedTools = map[string]struct{}{
+	"request_user_action":          {},
+	"wait_for_wakeup":              {},
+	realtimeCreateTaskTool:         {},
+	realtimeCancelTaskTool:         {},
+	realtimeQueryTaskTool:          {},
+	realtimeResponseUserActionTool: {},
+}
+
+func realtimeVoiceToolDefinitions(cfg agent.Config, runtime *agent.Runtime) []realtimevoice.Tool {
+	return realtimeVoiceToolDefinitionsWithTools(cfg, runtime, nil)
+}
+
+func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runtime, runtimeTools []langtools.Tool) []realtimevoice.Tool {
 	tools := []realtimevoice.Tool{
 		realtimeVoiceToolDefinition(
 			realtimeCurrentTimeTool,
@@ -741,6 +767,27 @@ func realtimeVoiceToolDefinitions(runtime *agent.Runtime) []realtimevoice.Tool {
 			"End the conversation and go back to standby when the user is done talking, for example when they say goodbye, tell you to stop listening, or say they do not need anything else. Say a short farewell in the same response; the microphone stays open until you finish speaking. The user can start a new conversation at any time, and you keep your memory and history. Work you are already handling continues, and when it finishes the device comes back on its own to report the outcome, so you may briefly say that you will let them know.",
 			map[string]any{"type": "object", "properties": map[string]any{}},
 		),
+	}
+	if cfg.UsesNativeRealtimeReasoning() {
+		if runtime != nil {
+			if runtimeTools == nil {
+				runtimeTools = runtime.AvailableTools()
+			}
+			for _, tool := range runtimeTools {
+				if tool == nil {
+					continue
+				}
+				if _, excluded := realtimeNativeExcludedTools[tool.Name()]; excluded {
+					continue
+				}
+				if containsRealtimeVoiceTool(tools, tool.Name()) {
+					continue
+				}
+				spec := agent.NewToolSpec(tool)
+				tools = append(tools, realtimeVoiceToolDefinition(spec.Name, spec.Description, spec.LLMSchema()))
+			}
+		}
+		return tools
 	}
 
 	// TODO: Register all backend agent tools directly into realtime session
@@ -789,6 +836,15 @@ func realtimeVoiceToolDefinitions(runtime *agent.Runtime) []realtimevoice.Tool {
 	return tools
 }
 
+func containsRealtimeVoiceTool(tools []realtimevoice.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func realtimeVoiceToolDefinition(name, description string, parameters map[string]any) realtimevoice.Tool {
 	encoded, err := json.Marshal(parameters)
 	if err != nil {
@@ -808,16 +864,31 @@ type realtimeVoiceToolExecutor struct {
 	tasks     *agenttask.Manager
 }
 
-func newRealtimeVoiceToolExecutor(runtime *agent.Runtime, tasks *agenttask.Manager) realtimeVoiceToolExecutor {
+func newRealtimeVoiceToolExecutor(runtime *agent.Runtime, tasks *agenttask.Manager, availableTools ...[]langtools.Tool) realtimeVoiceToolExecutor {
 	executor := realtimeVoiceToolExecutor{now: time.Now, tasks: tasks}
 	if runtime == nil {
 		return executor
 	}
-	executor.delegated = make(map[string]langtools.Tool, len(realtimeDelegatedTools))
-	for _, name := range realtimeDelegatedTools {
-		if tool, ok := runtime.Tool(name); ok {
-			executor.delegated[name] = tool
+	var available []langtools.Tool
+	if len(availableTools) > 0 && availableTools[0] != nil {
+		available = availableTools[0]
+	} else {
+		available = make([]langtools.Tool, 0, len(realtimeDelegatedTools))
+		for _, name := range realtimeDelegatedTools {
+			if tool, ok := runtime.Tool(name); ok {
+				available = append(available, tool)
+			}
 		}
+	}
+	executor.delegated = make(map[string]langtools.Tool, len(available))
+	for _, tool := range available {
+		if tool == nil {
+			continue
+		}
+		if _, excluded := realtimeNativeExcludedTools[tool.Name()]; excluded {
+			continue
+		}
+		executor.delegated[tool.Name()] = tool
 	}
 	return executor
 }
@@ -904,6 +975,18 @@ func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments str
 		}
 		return realtimeToolJSON(task)
 	default:
+		if tool := e.delegated[name]; tool != nil {
+			spec := agent.NewToolSpec(tool)
+			input := spec.NormalizeInput(arguments)
+			if err := spec.ValidateInput(input); err != nil {
+				return realtimeToolJSON(map[string]any{"error": err.Error()})
+			}
+			output, err := tool.Call(ctx, input)
+			if err != nil {
+				return realtimeToolJSON(map[string]any{"error": err.Error()})
+			}
+			return output
+		}
 		return realtimeToolJSON(map[string]any{"error": fmt.Sprintf("unsupported realtime tool %q", name)})
 	}
 }
@@ -1072,7 +1155,11 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sessionConfig := realtimeProviderSessionConfig(cfg, runtime)
+	var runtimeTools []langtools.Tool
+	if cfg.UsesNativeRealtimeReasoning() && runtime != nil {
+		runtimeTools = runtime.AvailableTools()
+	}
+	sessionConfig := realtimeProviderSessionConfigWithTools(cfg, runtime, runtimeTools)
 	if runtime != nil {
 		if err := runtime.PrepareUserContext(sessionConfig.Instructions); err != nil {
 			return err
@@ -1324,7 +1411,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			runtime.ReportSpokenTextDelivery(activeNotificationToken, context.Canceled)
 		}
 	}()
-	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks)
+	toolExecutor := newRealtimeVoiceToolExecutor(runtime, tasks, runtimeTools)
 	toolResults := make(chan realtimeToolResult, 16)
 	toolTracker := newRealtimeToolTracker()
 	var pendingTaskUpdates []agenttask.Task
@@ -1532,7 +1619,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return markRealtimeProviderFailure(err)
 			}
-			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat)) {
+			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat), info.Capabilities.ServerAuthoritativeInterruption) {
 				now := time.Now()
 				wasActive := admissionTurnEndpoint.speechActive
 				admissionTurnEndpoint.Observe(pcm, now)

@@ -897,7 +897,22 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 	}
 }
 
+// shouldBypassBackendAgent reports whether the realtime model owns reasoning
+// and tool calling without the legacy context-manager agent.
+func (r *Runtime) shouldBypassBackendAgent(cfg Config) bool {
+	if cfg.InputModeOrDefault() != "realtime" {
+		return false
+	}
+	return cfg.UsesNativeRealtimeReasoning()
+}
+
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	// Gemini 3.8 Live models handle the realtime turn themselves.
+	cfg := r.ConfigSnapshot()
+	if r.shouldBypassBackendAgent(cfg) {
+		return RunResult{}, fmt.Errorf("backend agent is disabled for this native-reasoning realtime model; all processing should be handled by the realtime voice session")
+	}
+
 	defer func() {
 		if runErr != nil && isLLMTurnFailureSource(runErr) {
 			result.TurnFailure = TurnFailureFromError(runErr)
@@ -1891,6 +1906,14 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	}
 	tools := NewToolSpecs(r.toolSnapshot().All()).AgentToolsForPlatform(r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+// AvailableTools returns the runtime-filtered tools exposed to the
+// conversational agent for the current device platform and bridge state.
+// Realtime providers use this same catalog when they execute tool calls
+// without the legacy backend agent.
+func (r *Runtime) AvailableTools() []langtools.Tool {
+	return r.availableTools()
 }
 
 // Tool returns a registered runtime tool by name. Realtime voice uses this to

@@ -102,11 +102,15 @@ type Capabilities struct {
 	// ExplicitToolContinuation means the caller must invoke CreateResponse
 	// after all results for a tool-bearing response have been sent.
 	ExplicitToolContinuation bool
-	CanCommitInputTurn       bool
-	CanInterruptResponse     bool
-	CanSendToolResult        bool
-	CanSendText              bool
-	CanReplayContext         bool
+	// ServerAuthoritativeInterruption means response output must remain active
+	// until the provider reports an interruption. A local microphone energy
+	// gate must not classify anonymous response output as stale on its own.
+	ServerAuthoritativeInterruption bool
+	CanCommitInputTurn              bool
+	CanInterruptResponse            bool
+	CanSendToolResult               bool
+	CanSendText                     bool
+	CanReplayContext                bool
 }
 
 type SessionInfo struct {

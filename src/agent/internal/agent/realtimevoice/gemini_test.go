@@ -154,6 +154,68 @@ func TestGeminiProviderNormalizesLiveSession(t *testing.T) {
 	}
 }
 
+func TestGemini38LiveSessionUsesServerAuthoritativeInterruption(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"setupComplete": map[string]any{}})
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	endpoint := "ws" + strings.TrimPrefix(server.URL, "http") + "/live"
+	for _, tc := range []struct {
+		model string
+		want  bool
+	}{
+		{model: Gemini38LiveModel, want: true},
+		{model: Gemini38ThinkingModel, want: true},
+		{model: DefaultGeminiLiveModel, want: false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			session, err := (GeminiProvider{Endpoint: endpoint}).Open(context.Background(), SessionConfig{APIKey: "test", Model: tc.model})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if got := session.Info().Capabilities.ServerAuthoritativeInterruption; got != tc.want {
+				t.Fatalf("ServerAuthoritativeInterruption = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGemini38ExtendedThinkingModelClassificationIsExact(t *testing.T) {
+	for _, model := range []string{
+		Gemini38ThinkingModel,
+		"models/" + Gemini38ThinkingModel,
+	} {
+		if !IsGemini38ExtendedThinkingModel(model) {
+			t.Fatalf("model %q was not classified as Gemini 3.8 Extended Thinking", model)
+		}
+	}
+	for _, model := range []string{
+		Gemini38LiveModel,
+		DefaultGeminiLiveModel,
+		Gemini38ThinkingModel + "-preview",
+	} {
+		if IsGemini38ExtendedThinkingModel(model) {
+			t.Fatalf("model %q was incorrectly classified as Gemini 3.8 Extended Thinking", model)
+		}
+	}
+}
+
 func TestGeminiEndpointPreservesDelegatedAccessToken(t *testing.T) {
 	provider := GeminiProvider{Endpoint: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", DelegatedCredential: true}
 	got, err := provider.endpoint("gemini-3.1-flash-live-preview", "delegated")
@@ -244,6 +306,30 @@ func TestGeminiSetupUsesJSONSchemaToolParameterField(t *testing.T) {
 	}
 	if string(declaration.ParametersJSONSchema) != string(inputSchema) {
 		t.Fatalf("parametersJsonSchema = %s, want %s", declaration.ParametersJSONSchema, inputSchema)
+	}
+}
+
+func TestGeminiExtendedThinkingSetupUsesNonBlockingTools(t *testing.T) {
+	setup := buildGeminiSetup(SessionConfig{Tools: []Tool{{
+		Name:       "clock",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	}}}, "gemini-3.8-live-extended-thinking")
+	if setup.Setup.GenerationConfig.ThinkingConfig == nil || setup.Setup.GenerationConfig.ThinkingConfig.ThinkingLevel != "LOW" {
+		t.Fatalf("thinking config = %+v, want LOW", setup.Setup.GenerationConfig.ThinkingConfig)
+	}
+	declaration := setup.Setup.Tools[0].FunctionDeclarations[0]
+	if declaration.Behavior != "NON_BLOCKING" {
+		t.Fatalf("tool behavior = %q, want NON_BLOCKING", declaration.Behavior)
+	}
+
+	for _, model := range []string{Gemini38LiveModel, DefaultGeminiLiveModel} {
+		regular := buildGeminiSetup(SessionConfig{Tools: []Tool{{Name: "clock"}}}, model)
+		if regular.Setup.GenerationConfig.ThinkingConfig != nil {
+			t.Fatalf("Gemini model %q unexpectedly received thinking config: %+v", model, regular.Setup.GenerationConfig.ThinkingConfig)
+		}
+		if behavior := regular.Setup.Tools[0].FunctionDeclarations[0].Behavior; behavior != "" {
+			t.Fatalf("Gemini model %q tool behavior = %q, want provider default", model, behavior)
+		}
 	}
 }
 

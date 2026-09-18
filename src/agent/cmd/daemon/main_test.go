@@ -51,7 +51,7 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 			TurnDetectionSilenceMs: 900,
 		},
 	}
-	got := realtimeProviderSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg, nil)
 	if got.Voice != "custom-voice" || !strings.HasPrefix(got.Instructions, "speak naturally") || got.TurnDetection != "smart_turn" {
 		t.Fatalf("unexpected realtime session config: %+v", got)
 	}
@@ -63,9 +63,8 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	}
 	wantTools := []string{
 		"get_current_time", "recall_memory", "save_memory", "forget_memory",
-		"recall_session_chunks", "audio_volume", "create_agent_task",
+		"recall_session_chunks", "audio_volume", "end_conversation", "create_agent_task",
 		"cancel_agent_task", "query_agent_task", "response_user_action",
-		"end_conversation",
 	}
 	if len(got.Tools) != len(wantTools) {
 		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
@@ -74,6 +73,172 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 		if got.Tools[i].Name != want {
 			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Name, want)
 		}
+	}
+}
+
+func TestRealtimeSessionConfigOmitsBackendAgentToolsOnlyForGemini38ExtendedThinking(t *testing.T) {
+	backendTools := map[string]bool{
+		realtimeCreateTaskTool:         true,
+		realtimeCancelTaskTool:         true,
+		realtimeQueryTaskTool:          true,
+		realtimeResponseUserActionTool: true,
+	}
+	extendedConfigs := []agent.Config{
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		{
+			VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main"},
+			VoiceModelProviders: map[string]agent.VoiceModelProvider{"gemini-main": {Type: "gemini", Model: "models/gemini-3.8-live-extended-thinking"}},
+		},
+	}
+	for _, cfg := range extendedConfigs {
+		extended := realtimeProviderSessionConfig(cfg, nil)
+		for _, tool := range extended.Tools {
+			if backendTools[tool.Name] {
+				t.Fatalf("Gemini 3.8 Extended Thinking setup exposed backend-agent tool %q", tool.Name)
+			}
+		}
+		if strings.Contains(extended.Instructions, "query_agent_task") {
+			t.Fatalf("Gemini 3.8 Extended Thinking instructions still reference backend-agent tools: %s", extended.Instructions)
+		}
+	}
+
+	retainedConfigs := []struct {
+		name string
+		cfg  agent.Config
+	}{
+		{name: "regular Gemini 3.8 Live", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}},
+		{name: "legacy Gemini", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.1-flash-live-preview"}}},
+		{name: "other provider with same model name", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "xai", Model: "gemini-3.8-live-extended-thinking"}}},
+		{
+			name: "named regular Gemini 3.8 Live",
+			cfg: agent.Config{
+				VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main"},
+				VoiceModelProviders: map[string]agent.VoiceModelProvider{"gemini-main": {Type: "gemini", Model: "gemini-3.8-live"}},
+			},
+		},
+	}
+	for _, tc := range retainedConfigs {
+		t.Run(tc.name, func(t *testing.T) {
+			got := realtimeProviderSessionConfig(tc.cfg, nil)
+			toolNames := make(map[string]bool, len(got.Tools))
+			for _, tool := range got.Tools {
+				toolNames[tool.Name] = true
+			}
+			for name := range backendTools {
+				if !toolNames[name] {
+					t.Fatalf("configuration lost backend-agent tool %q", name)
+				}
+			}
+			if !strings.Contains(got.Instructions, "query_agent_task") {
+				t.Fatalf("configuration lost backend-agent instructions: %s", got.Instructions)
+			}
+		})
+	}
+}
+
+func TestRealtimeSessionConfigExposesRuntimeToolsOnlyForGemini38ExtendedThinking(t *testing.T) {
+	toolSet := agent.NewBuiltinToolSet(
+		agent.HIDConfig{},
+		agent.AudioConfig{},
+		agent.SearchConfig{},
+		agent.ProxyConfig{},
+		agent.WithWaitForWakeupController(agent.NewWaitForWakeupController()),
+	)
+	runtime := agent.NewRuntimeWithDeps(agent.Config{}, nil, nil, toolSet, agent.NewSkillIndex())
+	defer runtime.Close()
+
+	extendedConfigs := []agent.Config{
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		{
+			VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main"},
+			VoiceModelProviders: map[string]agent.VoiceModelProvider{"gemini-main": {Type: "gemini", Model: "models/gemini-3.8-live-extended-thinking"}},
+		},
+	}
+	for _, cfg := range extendedConfigs {
+		got := realtimeProviderSessionConfig(cfg, runtime)
+		definitions := make(map[string]realtimevoice.Tool, len(got.Tools))
+		counts := make(map[string]int, len(got.Tools))
+		for _, definition := range got.Tools {
+			definitions[definition.Name] = definition
+			counts[definition.Name]++
+		}
+		for _, name := range []string{"weather", "web_search", "screenshot"} {
+			if _, ok := definitions[name]; !ok {
+				t.Fatalf("Gemini 3.8 Extended Thinking setup missing runtime tool %q", name)
+			}
+		}
+		for _, name := range []string{
+			realtimeCreateTaskTool,
+			realtimeCancelTaskTool,
+			realtimeQueryTaskTool,
+			realtimeResponseUserActionTool,
+			"request_user_action",
+			"wait_for_wakeup",
+		} {
+			if _, ok := definitions[name]; ok {
+				t.Fatalf("Gemini 3.8 Extended Thinking setup exposed control tool %q", name)
+			}
+		}
+		if counts[realtimeAudioVolumeTool] != 1 {
+			t.Fatalf("audio_volume declaration count = %d, want 1", counts[realtimeAudioVolumeTool])
+		}
+
+		weather, ok := runtime.Tool("weather")
+		if !ok {
+			t.Fatal("runtime is missing weather tool")
+		}
+		wantSchema, err := json.Marshal(agent.NewToolSpec(weather).LLMSchema())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(definitions["weather"].Parameters, wantSchema) {
+			t.Fatalf("weather schema = %s, want %s", definitions["weather"].Parameters, wantSchema)
+		}
+	}
+
+	regular := realtimeProviderSessionConfig(agent.Config{
+		VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"},
+	}, runtime)
+	regularNames := make(map[string]bool, len(regular.Tools))
+	for _, definition := range regular.Tools {
+		regularNames[definition.Name] = true
+	}
+	for _, name := range []string{"weather", "web_search", "screenshot"} {
+		if regularNames[name] {
+			t.Fatalf("regular Gemini 3.8 Live unexpectedly gained direct runtime tool %q", name)
+		}
+	}
+	for _, name := range []string{realtimeCreateTaskTool, realtimeCancelTaskTool, realtimeQueryTaskTool, realtimeResponseUserActionTool} {
+		if !regularNames[name] {
+			t.Fatalf("regular Gemini 3.8 Live lost backend-agent tool %q", name)
+		}
+	}
+}
+
+func TestRealtimeAgentTaskManagerDisabledOnlyForGemini38ExtendedThinking(t *testing.T) {
+	for _, native := range []agent.Config{
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		{
+			VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main"},
+			VoiceModelProviders: map[string]agent.VoiceModelProvider{"gemini-main": {Type: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		},
+	} {
+		if manager := newRealtimeAgentTaskManager(native, nil); manager != nil {
+			manager.Close()
+			t.Fatal("Gemini 3.8 Extended Thinking unexpectedly created a backend-agent task manager")
+		}
+	}
+
+	for _, cfg := range []agent.Config{
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.1-flash-live-preview"}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "xai", Model: "gemini-3.8-live-extended-thinking"}},
+	} {
+		manager := newRealtimeAgentTaskManager(cfg, nil)
+		if manager == nil {
+			t.Fatalf("configuration did not create its backend-agent task manager: %+v", cfg.VoiceModel)
+		}
+		manager.Close()
 	}
 }
 
@@ -86,7 +251,7 @@ func TestRealtimeDelegatedToolSchemasMatchRuntimeTools(t *testing.T) {
 		agent.NewAudioVolumeTool(""),
 	}
 	definitions := make(map[string]realtimevoice.Tool)
-	for _, definition := range realtimeVoiceToolDefinitions() {
+	for _, definition := range realtimeVoiceToolDefinitions(agent.Config{}, nil) {
 		definitions[definition.Name] = definition
 	}
 	for _, tool := range canonical {
@@ -108,7 +273,7 @@ func TestRealtimeDelegatedToolSchemasMatchRuntimeTools(t *testing.T) {
 
 func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
-	got := realtimeProviderSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg, nil)
 	if !strings.HasPrefix(got.Instructions, agent.DefaultRealtimeVoiceInstructions) {
 		t.Fatalf("instructions = %q, want realtime default followed by shared guidance", got.Instructions)
 	}
@@ -126,7 +291,7 @@ func TestRealtimeSessionConfigIncludesConfiguredResponseLanguage(t *testing.T) {
 	} {
 		t.Run(tc.locale, func(t *testing.T) {
 			cfg := agent.Config{Locale: tc.locale, VoiceModel: agent.VoiceModelConfig{Instructions: "speak naturally"}}
-			got := realtimeProviderSessionConfig(cfg)
+			got := realtimeProviderSessionConfig(cfg, nil)
 			if !strings.Contains(got.Instructions, "The configured response locale is "+tc.locale+".") {
 				t.Fatalf("realtime instructions missing configured locale: %q", got.Instructions)
 			}
@@ -139,7 +304,7 @@ func TestRealtimeSessionConfigIncludesConfiguredResponseLanguage(t *testing.T) {
 
 func TestRealtimeSessionConfigPreservesSpekoAutomaticVoice(t *testing.T) {
 	cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "speko"}}
-	got := realtimeProviderSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg, nil)
 	if got.Voice != "" {
 		t.Fatalf("Speko voice = %q, want empty automatic selection", got.Voice)
 	}
@@ -150,7 +315,7 @@ func TestRealtimeSessionConfigResolvesNamedSpekoProviderForDefaults(t *testing.T
 		VoiceModel:          agent.VoiceModelConfig{Provider: "speko-main"},
 		VoiceModelProviders: map[string]agent.VoiceModelProvider{"speko-main": {Type: "speko"}},
 	}
-	got := realtimeProviderSessionConfig(cfg)
+	got := realtimeProviderSessionConfig(cfg, nil)
 	if got.Voice != "" {
 		t.Fatalf("named Speko voice = %q, want empty automatic selection", got.Voice)
 	}
@@ -171,7 +336,7 @@ func TestRealtimeSessionConfigLeavesProviderNativeRatesToAdapters(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.provider+"/"+tc.upstream, func(t *testing.T) {
 			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: tc.provider, UpstreamProvider: tc.upstream}}
-			got := realtimeProviderSessionConfig(cfg)
+			got := realtimeProviderSessionConfig(cfg, nil)
 			if got.InputSampleRate != 0 || got.OutputSampleRate != 0 {
 				t.Fatalf("provider rates = %d/%d, want adapter-owned defaults", got.InputSampleRate, got.OutputSampleRate)
 			}
@@ -183,7 +348,7 @@ func TestRealtimeSessionConfigDoesNotApplyQwenVoiceToNativeProviders(t *testing.
 	for _, provider := range []string{"openai", "gemini", "xai"} {
 		t.Run(provider, func(t *testing.T) {
 			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: provider}}
-			got := realtimeProviderSessionConfig(cfg)
+			got := realtimeProviderSessionConfig(cfg, nil)
 			if got.Voice != "" {
 				t.Fatalf("voice = %q, want native provider default", got.Voice)
 			}
@@ -275,6 +440,21 @@ func TestRealtimeDelegatedToolsReuseRuntimeImplementations(t *testing.T) {
 				t.Fatalf("%s input = %q, want %q", name, tool.input, input)
 			}
 		})
+	}
+}
+
+func TestRealtimeRuntimeToolCallsReuseUnderlyingTool(t *testing.T) {
+	tool := &fakeRealtimeTool{name: "weather", output: `{"location":"Guangzhou"}`}
+	executor := realtimeVoiceToolExecutor{
+		delegated: map[string]langtools.Tool{"weather": tool},
+		now:       time.Now,
+	}
+	input := `{"location":"Guangzhou"}`
+	if got := executor.call(context.Background(), "weather", input); got != tool.output {
+		t.Fatalf("weather output = %q, want %q", got, tool.output)
+	}
+	if tool.input != input {
+		t.Fatalf("weather input = %q, want %q", tool.input, input)
 	}
 }
 
@@ -408,7 +588,7 @@ func TestRealtimeTaskCreationRequiresOutstandingWorkCheck(t *testing.T) {
 		t.Fatalf("realtime instructions missing the outstanding-work check: %s", agent.DefaultRealtimeVoiceInstructions)
 	}
 	definitions := make(map[string]realtimevoice.Tool)
-	for _, definition := range realtimeVoiceToolDefinitions() {
+	for _, definition := range realtimeVoiceToolDefinitions(agent.Config{}, nil) {
 		definitions[definition.Name] = definition
 	}
 	create, ok := definitions[realtimeCreateTaskTool]
@@ -598,11 +778,17 @@ func (r *fakeBackgroundTaskRunner) Run(ctx context.Context, prompt string) (stri
 }
 
 type fakeRealtimeTool struct {
+	name   string
 	input  string
 	output string
 }
 
-func (t *fakeRealtimeTool) Name() string        { return realtimeRecallTool }
+func (t *fakeRealtimeTool) Name() string {
+	if t.name != "" {
+		return t.name
+	}
+	return realtimeRecallTool
+}
 func (t *fakeRealtimeTool) Description() string { return "fake recall" }
 func (t *fakeRealtimeTool) Call(_ context.Context, input string) (string, error) {
 	t.input = input

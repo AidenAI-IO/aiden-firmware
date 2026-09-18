@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,8 +21,44 @@ import (
 const (
 	DefaultGeminiLiveEndpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 	DefaultGeminiLiveModel    = "gemini-3.1-flash-live-preview"
+	Gemini38LiveModel         = "gemini-3.8-live"
+	Gemini38ThinkingModel     = "gemini-3.8-live-extended-thinking"
 	geminiVertexLivePath      = "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
 )
+
+func geminiLiveDebugLoggingEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AIDEN_GEMINI_LIVE_DEBUG"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func geminiModelID(model string) string {
+	model = strings.TrimSpace(model)
+	if index := strings.LastIndex(model, "/"); index >= 0 {
+		model = model[index+1:]
+	}
+	return model
+}
+
+// IsGemini38LiveModel reports whether model uses the Gemini 3.8 Live protocol
+// lifecycle shared by the regular and Extended Thinking variants.
+func IsGemini38LiveModel(model string) bool {
+	switch geminiModelID(model) {
+	case Gemini38LiveModel, Gemini38ThinkingModel:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsGemini38ExtendedThinkingModel reports whether model is the 3.8 Live
+// variant whose native reasoning replaces the legacy backend agent.
+func IsGemini38ExtendedThinkingModel(model string) bool {
+	return geminiModelID(model) == Gemini38ThinkingModel
+}
 
 // GeminiProvider is the native Google Gemini Live adapter. AuthMode selects
 // the Gemini Developer API (api_key) or Vertex AI (vertex/OAuth) wire path.
@@ -74,11 +112,19 @@ func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	s := &geminiSession{
 		jsonWebSocketTransport: transport,
 		toolNames:              make(map[string]string),
-		info:                   newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{}),
-		inputRate:              inputRate,
+		info: newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{
+			ServerAuthoritativeInterruption: IsGemini38LiveModel(model),
+		}),
+		inputRate: inputRate,
 	}
 	transport.start(s.translate)
-	if err := s.writeJSON(ctx, buildGeminiSetup(cfg, setupModel)); err != nil {
+	setupMsg := buildGeminiSetup(cfg, setupModel)
+	if geminiLiveDebugLoggingEnabled() {
+		if debugJSON, err := json.MarshalIndent(setupMsg, "", "  "); err == nil {
+			log.Printf("[realtime] [gemini] Setup message: session_id=%s json=%s", cfg.SessionID, string(debugJSON))
+		}
+	}
+	if err := s.writeJSON(ctx, setupMsg); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -221,8 +267,13 @@ type geminiSetup struct {
 }
 
 type geminiGenerationConfig struct {
-	ResponseModalities []string            `json:"responseModalities"`
-	SpeechConfig       *geminiSpeechConfig `json:"speechConfig,omitempty"`
+	ResponseModalities []string              `json:"responseModalities"`
+	SpeechConfig       *geminiSpeechConfig   `json:"speechConfig,omitempty"`
+	ThinkingConfig     *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type geminiThinkingConfig struct {
+	ThinkingLevel string `json:"thinkingLevel"`
 }
 
 type geminiSpeechConfig struct {
@@ -252,6 +303,7 @@ type geminiTool struct {
 type geminiFunctionDeclaration struct {
 	Name                 string          `json:"name"`
 	Description          string          `json:"description,omitempty"`
+	Behavior             string          `json:"behavior,omitempty"`
 	ParametersJSONSchema json.RawMessage `json:"parametersJsonSchema,omitempty"`
 }
 
@@ -273,6 +325,13 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 		InputAudioTranscription:  map[string]any{},
 		OutputAudioTranscription: map[string]any{},
 	}
+	// Extended Thinking models require a thinking level
+	// Valid values: LOW, MEDIUM, HIGH (uppercase per Live API docs)
+	// Always set thinking config for extended-thinking models
+	if IsGemini38ExtendedThinkingModel(model) {
+		setup.GenerationConfig.ThinkingConfig = &geminiThinkingConfig{ThinkingLevel: "LOW"}
+		log.Printf("[realtime] [gemini] Extended Thinking model detected: model=%s thinking_level=LOW", model)
+	}
 	if strings.TrimSpace(cfg.Voice) != "" {
 		setup.GenerationConfig.SpeechConfig = &geminiSpeechConfig{VoiceConfig: geminiVoiceConfig{PrebuiltVoiceConfig: geminiPrebuiltVoiceConfig{VoiceName: cfg.Voice}}}
 	}
@@ -283,7 +342,11 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 		// Shared tool definitions use JSON Schema. Gemini's parameters field is
 		// a restricted OpenAPI Schema protobuf and rejects JSON Schema keywords
 		// such as additionalProperties; parametersJsonSchema accepts them.
-		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{{Name: tool.Name, Description: tool.Description, ParametersJSONSchema: tool.Parameters}}})
+		behavior := ""
+		if IsGemini38ExtendedThinkingModel(model) {
+			behavior = "NON_BLOCKING"
+		}
+		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{{Name: tool.Name, Description: tool.Description, Behavior: behavior, ParametersJSONSchema: tool.Parameters}}})
 	}
 	if cfg.TurnDetection == "disabled" {
 		setup.RealtimeInputConfig = &geminiRealtimeInputConfig{AutomaticActivityDetection: &geminiAutomaticActivityDetection{Disabled: true}}
@@ -496,6 +559,15 @@ func (s *geminiSession) translate(body []byte) []Event {
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return []Event{{Kind: EventError, Error: fmt.Errorf("gemini live: decode event: %w", err)}}
+	}
+	// Raw frames can contain transcripts, tool arguments, and audio data; only
+	// emit them when explicitly requested for a local protocol investigation.
+	if geminiLiveDebugLoggingEnabled() {
+		if len(body) < 4000 {
+			log.Printf("[realtime] [gemini] [DEBUG] Raw response: %s", string(body))
+		} else {
+			log.Printf("[realtime] [gemini] [DEBUG] Raw response (truncated): %s...", string(body[:4000]))
+		}
 	}
 	if len(envelope.SetupComplete) > 0 {
 		return []Event{{Kind: EventReady}}
