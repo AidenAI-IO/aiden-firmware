@@ -242,6 +242,8 @@ voiceModelCard.className = 'section-card';
 voiceModelCard.setAttribute('data-hide-when-empty', '');
 document.body.appendChild(voiceModelCard);
 const voiceModelTarget = appendTarget(document, 'voice_model', voiceModelCard);
+const voiceModelProviderField = appendSpecialField(document, voiceModelTarget, 'voice_model.provider', 'voice_model_provider');
+document.getElementById('voice_model_provider').setAttribute('data-section', 'voice_model');
 const modelProviderField = appendSpecialField(document, modelTarget, 'model.provider', 'model_provider');
 const modelNameField = appendSpecialField(document, modelTarget, 'model.model', 'model_model', 'input');
 document.getElementById('model_provider').setAttribute('data-section', 'model');
@@ -285,6 +287,7 @@ stateModule.namespace.runtime.rememberModelProvider = () => {};
 stateModule.namespace.runtime.refreshCurrentModelReasoningSpec = () => {};
 stateModule.namespace.runtime.syncModelSelectorSummary = () => {};
 stateModule.namespace.runtime.updateAllProviderActionStates = () => {};
+stateModule.namespace.runtime.VoiceModelProvidersManager = {records: {}};
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
 const {bindFieldVisibility, buildConfigMeta} = configMetaModule.namespace;
@@ -314,6 +317,7 @@ buildConfigMeta({sections: [
     {key: 'input_backend', label: 'Input backend', widget: 'select', enum: [{value: 'hid'}, {value: 'adb'}]},
   ]},
   {name: 'voice_model', fields: [
+    {key: 'provider', label: 'Realtime provider', widget: 'select', visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
     {key: 'api_key', label: 'API key', widget: 'text', secret: true, visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
     {key: 'model', label: 'Model', widget: 'text', visibleWhen: {all: [{field: 'agent.input_mode', op: 'eq', value: 'realtime'}]}},
   ]},
@@ -342,6 +346,7 @@ assert.equal(document.getElementById('agent_notes').tagName, 'TEXTAREA');
 assert.equal(document.getElementById('agent_notes').classList.contains('prompt-compact'), true);
 assert.equal(document.getElementById('model_provider').closest('.field'), modelProviderField, 'model provider manager DOM is preserved');
 assert.equal(document.getElementById('model_model').closest('.field'), modelNameField, 'model selector DOM is preserved');
+assert.equal(document.getElementById('voice_model_provider').closest('.field'), voiceModelProviderField, 'realtime provider manager DOM is preserved');
 assert.equal(document.getElementById('model_temperature').type, 'number');
 assert.equal(document.getElementById('quick_capture_enabled').type, 'checkbox');
 assert.equal(document.getElementById('quick_capture_enabled').closest('.field').classList.contains('boolean-field'), true, 'boolean fields align the checkbox with their label');
@@ -373,6 +378,18 @@ assert.equal(voiceModelCard.classList.contains('hidden'), false, 'voice model ca
 
 const configFormModule = await loadModule(path.join(webRoot, 'assets/js/config/config-form.js'));
 await configFormModule.evaluate();
+assert.equal(JSON.stringify(configFormModule.namespace.voiceModeSaveEntries('realtime')), JSON.stringify([
+  {section: 'agent', keys: ['input_mode'], scope: 'voice-mode'},
+  {section: 'voice_model'},
+]));
+assert.equal(JSON.stringify(configFormModule.namespace.voiceModeSaveEntries('stt')), JSON.stringify([
+  {section: 'agent', keys: ['input_mode'], scope: 'voice-mode'},
+  {section: 'stt'},
+  {section: 'tts'},
+]), 'switching to classic mode saves both required provider references with the mode');
+assert.equal(JSON.stringify(configFormModule.namespace.voiceModeSaveEntries('text')), JSON.stringify([
+  {section: 'agent', keys: ['input_mode'], scope: 'voice-mode'},
+]));
 const hidDebugField = document.getElementById('hid_input_backend').closest('.field');
 hidDebugTarget.appendChild(hidDebugField);
 configFormModule.namespace.setSectionLocked('hid', true);
@@ -382,6 +399,7 @@ assert.equal(document.getElementById('hid_input_backend').disabled, false, 'move
 stateModule.namespace.appState.config = {
   agent: {input_mode: 'stt'},
   voice_model: {
+    provider: '',
     has_api_key: true,
     model: 'saved-realtime-model',
     endpoint: 'wss://advanced.example.test/realtime',
@@ -393,6 +411,7 @@ assert.equal(voiceModelCard.classList.contains('hidden'), true);
 assert.equal(document.getElementById('voice_model_api_key').value, '');
 assert.equal(document.getElementById('voice_model_api_key').placeholder, 'config.secret_saved_placeholder');
 assert.equal(JSON.stringify(configFormModule.namespace.readSection('voice_model')), JSON.stringify({
+  provider: '',
   has_api_key: true,
   model: 'saved-realtime-model',
   endpoint: 'wss://advanced.example.test/realtime',
@@ -402,11 +421,62 @@ document.getElementById('agent_input_mode').value = 'realtime';
 configMetaModule.namespace.applyFieldVisibility(true);
 document.getElementById('voice_model_model').value = 'updated-realtime-model';
 assert.equal(JSON.stringify(configFormModule.namespace.readSection('voice_model')), JSON.stringify({
+  provider: '',
   has_api_key: true,
   model: 'updated-realtime-model',
   endpoint: 'wss://advanced.example.test/realtime',
   turn_detection: 'smart_turn',
 }), 'editing common realtime fields preserves advanced settings');
+
+let voiceModePatch = null;
+stateModule.namespace.runtime.request = async (_url, options) => {
+  voiceModePatch = JSON.parse(options.body);
+  return {
+    config: {
+      agent: {input_mode: 'realtime'},
+      voice_model: {
+        provider: 'qwen-main',
+        has_api_key: true,
+        model: 'updated-realtime-model',
+        endpoint: 'wss://advanced.example.test/realtime',
+        turn_detection: 'smart_turn',
+      },
+    },
+  };
+};
+stateModule.namespace.runtime.setBanner = () => {};
+stateModule.namespace.runtime.setDetails = () => {};
+stateModule.namespace.runtime.refreshAgentStatus = () => {};
+document.getElementById('voice_model_provider').value = 'qwen-main';
+assert.equal(await configFormModule.namespace.saveVoiceMode(), true);
+assert.equal(JSON.stringify(voiceModePatch), JSON.stringify({
+  config: {
+    agent: {input_mode: 'realtime'},
+    voice_model: {provider: 'qwen-main', model: 'updated-realtime-model'},
+  },
+}), 'switching to realtime saves the mode and selected realtime provider atomically');
+
+stateModule.namespace.appState.config = {
+  agent: {input_mode: 'stt'},
+  voice_model: {
+    provider: '',
+    has_api_key: true,
+    model: 'saved-realtime-model',
+  },
+};
+configFormModule.namespace.fillConfigForm(stateModule.namespace.appState.config);
+document.getElementById('agent_input_mode').value = 'realtime';
+configMetaModule.namespace.applyFieldVisibility(true);
+document.getElementById('voice_model_provider').value = 'qwen-main';
+stateModule.namespace.runtime.request = async () => { throw new Error('validation failed'); };
+assert.equal(await configFormModule.namespace.saveVoiceMode(), false);
+assert.equal(stateModule.namespace.appState.config.agent.input_mode, 'stt', 'a failed mode save restores authoritative mode state');
+assert.equal(stateModule.namespace.appState.config.voice_model.provider, '', 'a failed mode save restores authoritative provider state');
+assert.equal(document.getElementById('agent_input_mode').value, 'realtime', 'failed edits remain visible for correction');
+assert.equal(document.getElementById('agent_input_mode').disabled, false, 'failed mode edits remain editable');
+assert.equal(document.getElementById('voice_model_provider').value, 'qwen-main', 'failed provider selection remains visible for correction');
+assert.equal(document.getElementById('voice_model_provider').disabled, false, 'failed provider selection remains editable');
+
 configFormModule.namespace.setSectionLocked('model', true);
 assert.equal(document.getElementById('model_provider').disabled, true, 'locking a section disables its fields');
 assert.equal(modelSaveButton.disabled, true, 'locking a section disables its save button');
