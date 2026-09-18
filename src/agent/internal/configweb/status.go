@@ -215,7 +215,9 @@ func (s *Server) handleAgentStatus(w http.ResponseWriter, _ *http.Request) {
 // resource can report the same effective type as the Agent runtime without
 // depending on the status text emitted by an init script.
 func (s *Server) deviceType() string {
-	cfg, err := agent.LoadResolvedConfig(s.options.AgentConfigPath)
+	// Recovery mode is exactly when the status page matters most, so read the
+	// persisted value without requiring the Agent's semantic validation.
+	cfg, err := agent.LoadResolvedConfigForUpdate(s.options.AgentConfigPath)
 	if err != nil {
 		return ""
 	}

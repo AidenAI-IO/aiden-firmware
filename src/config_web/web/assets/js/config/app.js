@@ -196,10 +196,10 @@ setAgentLogAutoScroll(true);
 async function reloadAll() {
   byId('reloadBtn').disabled = true;
   try {
-    await loadConfig();
+    const payload = await loadConfig();
     await loadManualConfig(true);
     await scanWifi(false);
-    setBanner(t('page.config_refreshed'), false);
+    setBanner(payload.config_valid === false ? t('config.invalid_recovery') : t('page.config_refreshed'), payload.config_valid === false);
   } catch (err) {
     setBanner(t('page.refresh_failed'), true);
     setDetails(err.message);
@@ -235,13 +235,13 @@ async function init() {
   lockAllSections();
   setBanner(t('page.reading_config'), false);
   try {
-    await loadConfig();
+    const payload = await loadConfig();
     applyVoiceModeVisibility();
     setManualConfigLocked(true);
     await loadManualConfig(false);
     await scanWifi(false);
     await refreshAgentLog(false);
-    setBanner(initialReadyMessage(metaOk), !metaOk);
+    setBanner(initialReadyMessage(metaOk, payload), !metaOk || payload.config_valid === false);
   } catch (err) {
     setBanner(t('page.initialization_failed'), true);
     setDetails(err.message);

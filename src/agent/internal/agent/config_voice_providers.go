@@ -270,10 +270,10 @@ func migrateLegacyVoiceProviders(cfg *Config, metadata toml.MetaData) {
 // clearDefaultTTSProviderFields skips it) and freeze today's default voice into
 // the user's config file, where a later change to that default could not reach.
 func migrateLegacyTTSFlatFields(cfg *Config, metadata toml.MetaData) {
-	// The file must have declared a provider. LoadResolvedConfig does not zero
-	// an undeclared [tts] the way LoadRuntimeConfig does, so without this gate
-	// DefaultConfig's provider would mint a phantom minimax-cn record for every
-	// device that only ever configured a model.
+	// The file must have declared a provider: both loaders clear an undeclared
+	// [tts] before reaching here, and an absent file keeps the defaults, so this
+	// gate keeps DefaultConfig's provider from minting a phantom minimax-cn record
+	// for a device that only ever configured a model.
 	if !metadata.IsDefined("tts", "provider") {
 		return
 	}
@@ -358,8 +358,8 @@ func migrateLegacyTTSFlatFields(cfg *Config, metadata toml.MetaData) {
 }
 
 func migrateLegacySTTFlatFields(cfg *Config, metadata toml.MetaData) {
-	// Same gate as TTS: the file must have declared a provider, or
-	// DefaultConfig's would mint a phantom record under LoadResolvedConfig.
+	// Same gate as TTS: the file must have declared a provider, or DefaultConfig's
+	// would mint a phantom record for a config that never configured speech.
 	if !metadata.IsDefined("stt", "provider") {
 		return
 	}

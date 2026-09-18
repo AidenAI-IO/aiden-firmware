@@ -971,7 +971,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 
-	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+	applyRuntimeOptionalProviderDefaults(&cfg, metadata, true)
 	applyVoiceModelProviderDefaults(&cfg, metadata)
 	applyDeviceConfigDefaults(&cfg, metadata)
 
@@ -1153,8 +1153,21 @@ func applyProviderToModel(provider ModelProvider, originalRef string, m *ModelCo
 	return nil
 }
 
-func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
+// applyRuntimeOptionalProviderDefaults clears the speech providers DefaultConfig
+// seeds when the file does not declare them, because the runtime treats them as
+// opt-in.
+//
+// declared reports whether metadata came from a file that was actually read. An
+// absent agent.toml still resolves to the built-in defaults (the documented
+// first-boot behavior, and the state the config page renders so a save can
+// create the file), so it must not be treated as "the file declared nothing":
+// zeroing there would turn a device with no config file into a semantically
+// invalid configuration.
+func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData, declared bool) {
 	if cfg == nil {
+		return
+	}
+	if !declared {
 		return
 	}
 
@@ -1283,6 +1296,17 @@ func loadResolvedConfig(path string) (Config, error) {
 	} else {
 		cfg.HID.PointerMode = cfg.PointerModeOrDefault()
 	}
+	// Optional speech providers are opt-in at runtime, so the editor must not show
+	// the DefaultConfig provider for a file that never declared one. The page would
+	// otherwise display (and label as required) a value Config Web reports as
+	// missing, and re-saving that displayed value is not a change config-update can
+	// persist, which leaves the flagged field unrepairable. Sharing the rule with
+	// LoadRuntimeConfig also keeps `config-check` agreeing with the recovery state
+	// the portal reports.
+	//
+	// A missing file is not "declared nothing": it resolves to the built-in
+	// defaults so the page can render and a save can create the file.
+	applyRuntimeOptionalProviderDefaults(&cfg, metadata, exists)
 	applyVoiceModelProviderDefaults(&cfg, metadata)
 
 	applyRuntimeInstructionDefault(&cfg)
