@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
 	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/schema"
 )
 
 func TestInteractionsModelUsesNativeRequestShape(t *testing.T) {
@@ -244,6 +246,58 @@ func TestInteractionsModelStreamsTextAndFunctionArguments(t *testing.T) {
 	}
 }
 
+// A stream that stops before the provider's terminal event is only a prefix of
+// the interaction. Reporting it as a finished response would let a function_call
+// cut mid-arguments reach the tools with placeholder `{}` arguments.
+func TestInteractionsModelRejectsStreamWithoutTerminalEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"event_type":"interaction.created","interaction":{"id":"ix_cut","status":"in_progress"}}`,
+			`data: {"event_type":"step.start","index":0,"step":{"type":"function_call","id":"call_1","name":"tap"}}`,
+			`data: {"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":"{\"x\":"}}`,
+			""}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newInteractionsModel(server.URL, "gemini-test", "key", server.Client(), interactionsModelOptions{})
+	response, err := model.GenerateContent(context.Background(),
+		[]llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("go")}}},
+		llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if !errors.Is(err, errInteractionsStreamIncomplete) {
+		t.Fatalf("GenerateContent error = %v, want %v", err, errInteractionsStreamIncomplete)
+	}
+	if response != nil {
+		t.Fatalf("GenerateContent returned a response for an incomplete stream: %#v", response.Choices[0])
+	}
+}
+
+// The terminal event is what proves a stream finished, so a provider that closes
+// the body without the trailing [DONE] marker is still a complete turn.
+func TestInteractionsModelAcceptsTerminalEventWithoutDoneMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"event_type":"interaction.created","interaction":{"id":"ix_ok","status":"in_progress"}}`,
+			`data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+			`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"done"}}`,
+			`data: {"event_type":"interaction.completed","interaction":{"id":"ix_ok","status":"completed"}}`,
+			""}, "\n")))
+	}))
+	defer server.Close()
+
+	model := newInteractionsModel(server.URL, "gemini-test", "key", server.Client(), interactionsModelOptions{})
+	response, err := model.GenerateContent(context.Background(),
+		[]llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("go")}}},
+		llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	if err != nil {
+		t.Fatalf("GenerateContent: %v", err)
+	}
+	if response.Choices[0].Content != "done" || response.Choices[0].StopReason != "completed" {
+		t.Fatalf("choice = %#v", response.Choices[0])
+	}
+}
+
 func TestInteractionsModelStreamsAndPreservesThoughtSignature(t *testing.T) {
 	var raw map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -283,6 +337,105 @@ func TestInteractionsModelStreamsAndPreservesThoughtSignature(t *testing.T) {
 	}
 	if thought["signature"] != "opaque_sig" {
 		t.Fatalf("thought signature = %#v", thought)
+	}
+}
+
+// Gemini can answer one turn with several function calls and has no switch to
+// turn that off. The agent loop runs one call per iteration, so the turn keeps
+// the provider's whole step list and the tool result answers the calls that were
+// not run: nothing is dropped from the record, and a stored interaction is never
+// left with a function_call that has no function_result.
+func TestInteractionsStatefulAnswersEveryCallOfTheTurn(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, payload)
+		if len(requests) == 1 {
+			_, _ = w.Write([]byte(`{"id":"ix_two","status":"requires_action","steps":[` +
+				`{"type":"thought","signature":"sig_1","summary":[{"type":"text","text":"do both"}]},` +
+				`{"type":"function_call","id":"call_1","name":"first","arguments":{"x":1}},` +
+				`{"type":"function_call","id":"call_2","name":"second","arguments":{"y":2}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ix_after","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"done"}]}]}`))
+	}))
+	defer server.Close()
+
+	manager := NewModelManager(ModelConfig{
+		Provider: "gemini", Model: "gemini-3.8-flash", APIKey: "test-key",
+		BaseURL: server.URL, APIMode: "interactions_stateful",
+	}, ProxyConfig{})
+	contextManager, err := contextmanager.NewContextManagerFromMessageList(t.TempDir(), []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system guidance"},
+		{Role: messages.MessageRoleUser, Content: "run the first check, then the second"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList: %v", err)
+	}
+	llmExecutor := executor.NewLLMExecutor(manager, contextManager)
+	tools := []llms.Tool{
+		{Type: "function", Function: &llms.FunctionDefinition{Name: "first"}},
+		{Type: "function", Function: &llms.FunctionDefinition{Name: "second"}},
+	}
+
+	_, response, err := llmExecutor.Generate(context.Background(), llms.WithTools(tools))
+	if err != nil {
+		t.Fatalf("first Generate: %v", err)
+	}
+	if len(response.Choices[0].ToolCalls) != 2 {
+		t.Fatalf("first response tool calls = %#v", response.Choices[0].ToolCalls)
+	}
+
+	// What the agent loop does with a turn that carries several calls.
+	executed := response.Choices[0].ToolCalls[0]
+	selected := choiceWithOnlyToolCall(*response.Choices[0], executed.ID)
+	toolCallMessage := messages.ConvertChoiceToContextManagerMessage(selected)
+	if len(toolCallMessage.InteractionsSteps) != 3 || len(toolCallMessage.ToolCalls) != 2 {
+		t.Fatalf("stored turn = %#v, want the provider's steps and both calls", toolCallMessage)
+	}
+	if err := appendToolExecutionMessages(llmExecutor, nil, toolCallMessage, schema.AgentStep{
+		Action: schema.AgentAction{ToolID: executed.ID, Tool: "first"},
+	}, PreparedToolResult{Content: "ok", Complete: true}); err != nil {
+		t.Fatalf("appendToolExecutionMessages: %v", err)
+	}
+	stored := contextManager.CloneMessageList()
+	resultMessage := stored[len(stored)-1]
+	if resultMessage.Role != messages.MessageRoleToolResult || len(resultMessage.ToolResults) != 2 {
+		t.Fatalf("stored tool result = %#v, want a result for both calls", resultMessage)
+	}
+	if resultMessage.ToolResults[1].ToolCallID != "call_2" || resultMessage.ToolResults[1].Content != unexecutedInteractionToolResult {
+		t.Fatalf("unexecuted call result = %#v", resultMessage.ToolResults[1])
+	}
+
+	if _, _, err := llmExecutor.Generate(context.Background(), llms.WithTools(tools)); err != nil {
+		t.Fatalf("second Generate: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	second := requests[1]
+	if second["previous_interaction_id"] != "ix_two" {
+		t.Fatalf("second request previous_interaction_id = %#v", second["previous_interaction_id"])
+	}
+	input, ok := second["input"].([]any)
+	if !ok || len(input) != 2 {
+		t.Fatalf("second request input = %#v, want one function_result per call", second["input"])
+	}
+	answered := map[string]string{}
+	for _, rawStep := range input {
+		step := rawStep.(map[string]any)
+		if step["type"] != "function_result" {
+			t.Fatalf("second request step = %#v, want function_result", step)
+		}
+		answered[step["call_id"].(string)] = step["name"].(string)
+	}
+	if answered["call_1"] != "first" || answered["call_2"] != "second" {
+		t.Fatalf("second request answered calls = %#v", answered)
 	}
 }
 

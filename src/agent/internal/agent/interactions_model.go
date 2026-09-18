@@ -28,6 +28,11 @@ const (
 	geminiInteractionsBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 )
 
+// errInteractionsStreamIncomplete reports a stream that stopped before the
+// provider's terminal event. The steps it produced are a prefix of the
+// interaction, so the caller must not treat them as a finished response.
+var errInteractionsStreamIncomplete = errors.New("interactions stream ended before interaction.completed")
+
 // interactionsModel implements Gemini's native Interactions API. It is kept
 // separate from responsesModel because Interactions uses typed steps rather
 // than OpenAI response items, and function arguments are JSON objects.
@@ -455,6 +460,7 @@ func (m *interactionsModel) decodeInteractionsStream(ctx context.Context, body i
 	calls := map[int]*interactionStreamCall{}
 	status := ""
 	streamDone := false
+	terminalEventSeen := false
 	var usageInfo map[string]any
 	var rawStream strings.Builder
 	var interactionSteps []json.RawMessage
@@ -603,6 +609,7 @@ func (m *interactionsModel) decodeInteractionsStream(ctx context.Context, body i
 				}
 			}
 		case "interaction.completed":
+			terminalEventSeen = true
 			if event.Interaction != nil && interactionTerminalFailure(event.Interaction.Status) {
 				failure, _ := json.Marshal(event.Interaction)
 				return nil, newProviderHTTPError(http.StatusBadGateway, failure)
@@ -634,7 +641,13 @@ func (m *interactionsModel) decodeInteractionsStream(ctx context.Context, body i
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read interactions stream: %w", err)
 	}
-	if !streamDone && status == "" {
+	if !streamDone && !terminalEventSeen {
+		// A dropped connection ends the body the same way a completed stream does.
+		// Without the terminal event what was accumulated is only a prefix, and a
+		// function_call cut mid-arguments would reach the tools as `{}`.
+		return nil, errInteractionsStreamIncomplete
+	}
+	if status == "" {
 		status = "completed"
 	}
 	generationInfo["llm_stream_read_ms"] = time.Since(callStarted).Milliseconds()
