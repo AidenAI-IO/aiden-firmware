@@ -67,8 +67,8 @@ func TestProvisionFactoryIdentityStagesPersistentIDAndRequiresOneReboot(t *testi
 			_, err := ensureExt4MachineID(
 				env.activePath,
 				factoryMachineIDB,
-				DefaultDebugfsPath,
-				DefaultE2fsckPath,
+				requireE2fsprogs(t, "debugfs"),
+				requireE2fsprogs(t, "e2fsck"),
 				runPersonalizationCommand,
 			)
 			return commandOutput{}, err
@@ -261,7 +261,7 @@ func assertMachineIDFile(t *testing.T, path string, want string) {
 
 func assertExt4MachineID(t *testing.T, path string, want string) {
 	t.Helper()
-	got, err := readExt4MachineID(path, DefaultDebugfsPath, runPersonalizationCommand)
+	got, err := readExt4MachineID(path, requireE2fsprogs(t, "debugfs"), runPersonalizationCommand)
 	if err != nil {
 		t.Fatalf("readExt4MachineID(%s) error = %v", path, err)
 	}
