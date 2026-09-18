@@ -11,9 +11,9 @@ import (
 	"testing"
 )
 
-func TestBundledQuickActionsPathUsesOEMPartition(t *testing.T) {
+func TestBundledQuickActionsPathUsesBusinessPackage(t *testing.T) {
 	if BundledQuickActionsPath != "/usr/share/aiden/quick_actions.json" {
-		t.Fatalf("BundledQuickActionsPath = %q, want OEM path", BundledQuickActionsPath)
+		t.Fatalf("BundledQuickActionsPath = %q, want business package path", BundledQuickActionsPath)
 	}
 }
 
