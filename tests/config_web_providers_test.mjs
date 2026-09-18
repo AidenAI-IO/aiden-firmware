@@ -174,9 +174,21 @@ const {
   syncModelProvidersFromConfig,
   editSelectedProvider,
   refreshCurrentModelReasoningSpec,
+  addProviderRecord,
   TtsProvidersManager,
   SttProvidersManager,
 } = providersModule.namespace;
+
+let addProviderOptions = null;
+const originalAddTtsProviderRecord = TtsProvidersManager.addRecord;
+TtsProvidersManager.addRecord = (options) => { addProviderOptions = options; };
+addProviderRecord(TtsProvidersManager);
+assert.equal(
+  JSON.stringify(addProviderOptions),
+  JSON.stringify({selectIntoRef: true}),
+  'adding a provider should select the new record in its provider picker',
+);
+TtsProvidersManager.addRecord = originalAddTtsProviderRecord;
 
 assert.equal(
   providerAPIKeyPlaceholder('anthropic', false),
@@ -503,6 +515,36 @@ assert.deepEqual(
   {voice: {type: 'fish-audio', reference_id: null}},
   'clearing an optional provider value must produce a JSON Merge Patch deletion',
 );
+
+const ttsProviderSelect = new Element();
+ttsProviderSelect.value = 'voice';
+elements.set('tts_provider', ttsProviderSelect);
+appState.config = {
+  tts: {provider: 'voice'},
+  tts_providers: {voice: {type: 'fish-audio'}},
+};
+TtsProvidersManager.load({voice: {type: 'fish-audio'}});
+TtsProvidersManager.records = {
+  voice: {type: 'fish-audio'},
+  'voice-new': {type: 'fish-audio'},
+};
+let autoSelectProviderBody = null;
+requestImpl = async (_url, options) => {
+  autoSelectProviderBody = JSON.parse(options.body);
+  return {
+    config: {
+      tts: {provider: 'voice'},
+      tts_providers: {
+        voice: {type: 'fish-audio'},
+        'voice-new': {type: 'fish-audio'},
+      },
+    },
+  };
+};
+assert.equal(await TtsProvidersManager.save(null, 'voice-new'), true);
+assert.equal(ttsProviderSelect.value, 'voice-new', 'the new provider is selected in the form');
+assert.equal(appState.config.tts.provider, 'voice', 'auto-selection does not persist the reference before the section is saved');
+assert.deepEqual(Object.keys(autoSelectProviderBody.config), ['tts_providers'], 'provider creation does not persist unrelated settings');
 
 const providerSelect = new Element();
 providerSelect.value = 'active';

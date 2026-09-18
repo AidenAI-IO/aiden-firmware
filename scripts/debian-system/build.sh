@@ -35,6 +35,9 @@ Environment:
                                  pico-sdk submodule; built in place).
   DEBIAN_APPS_OUTPUT_DIR         Audited application output.
   DEBIAN_SYSTEM_BUILD_IMAGE      Rootfs/image builder image name.
+  DEBIAN_SYSTEM_APT_CACHE_PROXY  Optional HTTP cache URL reachable from the rootfs
+                                 container; used only after signed metadata validation.
+                                 Existing HTTP/all_proxy settings take precedence.
   DEBIAN_SYSTEM_BSP_BUILD_IMAGE  Luckfox BSP builder image name.
   OTA_PUBLIC_KEY_PATH            Production Ed25519 public key (required by images).
   AGENT_CONFIG_PATH              External agent.toml installed into userdata.img
@@ -152,6 +155,7 @@ run_rootfs_container() {
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -e "PICO_SDK_COMMIT=${sdk_commit}" \
+        -e "DEBIAN_SYSTEM_APT_CACHE_PROXY=${DEBIAN_SYSTEM_APT_CACHE_PROXY:-}" \
         -v "${REPO_ROOT}:/work:ro" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${SDK_DIR}:/sdk:ro" \
