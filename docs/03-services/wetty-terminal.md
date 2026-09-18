@@ -39,7 +39,7 @@ Default runtime values:
 | Listen interface | all interfaces |
 | Port | `3000` |
 | Base path | `/webtty/` |
-| Command | `/bin/login` |
+| Command | `/usr/lib/aiden/aiden-ttyd-login` |
 | Log | `/var/log/ttyd/ttyd.log` |
 
 ## Access
@@ -54,8 +54,11 @@ http://192.168.42.1:3000/webtty/
 Agent Web and the Docker sandbox also proxy `/webtty/` to ttyd on their
 published Agent Web port.
 
-The service uses `/bin/login`, so authenticate with the board's Linux account
-credentials.
+The ttyd daemon runs as the unprivileged `aiden` user. Its default login helper
+prompts for a local account name, then uses `su --login` to authenticate that
+account's password. This avoids a Debian `login`/PTY interaction that leaves
+ttyd waiting for input without displaying a prompt. A custom `TTYD_COMMAND`
+still runs as `aiden`.
 
 ## Mobile browser defaults
 

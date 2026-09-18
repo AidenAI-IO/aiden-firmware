@@ -151,6 +151,8 @@ fi
     || fail "Debian boot timeline helper is missing"
 [ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-ttyd-start" ] \
     || fail "Debian ttyd helper is missing"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-ttyd-login" ] \
+    || fail "Debian ttyd login helper is missing"
 grep -Fq 'aiden-ttyd.service' \
     "${REPO_ROOT}/overlay-debian/etc/systemd/system/aiden.target"
 grep -Fq 'overlay-debian/" "${ROOTFS_DIR}/"' \

@@ -358,6 +358,12 @@ fi
 grep -Fq 'Wants=aiden-ttyd.service' "${UNIT_DIR}/aiden.target"
 grep -Fq 'ExecStart=/usr/lib/aiden/aiden-ttyd-start' \
     "${UNIT_DIR}/aiden-ttyd.service"
+grep -qx 'User=aiden' "${UNIT_DIR}/aiden-ttyd.service"
+grep -qx 'Group=aiden' "${UNIT_DIR}/aiden-ttyd.service"
+grep -Fxq "IFS= read -r login_user" \
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
+grep -Fxq 'exec /bin/su --login -- "${login_user}"' \
+    "${OVERLAY}/usr/lib/aiden/aiden-ttyd-login"
 grep -Fq 'ENABLE_TTYD=1' "${OVERLAY}/etc/aiden_boot.conf"
 ttyd_mock=${TEST_ROOT}/ttyd-mock
 ttyd_args=${TEST_ROOT}/ttyd-args
@@ -373,7 +379,7 @@ grep -Fxq -- '--base-path' "${ttyd_args}"
 grep -Fxq -- '/webtty/' "${ttyd_args}"
 grep -Fxq -- '4000' "${ttyd_args}"
 grep -Fxq -- 'fontSize=20' "${ttyd_args}"
-grep -Fxq -- '/bin/login' "${ttyd_args}"
+grep -Fxq -- '/usr/lib/aiden/aiden-ttyd-login' "${ttyd_args}"
 grep -qx 'disable dnsmasq.service' \
     "${OVERLAY}/etc/systemd/system-preset/90-aiden.preset"
 grep -qx 'disable wpa_supplicant.service' \
