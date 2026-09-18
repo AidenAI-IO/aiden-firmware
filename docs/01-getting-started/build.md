@@ -55,6 +55,22 @@ the local OTA manifest in one workflow.
 ./debian_build.sh
 ```
 
+### Optional CI APT Cache
+
+The reusable GitHub Actions workflow accepts an `apt_cache_proxy` input, or
+uses the repository variable `DEBIAN_SYSTEM_APT_CACHE_PROXY` when the input is
+empty. Set it to an HTTP cache proxy URL reachable from the rootfs container,
+such as `http://172.17.0.1:3128` on a runner with that Docker bridge gateway.
+No cache is selected by default, and the workflow does not install a proxy.
+
+The rootfs builder downloads the pinned snapshot's `InRelease` through the
+candidate proxy, verifies its Debian archive signature and checks its codename
+before selecting it. The probe has a 20-second limit. An unavailable or invalid
+cache leaves the original download settings in place. Existing `http_proxy`,
+`HTTP_PROXY`, `all_proxy`, or `ALL_PROXY` settings take precedence; HTTPS proxy
+settings remain unchanged. This validation happens before rootfs creation and
+does not provide automatic fallback if an enabled cache fails later.
+
 ## macOS Apple Silicon + Colima
 
 On Apple Silicon, it's recommended to use a native `aarch64` Colima VM and run the Luckfox image via Docker with `--platform linux/amd64`:
