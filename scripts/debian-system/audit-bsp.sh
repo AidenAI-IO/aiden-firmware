@@ -20,7 +20,7 @@ readonly MODULE_DIR=${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko
 readonly DUMPIMAGE=${SDK_DIR}/sysdrv/source/uboot/u-boot/tools/dumpimage
 readonly KERNEL_IMAGE=${SDK_DIR}/sysdrv/source/objs_kernel/arch/arm/boot/zImage
 readonly KERNEL_CONFIG=${SDK_DIR}/sysdrv/source/objs_kernel/.config
-readonly BSP_DTB=${SDK_DIR}/output/out/sysdrv_out/board_uclibc_rv1106/rv1106g-luckfox-pico-zero.dtb
+readonly BSP_DTB=${SDK_DIR}/output/out/sysdrv_out/board_uclibc_rv1106/rv1106g-aiden-custom.dtb
 readonly PARTITION_LAYOUT='32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)'
 readonly MISC_METADATA_HEX=00414230010000000f00010000000000000000000000000000000000671e21a4
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
@@ -173,7 +173,7 @@ write_hashes() {
             output/image/boot_a.img \
             output/image/boot_b.img \
             output/image/download.bin \
-            output/out/sysdrv_out/board_uclibc_rv1106/rv1106g-luckfox-pico-zero.dtb \
+            output/out/sysdrv_out/board_uclibc_rv1106/rv1106g-aiden-custom.dtb \
             sysdrv/source/objs_kernel/arch/arm/boot/zImage \
             sysdrv/source/objs_kernel/.config
         find output/out/sysdrv_out/kernel_drv_ko -type f -print0 \
