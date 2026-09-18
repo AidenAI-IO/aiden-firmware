@@ -84,6 +84,55 @@ provider = "fake"
 	}
 }
 
+func TestUpdateConfigFileEnablesRealtimeWithProviderAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	source := `[voice_settings.mode]
+input_mode = "stt"
+
+[voice_settings.classic.stt]
+provider = "speech"
+
+[voice_settings.classic.tts]
+provider = "voice"
+
+[voice_settings.classic.stt.providers.speech]
+type = "openai-whisper"
+api_key = "stt-secret"
+
+[voice_settings.classic.tts.providers.voice]
+type = "alicloud"
+api_key = "tts-secret"
+`
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"input_mode":"realtime"},"voice_model":{"provider":"qwen-main"},"voice_model_providers":{"qwen-main":{"type":"qwen","api_key":"realtime-secret","model":"qwen-audio-3.0-realtime-plus","voice":"longanqian"}}}}`))
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !result.OK || result.Config.Agent.InputMode != "realtime" || result.Config.VoiceModel.Provider != "qwen-main" {
+		t.Fatalf("result = %+v", result)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`input_mode = "realtime"`,
+		`[voice_settings.realtime]`,
+		`provider = "qwen-main"`,
+		`[voice_settings.realtime.providers.qwen-main]`,
+		`api_key = "realtime-secret"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("atomic realtime update lost %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestUpdateConfigFileWritesGroupedLogRawHTTP(t *testing.T) {
 	source := `[model_settings.model]
 provider = "openai"
@@ -308,6 +357,45 @@ func TestConfigUpdateErrorsExposeStableKinds(t *testing.T) {
 		t.Fatal("missing parent error = nil")
 	} else if got := ErrorKind(err); got != ErrorKindInternal {
 		t.Fatalf("internal error kind = %q", got)
+	}
+}
+
+// A file that selects Classic mode (input_mode=stt) with a TTS provider but no STT
+// provider is exactly the recovery state the portal highlights. The editor view
+// used to show the DefaultConfig() STT provider for it and the no-op filter
+// compared against that view, so re-selecting the provider the page offered wrote
+// nothing and the flag could never be cleared. The patch has to reach the file.
+func TestUpdateConfigFileWritesProviderTheFileNeverDeclared(t *testing.T) {
+	source := `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "stt"
+
+[voice_settings.classic.tts]
+provider = "minimax-cn"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"stt":{"provider":"openai-whisper"}}}`))
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !result.OK || strings.Join(result.ChangedPaths, ",") != "voice_settings.classic.stt.provider" {
+		t.Fatalf("result = %+v", result)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `provider = "openai-whisper"`) {
+		t.Fatalf("stt provider was not written:\n%s", got)
+	}
+	if _, err := agent.LoadResolvedConfig(path); err != nil {
+		t.Fatalf("repaired config is still rejected: %v", err)
 	}
 }
 

@@ -76,6 +76,40 @@ def test_run_one_task_marks_setup_assertion_as_failed(tmp_path: Path, monkeypatc
 
     assert result.status == "failed"
     assert result.metrics["error"] == "setup assertion: expected revision 2"
+    assert result.metrics["failure_event_ref"] is None
+
+
+def test_run_one_task_does_not_count_pre_execution_agent_error_as_agent_failure(
+    tmp_path: Path,
+):
+    suite = Suite(
+        name="provider_error",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="single_step",
+        description_for_judge="Open Settings.",
+        prompt="Open Settings.",
+        rubric=[],
+        hard_assertions=HardAssertions(),
+    )
+
+    class BrokenClient(FakeClient):
+        def chat(self, *args, **kwargs):
+            raise RuntimeError("missing provider API key")
+
+    result = run_one_task(
+        BrokenClient(), suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+
+    assert result.status == "failed"
+    assert result.metrics["success"] is None
+    assert result.metrics["agent_eligible"] is False
+    assert result.metrics["failure_class"] == "unknown"
 
 
 def test_run_one_task_includes_static_screenshot_dimensions(tmp_path: Path):
@@ -500,6 +534,56 @@ def test_evaluate_task_history_applies_hard_assertions_and_expected_answer(tmp_p
     assert result.hard_assertions.expected_answer is True
     assert (tmp_path / "artifacts" / "history.json").exists()
     assert (tmp_path / "artifacts" / "trace.json").exists()
+
+
+def test_evaluate_task_history_persists_episode_for_failure_evidence(tmp_path: Path):
+    from runner.runtask import evaluate_task_history
+
+    suite = Suite(
+        name="s",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "s.json",
+    )
+    task = TaskSpec(
+        id="tool_failure",
+        category="single_step",
+        description_for_judge="Use contacts.",
+        prompt="Use contacts.",
+        rubric=[],
+        hard_assertions=HardAssertions(required_tools=["bridge_contacts"]),
+    )
+    episode = {
+        "events": [
+            {
+                "type": "tool_result",
+                "tool_name": "touch_gesture",
+                "tool_input": '{"type":"tap"}',
+                "duration_ms": 10,
+                "is_error": True,
+            }
+        ]
+    }
+
+    result = evaluate_task_history(
+        suite=suite,
+        task=task,
+        history=[
+            {"type": "tool_call", "tool_name": "touch_gesture", "tool_input": '{"type":"tap"}'},
+            {"type": "tool_result", "tool_name": "touch_gesture", "content": "failed"},
+        ],
+        episode=episode,
+        attempt=1,
+        artifact_dir=tmp_path / "artifacts",
+        judge_cfg=None,
+        judge_cache_dir=None,
+        run_id="run-1",
+        timed_out=False,
+    )
+
+    assert result.metrics["failure_event_ref"] == "episode.json#/events/0"
+    assert json.loads((tmp_path / "artifacts" / "episode.json").read_text()) == episode
 
 
 def test_evaluate_task_history_records_expected_memory_failure_details(tmp_path: Path):
@@ -933,7 +1017,7 @@ def test_run_one_task_fetches_unique_episode_and_saves_it(tmp_path: Path):
     assert result.metrics["memory_recall_evidence_source"] == "episode"
 
 
-def test_run_one_task_complete_inline_result_does_not_fetch_episode(tmp_path: Path):
+def test_run_one_task_complete_inline_result_still_fetches_episode_metrics(tmp_path: Path):
     suite, task = _memory_suite_and_task(tmp_path)
     client = EpisodeClient(
         inline_content=json.dumps(
@@ -955,12 +1039,12 @@ def test_run_one_task_complete_inline_result_does_not_fetch_episode(tmp_path: Pa
 
     assert result.status == "passed"
     assert result.metrics["memory_recall_evidence_source"] == "inline"
-    assert client.episode_requests == []
-    assert "episode_error" not in result.metrics
+    assert client.episode_requests == ["ep/one"]
+    assert "episode unavailable" in result.metrics["episode_error"]
     assert not (tmp_path / "artifacts" / "episode.json").exists()
 
 
-def test_run_one_task_without_memory_id_assertion_does_not_fetch_episode(
+def test_run_one_task_without_memory_id_assertion_fetches_episode_metrics(
     tmp_path: Path,
 ):
     suite, task = _memory_suite_and_task(tmp_path)
@@ -982,8 +1066,54 @@ def test_run_one_task_without_memory_id_assertion_does_not_fetch_episode(
     )
 
     assert result.status == "passed"
-    assert client.episode_requests == []
-    assert not (tmp_path / "artifacts" / "episode.json").exists()
+    assert client.episode_requests == ["ep/one"]
+    assert json.loads((tmp_path / "artifacts" / "episode.json").read_text())["id"] == "ep/one"
+
+
+def test_run_one_task_merges_authoritative_episode_telemetry(tmp_path: Path):
+    suite, task = _memory_suite_and_task(tmp_path)
+    task.expected_recalled_memory_ids = []
+    client = EpisodeClient(
+        inline_content="{}",
+        episode={
+            "id": "ep/one",
+            "extra": {
+                "prompt_tokens": 101,
+                "completion_tokens": 22,
+                "total_tokens": 123,
+                "first_token_time_ms": 45,
+            },
+            "events": [
+                {
+                    "type": "tool_result",
+                    "tool_name": "touch_gesture",
+                    "tool_input": '{"type":"tap"}',
+                    "duration_ms": 17,
+                    "is_error": True,
+                }
+            ],
+        },
+    )
+
+    result = run_one_task(
+        client,
+        suite,
+        task,
+        1,
+        tmp_path / "artifacts",
+        None,
+        None,
+        "run-1",
+    )
+
+    assert result.metrics["input_tokens"] == 101
+    assert result.metrics["output_tokens"] == 22
+    assert result.metrics["total_tokens"] == 123
+    assert result.metrics["time_to_first_token_ms"] == 45
+    assert result.metrics["device_execution_ms"] == 17
+    assert result.metrics["tool_errors"] == 1
+    assert result.metrics["first_failure_stage"] is None
+    assert result.metrics["failure_event_ref"] is None
 
 
 def test_run_one_task_episode_fetch_failure_with_compressed_result_is_judge_error(
@@ -1124,8 +1254,42 @@ def test_run_one_task_preserves_history_after_timeout(tmp_path: Path):
 
     assert result.status == "timeout"
     assert result.metrics["tool_calls"] == 1
+    assert result.metrics["recovery_attempted"] is True
+    assert result.metrics["recovery_succeeded"] is True
     history = json.loads((tmp_path / "artifacts" / "history.json").read_text())
     assert history[0]["tool_name"] == "screenshot"
+
+
+def test_run_one_task_excludes_timeout_without_execution_evidence(tmp_path: Path):
+    class EmptyTimeoutClient(TimeoutClient):
+        def __init__(self):
+            super().__init__()
+            self.history = []
+
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="provider_timeout",
+        category="phone",
+        description_for_judge="Provider times out before execution.",
+        prompt="do something",
+        rubric=[],
+        hard_assertions=HardAssertions(),
+    )
+
+    result = run_one_task(
+        EmptyTimeoutClient(), suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+
+    assert result.status == "timeout"
+    assert result.metrics["success"] is None
+    assert result.metrics["agent_eligible"] is False
+    assert result.metrics["failure_class"] == "unknown"
 
 
 class SummaryHistoryClient(FakeClient):

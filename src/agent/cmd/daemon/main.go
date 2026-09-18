@@ -51,7 +51,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "config-check":
-			os.Exit(runConfigCheck(os.Args[2:]))
+			os.Exit(RunConfigCheck(os.Args[2:]))
 		case "config-meta":
 			os.Exit(runConfigMeta(os.Args[2:]))
 		case "config":

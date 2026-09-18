@@ -101,6 +101,7 @@ func (s *Server) ListenAndServe() error {
 			return fmt.Errorf("initialize storage manager: %w", err)
 		}
 	}
+	s.logAgentRecoveryState()
 	logging.Infof("config_web", "config_web", "listening on %s", s.options.Addr())
 	err := s.http.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {

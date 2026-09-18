@@ -95,14 +95,14 @@
           <div class="product-subgroup static-locale">
             <h3 data-i18n="groups.language_timezone">Language &amp; Time Zone</h3>
             <div class="language-timezone-controls">
-              <div class="field">
+              <div class="field" data-config-field="agent.locale">
                 <label for="productLocaleSelect" data-i18n="page.language">Language</label>
                 <select id="productLocaleSelect" data-action="save-locale">
                   <option value="en-US">English</option>
                   <option value="zh-CN">中文</option>
                 </select>
               </div>
-              <div class="field">
+              <div class="field" data-config-field="agent.timezone">
                 <label for="agent_timezone" data-i18n="page.timezone">Time zone</label>
                 <select id="agent_timezone" data-action="save-timezone">
                   <option value="UTC">UTC</option>
