@@ -1906,8 +1906,57 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
 
     assert rc == 0
     assert route_ids == ["suite.json:open_clock:attempt-1", "suite.json:open_clock:attempt-2"]
+    manifest = json.loads(
+        (tmp_path / "runs" / "route-run" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["metrics_k"] == 2
     assert releases == [
         ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-1"),
         ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-2"),
     ]
     assert stale_clears == ["http://127.0.0.1:19090"]
+
+
+def test_manifest_metrics_k_uses_common_repeat_prefix(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps({
+            "name": "mixed_repeats",
+            "tasks": [
+                {"id": "short", "category": "diagnostic", "description_for_judge": "short", "prompt": "short", "rubric": [{"id": "done", "check": "done"}], "repeats": 1},
+                {"id": "long", "category": "diagnostic", "description_for_judge": "long", "prompt": "long", "rubric": [{"id": "done", "check": "done"}], "repeats": 3},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            pass
+        def health(self): return True
+        def device_type(self): return "android"
+        def close(self): pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        main,
+        "run_one_task",
+        lambda client, suite, task, attempt, artifact_dir, *args, **kwargs: TaskResult(
+            suite=suite.name,
+            run_id="mixed",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            artifact_dir=str(artifact_dir),
+            metrics={"success": True, "agent_eligible": True},
+        ),
+    )
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+
+    assert main.cli(["run", "--suite", str(suite_path), "--out", str(tmp_path / "runs"), "--run-id", "mixed", "--no-judge"]) == 0
+    manifest = json.loads((tmp_path / "runs" / "mixed" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["metrics_k"] == 1
