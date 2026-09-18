@@ -70,6 +70,11 @@ def _fmt_time_ms(ms: float | int | str | None) -> str:
         # If conversion fails, escape and return the value with ms suffix
         return _esc(str(ms)) + "ms"
 
+    # Check for non-finite values (NaN, Infinity, -Infinity)
+    import math
+    if not math.isfinite(ms_num):
+        return "n/a"
+
     if ms_num < 1000:
         return f"{int(ms_num)}ms"
     sec = ms_num / 1000
