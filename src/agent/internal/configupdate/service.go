@@ -446,6 +446,7 @@ func persistLegacyProviderFields(
 				"endpoint":          record.Endpoint,
 				"base_url":          record.BaseURL,
 				"realtime_protocol": record.RealtimeProtocol,
+				"thinking_level":    record.ThinkingLevel,
 				"voice":             record.Voice,
 			}, []string{"voice_model"}, []string{"voice_settings", "realtime"})
 			if len(values) > 0 {

@@ -28,7 +28,11 @@ type SessionConfig struct {
 	TurnDetectionThresh    *float64
 	TurnDetectionSilenceMs int
 	EnableSpeechEmotion    *bool
-	Tools                  []Tool
+	// ThinkingLevel sets generationConfig.thinkingConfig on models that
+	// support it (currently Gemini Extended Thinking); empty means the
+	// provider default.
+	ThinkingLevel string
+	Tools          []Tool
 }
 
 // AudioFormat describes the media exchanged with a realtime provider. The

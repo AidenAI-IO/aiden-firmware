@@ -665,6 +665,23 @@ func TestGeminiRequiresActionClosesResponse(t *testing.T) {
 	}
 }
 
+func TestGeminiThinkingLevelComesFromSessionConfig(t *testing.T) {
+	for _, level := range []string{"", "MEDIUM", "low", "High"} {
+		setup := buildGeminiSetup(SessionConfig{ThinkingLevel: level, Tools: []Tool{}}, "gemini-3.8-live-extended-thinking")
+		want := strings.ToUpper(level)
+		if want == "" {
+			want = "LOW"
+		}
+		if got := setup.Setup.GenerationConfig.ThinkingConfig; got == nil || got.ThinkingLevel != want {
+			t.Fatalf("level=%q got=%+v want=%s", level, got, want)
+		}
+	}
+	setup := buildGeminiSetup(SessionConfig{ThinkingLevel: "MEDIUM", Tools: []Tool{}}, "gemini-3.8-live")
+	if setup.Setup.GenerationConfig.ThinkingConfig != nil {
+		t.Fatal("regular Gemini model received thinking config")
+	}
+}
+
 func TestGeminiToolResultSchedulingOnlyForExtendedThinking(t *testing.T) {
 	// Extended Thinking declares tools NON_BLOCKING, so the tool response must
 	// tell the model how to behave when the result arrives (INTERRUPT). Regular

@@ -338,8 +338,14 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 	// Valid values: LOW, MEDIUM, HIGH (uppercase per Live API docs)
 	// Always set thinking config for extended-thinking models
 	if IsGemini38ExtendedThinkingModel(model) {
-		setup.GenerationConfig.ThinkingConfig = &geminiThinkingConfig{ThinkingLevel: "LOW"}
-		log.Printf("[realtime] [gemini] Extended Thinking model detected: model=%s thinking_level=LOW", model)
+		// Thinking level is configurable per provider record and only applies to
+		// models that support thinking; other Gemini Live models omit the config.
+		level := strings.ToUpper(strings.TrimSpace(cfg.ThinkingLevel))
+		if level == "" {
+			level = "LOW"
+		}
+		setup.GenerationConfig.ThinkingConfig = &geminiThinkingConfig{ThinkingLevel: level}
+		log.Printf("[realtime] [gemini] Extended Thinking model detected: model=%s thinking_level=%s", model, level)
 	}
 	if strings.TrimSpace(cfg.Voice) != "" {
 		setup.GenerationConfig.SpeechConfig = &geminiSpeechConfig{VoiceConfig: geminiVoiceConfig{PrebuiltVoiceConfig: geminiPrebuiltVoiceConfig{VoiceName: cfg.Voice}}}
