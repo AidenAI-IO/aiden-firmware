@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"aiden-agent/internal/logging"
 
 	"github.com/gorilla/websocket"
 )
@@ -25,15 +25,6 @@ const (
 	Gemini38ThinkingModel     = "gemini-3.8-live-extended-thinking"
 	geminiVertexLivePath      = "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
 )
-
-func geminiLiveDebugLoggingEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AIDEN_GEMINI_LIVE_DEBUG"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
 
 func geminiModelID(model string) string {
 	model = strings.TrimSpace(model)
@@ -127,10 +118,8 @@ func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	}
 	transport.start(s.translate)
 	setupMsg := buildGeminiSetup(cfg, setupModel)
-	if geminiLiveDebugLoggingEnabled() {
-		if debugJSON, err := json.MarshalIndent(setupMsg, "", "  "); err == nil {
-			log.Printf("[realtime] [gemini] Setup message: session_id=%s json=%s", cfg.SessionID, string(debugJSON))
-		}
+	if debugJSON, err := json.Marshal(setupMsg); err == nil {
+		logging.Debugf("agent", "gemini", "setup message: session_id=%s json=%s", cfg.SessionID, string(debugJSON))
 	}
 	if err := s.writeJSON(ctx, setupMsg); err != nil {
 		_ = s.Close()
@@ -345,7 +334,7 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 			level = "LOW"
 		}
 		setup.GenerationConfig.ThinkingConfig = &geminiThinkingConfig{ThinkingLevel: level}
-		log.Printf("[realtime] [gemini] Extended Thinking model detected: model=%s thinking_level=%s", model, level)
+		logging.Infof("agent", "gemini", "extended thinking model detected: model=%s thinking_level=%s", model, level)
 	}
 	if strings.TrimSpace(cfg.Voice) != "" {
 		setup.GenerationConfig.SpeechConfig = &geminiSpeechConfig{VoiceConfig: geminiVoiceConfig{PrebuiltVoiceConfig: geminiPrebuiltVoiceConfig{VoiceName: cfg.Voice}}}
@@ -635,12 +624,10 @@ func (s *geminiSession) translate(body []byte) []Event {
 	}
 	// Raw frames can contain transcripts, tool arguments, and audio data; only
 	// emit them when explicitly requested for a local protocol investigation.
-	if geminiLiveDebugLoggingEnabled() {
-		if len(body) < 4000 {
-			log.Printf("[realtime] [gemini] [DEBUG] Raw response: %s", string(body))
-		} else {
-			log.Printf("[realtime] [gemini] [DEBUG] Raw response (truncated): %s...", string(body[:4000]))
-		}
+	if len(body) <= 4000 {
+		logging.Debugf("agent", "gemini", "raw response: %s", string(body))
+	} else {
+		logging.Debugf("agent", "gemini", "raw response (truncated): %s", string(body[:4000]))
 	}
 	if len(envelope.SetupComplete) > 0 {
 		return []Event{{Kind: EventReady}}

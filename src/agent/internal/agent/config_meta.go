@@ -502,6 +502,17 @@ func ConfigMeta() ConfigMetadata {
 						Help:        "Optional provider WebSocket endpoint override. Leave empty to use the provider default.",
 						Advanced:    true,
 						VisibleWhen: all(in("voice_model_providers.type", "qwen", "openai", "gemini", "xai"))},
+					{Key: "thinking_level", Label: "Thinking Level", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "", Label: "LOW (default)"},
+							{Value: "MINIMAL", Label: "MINIMAL"},
+							{Value: "LOW", Label: "LOW"},
+							{Value: "MEDIUM", Label: "MEDIUM"},
+							{Value: "HIGH", Label: "HIGH"},
+						},
+						Help:        "Thinking depth for Gemini Live Extended Thinking models. Only applies to models that support thinking; other providers ignore it.",
+						Advanced:    true,
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"))},
 					{Key: "realtime_protocol", Label: "Realtime Protocol", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "", Label: "OpenAI GA (default)"},
