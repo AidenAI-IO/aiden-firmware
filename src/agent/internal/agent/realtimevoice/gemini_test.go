@@ -310,9 +310,10 @@ func TestGeminiSetupUsesJSONSchemaToolParameterField(t *testing.T) {
 }
 
 func TestGeminiExtendedThinkingSetupUsesNonBlockingTools(t *testing.T) {
+	inputSchema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"timezone":{"type":"string"},"offset":{"type":"number"}},"required":["timezone"]}`)
 	setup := buildGeminiSetup(SessionConfig{Tools: []Tool{{
 		Name:       "clock",
-		Parameters: json.RawMessage(`{"type":"object"}`),
+		Parameters: inputSchema,
 	}}}, "gemini-3.8-live-extended-thinking")
 	if setup.Setup.GenerationConfig.ThinkingConfig == nil || setup.Setup.GenerationConfig.ThinkingConfig.ThinkingLevel != "LOW" {
 		t.Fatalf("thinking config = %+v, want LOW", setup.Setup.GenerationConfig.ThinkingConfig)
@@ -320,6 +321,33 @@ func TestGeminiExtendedThinkingSetupUsesNonBlockingTools(t *testing.T) {
 	declaration := setup.Setup.Tools[0].FunctionDeclarations[0]
 	if declaration.Behavior != "NON_BLOCKING" {
 		t.Fatalf("tool behavior = %q, want NON_BLOCKING", declaration.Behavior)
+	}
+	encoded, err := json.Marshal(declaration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields struct {
+		Parameters           map[string]any  `json:"parameters"`
+		ParametersJSONSchema json.RawMessage `json:"parametersJsonSchema"`
+	}
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields.ParametersJSONSchema) != 0 {
+		t.Fatalf("extended-thinking declaration used parametersJsonSchema: %s", fields.ParametersJSONSchema)
+	}
+	if fields.Parameters["type"] != "OBJECT" {
+		t.Fatalf("parameters.type = %#v, want OBJECT", fields.Parameters["type"])
+	}
+	if _, ok := fields.Parameters["additionalProperties"]; ok {
+		t.Fatalf("parameters retained unsupported additionalProperties: %#v", fields.Parameters)
+	}
+	properties, ok := fields.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters.properties = %#v", fields.Parameters["properties"])
+	}
+	if properties["timezone"].(map[string]any)["type"] != "STRING" || properties["offset"].(map[string]any)["type"] != "NUMBER" {
+		t.Fatalf("parameter property types were not converted to Gemini enums: %#v", properties)
 	}
 
 	for _, model := range []string{Gemini38LiveModel, DefaultGeminiLiveModel} {
@@ -588,6 +616,85 @@ func TestGeminiInterruptSendsClientContentWithoutStartingNewTurn(t *testing.T) {
 		case event := <-session.Events():
 			if event.Kind != want {
 				t.Fatalf("event=%+v want=%s", event, want)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
+func TestGeminiRequiresActionClosesResponse(t *testing.T) {
+	// Extended Thinking speaks multiple utterances per turn (filler, final).
+	// IN_PROGRESS keeps the response open; only IDLE closes it. REQUIRES_ACTION
+	// is a deprecated alias for IDLE and must also close it, otherwise the
+	// daemon waits on the response watchdog instead of finishing the turn.
+	s := &geminiSession{toolNames: map[string]string{}}
+	started := s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"checking"}]}}}`))
+	if len(started) == 0 || started[0].Kind != EventResponseStarted {
+		t.Fatalf("filler events = %+v, want started", started)
+	}
+	inProgress := s.translate([]byte(`{"serverContent":{"turnComplete":true,"interactionStatus":"IN_PROGRESS"}}`))
+	if len(inProgress) != 0 {
+		t.Fatalf("IN_PROGRESS emitted terminal events: %+v", inProgress)
+	}
+	requiresAction := s.translate([]byte(`{"serverContent":{"turnComplete":true,"interactionStatus":"REQUIRES_ACTION"}}`))
+	if requiresAction[len(requiresAction)-1].Kind != EventResponseDone {
+		t.Fatalf("REQUIRES_ACTION terminal = %+v, want done", requiresAction)
+	}
+	if s.responseActive || s.responseInterrupted {
+		t.Fatal("REQUIRES_ACTION left the response open")
+	}
+}
+
+func TestGeminiToolResultSchedulingOnlyForExtendedThinking(t *testing.T) {
+	// Extended Thinking declares tools NON_BLOCKING, so the tool response must
+	// tell the model how to behave when the result arrives (INTERRUPT). Regular
+	// Gemini models must not send scheduling.
+	for _, model := range []string{Gemini38ThinkingModel, DefaultGeminiLiveModel} {
+		received := make(chan map[string]any, 1)
+		upgrader := websocket.Upgrader{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			var setup map[string]any
+			if conn.ReadJSON(&setup) != nil {
+				return
+			}
+			conn.WriteJSON(map[string]any{"setupComplete": map[string]any{}})
+			var message map[string]any
+			if conn.ReadJSON(&message) != nil {
+				return
+			}
+			received <- message
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		session, err := (GeminiProvider{Endpoint: server.URL}).Open(ctx, SessionConfig{APIKey: "test", Model: model})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+		if err := session.(ToolResultSender).SendToolResult(ctx, "call_1", `{"temperature_c":27}`); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case message := <-received:
+			data, _ := json.Marshal(message)
+			if IsGemini38ExtendedThinkingModel(model) {
+				if string(data) != `{"toolResponse":{"functionResponses":[{"id":"call_1","response":{"result":{"temperature_c":27},"scheduling":"INTERRUPT"}}]}}` {
+					t.Fatalf("model=%s wire payload=%s", model, data)
+				}
+			} else if strings.Contains(string(data), "scheduling") {
+				t.Fatalf("model=%s sent unexpected scheduling: %s", model, data)
 			}
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())

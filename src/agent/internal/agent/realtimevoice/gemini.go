@@ -54,10 +54,21 @@ func IsGemini38LiveModel(model string) bool {
 	}
 }
 
-// IsGemini38ExtendedThinkingModel reports whether model is the 3.8 Live
+// geminiExtendedThinkingModelIDs lists Live API models whose native reasoning
+// replaces the legacy backend agent. New Gemini thinking voice models land
+// here; unknown models intentionally keep the legacy integration instead of
+// guessing. UsesNativeRealtimeReasoning in agent.Config and the gemini session
+// both classify through IsGemini38ExtendedThinkingModel, so this table is the
+// single extension point for a future thinking-model family.
+var geminiExtendedThinkingModelIDs = map[string]struct{}{
+	Gemini38ThinkingModel: {},
+}
+
+// IsGemini38ExtendedThinkingModel reports whether model is a Gemini Live
 // variant whose native reasoning replaces the legacy backend agent.
 func IsGemini38ExtendedThinkingModel(model string) bool {
-	return geminiModelID(model) == Gemini38ThinkingModel
+	_, ok := geminiExtendedThinkingModelIDs[geminiModelID(model)]
+	return ok
 }
 
 // GeminiProvider is the native Google Gemini Live adapter. AuthMode selects
@@ -115,7 +126,8 @@ func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		info: newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{
 			ServerAuthoritativeInterruption: IsGemini38LiveModel(model),
 		}),
-		inputRate: inputRate,
+		inputRate:        inputRate,
+		extendedThinking: IsGemini38ExtendedThinkingModel(model),
 	}
 	transport.start(s.translate)
 	setupMsg := buildGeminiSetup(cfg, setupModel)
@@ -304,6 +316,7 @@ type geminiFunctionDeclaration struct {
 	Name                 string          `json:"name"`
 	Description          string          `json:"description,omitempty"`
 	Behavior             string          `json:"behavior,omitempty"`
+	Parameters           json.RawMessage `json:"parameters,omitempty"`
 	ParametersJSONSchema json.RawMessage `json:"parametersJsonSchema,omitempty"`
 }
 
@@ -339,14 +352,19 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 		setup.SystemInstruction = &geminiSystemInstruction{Parts: []geminiTextPart{{Text: cfg.Instructions}}}
 	}
 	for _, tool := range cfg.Tools {
-		// Shared tool definitions use JSON Schema. Gemini's parameters field is
-		// a restricted OpenAPI Schema protobuf and rejects JSON Schema keywords
-		// such as additionalProperties; parametersJsonSchema accepts them.
-		behavior := ""
+		declaration := geminiFunctionDeclaration{Name: tool.Name, Description: tool.Description}
 		if IsGemini38ExtendedThinkingModel(model) {
-			behavior = "NON_BLOCKING"
+			// Extended Thinking currently follows the Live API's restricted Schema
+			// wire shape. Sending parametersJsonSchema is accepted by setup but the
+			// model treats its internal tool plan as text instead of emitting toolCall.
+			declaration.Behavior = "NON_BLOCKING"
+			declaration.Parameters = geminiRestrictedParameters(tool.Parameters)
+		} else {
+			// Other Gemini Live models accept full JSON Schema here. Keep this path
+			// unchanged so richer schemas and their existing tool behavior remain intact.
+			declaration.ParametersJSONSchema = tool.Parameters
 		}
-		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{{Name: tool.Name, Description: tool.Description, Behavior: behavior, ParametersJSONSchema: tool.Parameters}}})
+		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{declaration}})
 	}
 	if cfg.TurnDetection == "disabled" {
 		setup.RealtimeInputConfig = &geminiRealtimeInputConfig{AutomaticActivityDetection: &geminiAutomaticActivityDetection{Disabled: true}}
@@ -354,10 +372,55 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 	return geminiSetupMessage{Setup: setup}
 }
 
+func geminiRestrictedParameters(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return raw
+	}
+	normalized := normalizeGeminiRestrictedSchema(schema)
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func normalizeGeminiRestrictedSchema(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		normalized := make(map[string]any, len(typed))
+		for key, child := range typed {
+			switch key {
+			case "additionalProperties", "examples", "exclusiveMinimum", "exclusiveMaximum":
+				continue
+			case "type":
+				if schemaType, ok := child.(string); ok {
+					normalized[key] = strings.ToUpper(schemaType)
+					continue
+				}
+			}
+			normalized[key] = normalizeGeminiRestrictedSchema(child)
+		}
+		return normalized
+	case []any:
+		normalized := make([]any, len(typed))
+		for index, child := range typed {
+			normalized[index] = normalizeGeminiRestrictedSchema(child)
+		}
+		return normalized
+	default:
+		return value
+	}
+}
+
 type geminiSession struct {
 	*jsonWebSocketTransport
 	info                SessionInfo
 	inputRate           int
+	extendedThinking    bool // tools are declared NON_BLOCKING; tool responses need scheduling
 	infoMu              sync.RWMutex
 	responseMu          sync.Mutex
 	responseActive      bool
@@ -423,7 +486,15 @@ func (s *geminiSession) SendToolResult(ctx context.Context, id, output string) e
 	s.toolMu.Lock()
 	name := s.toolNames[id]
 	s.toolMu.Unlock()
-	functionResponse := map[string]any{"id": id, "response": map[string]any{"result": response}}
+	responseBody := map[string]any{"result": response}
+	if s.extendedThinking {
+		// Extended Thinking requires NON_BLOCKING declarations. The Live API
+		// tools guide says to tell the model how to behave when the result
+		// arrives; INTERRUPT surfaces the outcome right away instead of after
+		// the current utterance finishes.
+		responseBody["scheduling"] = "INTERRUPT"
+	}
+	functionResponse := map[string]any{"id": id, "response": responseBody}
 	if name != "" {
 		functionResponse["name"] = name
 	}
@@ -656,8 +727,10 @@ func (s *geminiSession) translate(body []byte) []Event {
 			s.responseMu.Lock()
 			// Auto-detect protocol version: interaction_status presence indicates Extended Thinking support
 			if content.InteractionStatus != "" {
-				// New protocol: only IDLE means truly complete
-				if content.InteractionStatus == "IDLE" {
+				// New protocol: only IDLE means truly complete. REQUIRES_ACTION is a
+				// deprecated alias for IDLE; treating it as non-terminal would leave
+				// the session waiting until the response watchdog kills it.
+				if content.InteractionStatus == "IDLE" || content.InteractionStatus == "REQUIRES_ACTION" {
 					if s.responseInterrupted {
 						events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
 					} else {
