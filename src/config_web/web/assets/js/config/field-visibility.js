@@ -83,6 +83,7 @@ export const VISIBLE_FIELDS = {
   'voice_model_providers.workspace_id': true,
   'voice_model_providers.endpoint': true,
   'voice_model_providers.realtime_protocol': true,
+  'voice_model_providers.thinking_level': true,
   'voice_model_providers.base_url': true,
   'voice_model_providers.region': true,
   'voice_model_providers.voice': true,
