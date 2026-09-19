@@ -74,19 +74,13 @@ func (r *ProviderRegistry) New(name string, config ProviderConfig) (Provider, er
 }
 
 // NativeReasoningProvider is implemented by providers whose model owns the
-// realtime turn: reasoning and tool calling happen in the model and session
-// instead of the legacy backend agent.
+// realtime turn instead of the legacy backend agent.
 type NativeReasoningProvider interface {
-	// NativeRealtimeReasoning reports whether model runs the realtime turn
-	// natively.
 	NativeRealtimeReasoning(model string) bool
 }
 
 // NativeRealtimeReasoning reports whether the named provider's model owns
-// realtime reasoning natively. Providers that do not implement
-// NativeReasoningProvider (or names that are not registered) fall back to
-// the legacy backend-agent integration, so new providers and models opt in
-// by implementing the interface rather than by default.
+// realtime reasoning natively; unregistered providers keep the legacy path.
 func (r *ProviderRegistry) NativeRealtimeReasoning(name, model string) bool {
 	if r == nil {
 		return false

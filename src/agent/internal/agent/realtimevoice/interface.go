@@ -28,9 +28,7 @@ type SessionConfig struct {
 	TurnDetectionThresh    *float64
 	TurnDetectionSilenceMs int
 	EnableSpeechEmotion    *bool
-	// ThinkingLevel sets generationConfig.thinkingConfig on models that
-	// support it (currently Gemini Extended Thinking); empty means the
-	// provider default.
+	// ThinkingLevel sets thinkingConfig; only models that support thinking use it.
 	ThinkingLevel string
 	Tools          []Tool
 }

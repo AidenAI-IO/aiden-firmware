@@ -34,12 +34,9 @@ func geminiModelID(model string) string {
 	return model
 }
 
-// geminiExtendedThinkingModelIDs lists Live API models whose native reasoning
-// replaces the legacy backend agent. New Gemini thinking voice models land
-// here; unknown models intentionally keep the legacy integration instead of
-// guessing. UsesNativeRealtimeReasoning in agent.Config and the gemini session
-// both classify through IsGemini38ExtendedThinkingModel, so this table is the
-// single extension point for a future thinking-model family.
+// geminiExtendedThinkingModelIDs lists Gemini Live models whose native
+// reasoning replaces the legacy backend agent. Add new thinking models here;
+// unknown models keep the legacy integration.
 var geminiExtendedThinkingModelIDs = map[string]struct{}{
 	Gemini38ThinkingModel: {},
 }
@@ -51,9 +48,8 @@ func IsGemini38ExtendedThinkingModel(model string) bool {
 	return ok
 }
 
-// NativeRealtimeReasoning reports whether model owns realtime reasoning and
-// tool calling natively, replacing the legacy backend agent. Future Gemini
-// thinking voice models only need an entry in geminiExtendedThinkingModelIDs.
+// NativeRealtimeReasoning reports whether model owns the realtime turn
+// natively.
 func (GeminiProvider) NativeRealtimeReasoning(model string) bool {
 	return IsGemini38ExtendedThinkingModel(model)
 }
@@ -327,8 +323,8 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 	// Valid values: LOW, MEDIUM, HIGH (uppercase per Live API docs)
 	// Always set thinking config for extended-thinking models
 	if IsGemini38ExtendedThinkingModel(model) {
-		// Thinking level is configurable per provider record and only applies to
-		// models that support thinking; other Gemini Live models omit the config.
+		// Only thinking models receive thinkingConfig; the level is configurable
+		// per provider record and defaults to LOW.
 		level := strings.ToUpper(strings.TrimSpace(cfg.ThinkingLevel))
 		if level == "" {
 			level = "LOW"
@@ -411,7 +407,7 @@ type geminiSession struct {
 	*jsonWebSocketTransport
 	info                SessionInfo
 	inputRate           int
-	extendedThinking    bool // tools are declared NON_BLOCKING; tool responses need scheduling
+	extendedThinking    bool
 	infoMu              sync.RWMutex
 	responseMu          sync.Mutex
 	responseActive      bool
@@ -479,10 +475,7 @@ func (s *geminiSession) SendToolResult(ctx context.Context, id, output string) e
 	s.toolMu.Unlock()
 	responseBody := map[string]any{"result": response}
 	if s.extendedThinking {
-		// Extended Thinking requires NON_BLOCKING declarations. The Live API
-		// tools guide says to tell the model how to behave when the result
-		// arrives; INTERRUPT surfaces the outcome right away instead of after
-		// the current utterance finishes.
+		// NON_BLOCKING tools need scheduling; INTERRUPT surfaces the result immediately.
 		responseBody["scheduling"] = "INTERRUPT"
 	}
 	functionResponse := map[string]any{"id": id, "response": responseBody}
@@ -716,9 +709,7 @@ func (s *geminiSession) translate(body []byte) []Event {
 			s.responseMu.Lock()
 			// Auto-detect protocol version: interaction_status presence indicates Extended Thinking support
 			if content.InteractionStatus != "" {
-				// New protocol: only IDLE means truly complete. REQUIRES_ACTION is a
-				// deprecated alias for IDLE; treating it as non-terminal would leave
-				// the session waiting until the response watchdog kills it.
+				// IDLE completes the interaction; REQUIRES_ACTION is a deprecated alias.
 				if content.InteractionStatus == "IDLE" || content.InteractionStatus == "REQUIRES_ACTION" {
 					if s.responseInterrupted {
 						events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
@@ -870,4 +861,3 @@ var _ Provider = GeminiProvider{}
 var _ TextSession = (*geminiSession)(nil)
 var _ ResponseInterrupter = (*geminiSession)(nil)
 var _ ContextReplayer = (*geminiSession)(nil)
-

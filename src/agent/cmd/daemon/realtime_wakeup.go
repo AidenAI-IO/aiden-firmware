@@ -713,6 +713,8 @@ const (
 	realtimeQueryTaskTool          = "query_agent_task"
 	realtimeResponseUserActionTool = "response_user_action"
 	realtimeEndConversationTool    = "end_conversation"
+	realtimeWaitForWakeupTool     = "wait_for_wakeup"
+	realtimeRequestUserActionTool = "request_user_action"
 )
 
 var realtimeDelegatedTools = []string{
@@ -724,8 +726,8 @@ var realtimeDelegatedTools = []string{
 }
 
 var realtimeNativeExcludedTools = map[string]struct{}{
-	"request_user_action":          {},
-	"wait_for_wakeup":              {},
+	realtimeRequestUserActionTool:  {},
+	realtimeWaitForWakeupTool:     {},
 	realtimeCreateTaskTool:         {},
 	realtimeCancelTaskTool:         {},
 	realtimeQueryTaskTool:          {},
@@ -791,8 +793,6 @@ func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runt
 		return tools
 	}
 
-	// TODO: Register all backend agent tools directly into realtime session
-	// Need to expose public methods in Runtime to access toolSnapshot and devicePlatformFromState
 
 	tools = append(tools,
 		realtimeVoiceToolDefinition(
