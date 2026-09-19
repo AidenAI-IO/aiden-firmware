@@ -154,7 +154,7 @@ func TestGeminiProviderNormalizesLiveSession(t *testing.T) {
 	}
 }
 
-func TestGemini38LiveSessionUsesServerAuthoritativeInterruption(t *testing.T) {
+func TestGeminiExtendedThinkingSessionUsesServerAuthoritativeInterruption(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -179,8 +179,11 @@ func TestGemini38LiveSessionUsesServerAuthoritativeInterruption(t *testing.T) {
 		model string
 		want  bool
 	}{
-		{model: Gemini38LiveModel, want: true},
+		// Only extended thinking speaks multiple utterances per turn; the
+		// fillers must stay under server interruption authority. Regular
+		// Gemini Live models keep the local admission energy gate.
 		{model: Gemini38ThinkingModel, want: true},
+		{model: Gemini38LiveModel, want: false},
 		{model: DefaultGeminiLiveModel, want: false},
 	} {
 		t.Run(tc.model, func(t *testing.T) {

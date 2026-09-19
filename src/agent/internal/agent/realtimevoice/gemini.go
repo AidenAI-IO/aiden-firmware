@@ -43,17 +43,6 @@ func geminiModelID(model string) string {
 	return model
 }
 
-// IsGemini38LiveModel reports whether model uses the Gemini 3.8 Live protocol
-// lifecycle shared by the regular and Extended Thinking variants.
-func IsGemini38LiveModel(model string) bool {
-	switch geminiModelID(model) {
-	case Gemini38LiveModel, Gemini38ThinkingModel:
-		return true
-	default:
-		return false
-	}
-}
-
 // geminiExtendedThinkingModelIDs lists Live API models whose native reasoning
 // replaces the legacy backend agent. New Gemini thinking voice models land
 // here; unknown models intentionally keep the legacy integration instead of
@@ -131,7 +120,7 @@ func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 		jsonWebSocketTransport: transport,
 		toolNames:              make(map[string]string),
 		info: newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{
-			ServerAuthoritativeInterruption: IsGemini38LiveModel(model),
+			ServerAuthoritativeInterruption: IsGemini38ExtendedThinkingModel(model),
 		}),
 		inputRate:        inputRate,
 		extendedThinking: IsGemini38ExtendedThinkingModel(model),
@@ -888,3 +877,4 @@ var _ Provider = GeminiProvider{}
 var _ TextSession = (*geminiSession)(nil)
 var _ ResponseInterrupter = (*geminiSession)(nil)
 var _ ContextReplayer = (*geminiSession)(nil)
+
