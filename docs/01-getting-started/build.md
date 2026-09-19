@@ -73,8 +73,8 @@ This is a live mirror, not a snapshot.debian.org timestamp: `trixie-security`
 moves daily, so two builds of the same commit can differ in package versions.
 Each build records what it consumed in
 `output/debian-system/build-metadata.json` (`debian_mirror`,
-`debian_release_version`, `debian_release_date`, `debian_security_date`) and
-in `packages.txt`.
+`debian_release_version`, `debian_release_date`, `debian_updates_date`,
+`debian_security_date`) and in `packages.txt`.
 
 ### Optional CI APT Cache
 

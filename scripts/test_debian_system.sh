@@ -57,7 +57,8 @@ grep -q '^FROM debian:trixie-slim@sha256:' "${SYSTEM_DIR}/Dockerfile"
 grep -Fq 'trixie "${ROOTFS_DIR}" "${DEBIAN_MIRROR}"' \
     "${SYSTEM_DIR}/container-build-rootfs.sh" \
     || fail "debootstrap does not use the mirror declared in debian.sources"
-for metadata_key in debian_mirror debian_release_date debian_release_version debian_security_date; do
+for metadata_key in debian_mirror debian_release_date debian_release_version \
+    debian_security_date debian_updates_date; do
     grep -Fq "\"${metadata_key}\":" "${SYSTEM_DIR}/container-build-rootfs.sh" \
         || fail "build metadata does not record ${metadata_key}"
 done

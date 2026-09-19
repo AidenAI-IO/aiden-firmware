@@ -107,9 +107,11 @@ apt_list_file() {
     printf '%s\n' "$1" | sed -e 's#^[a-z]*://##' -e 's#/#_#g'
 }
 
-# A live mirror moves under the build, so keep the InRelease Version and Date
-# of what this build actually consumed. They are read right after the chroot
-# apt-get update because configure_rootfs() removes the apt lists.
+# A live mirror moves under the build, so keep the Version and Date of every
+# InRelease this build actually consumed. trixie-updates and trixie-security
+# carry only constant Version fields (13-updates, 13), so their Date is what
+# identifies their state. They are read right after the chroot apt-get update
+# because configure_rootfs() removes the apt lists.
 inrelease_field() {
     local release_uri=$1 field=$2 inrelease value
     inrelease=${ROOTFS_DIR}/var/lib/apt/lists/$(apt_list_file "${release_uri}/InRelease")
@@ -124,6 +126,7 @@ inrelease_field() {
 record_archive_state() {
     DEBIAN_RELEASE_VERSION=$(inrelease_field "${DEBIAN_MIRROR}/dists/trixie" Version)
     DEBIAN_RELEASE_DATE=$(inrelease_field "${DEBIAN_MIRROR}/dists/trixie" Date)
+    DEBIAN_UPDATES_DATE=$(inrelease_field "${DEBIAN_MIRROR}/dists/trixie-updates" Date)
     DEBIAN_SECURITY_DATE=$(inrelease_field \
         "${DEBIAN_SECURITY_MIRROR}/dists/trixie-security" Date)
 }
@@ -392,6 +395,7 @@ write_metadata() {
   "debian_release_date": "${DEBIAN_RELEASE_DATE:?record_archive_state must run first}",
   "debian_release_version": "${DEBIAN_RELEASE_VERSION}",
   "debian_security_date": "${DEBIAN_SECURITY_DATE}",
+  "debian_updates_date": "${DEBIAN_UPDATES_DATE}",
   "hardware_demo_commit": "${app_commit}",
   "packages_sha256": "${packages_sha}",
   "pico_sdk_commit": "${source_commit}",
