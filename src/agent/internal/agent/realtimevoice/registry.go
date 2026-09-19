@@ -73,6 +73,34 @@ func (r *ProviderRegistry) New(name string, config ProviderConfig) (Provider, er
 	return provider, nil
 }
 
+// NativeReasoningProvider is implemented by providers whose model owns the
+// realtime turn: reasoning and tool calling happen in the model and session
+// instead of the legacy backend agent.
+type NativeReasoningProvider interface {
+	// NativeRealtimeReasoning reports whether model runs the realtime turn
+	// natively.
+	NativeRealtimeReasoning(model string) bool
+}
+
+// NativeRealtimeReasoning reports whether the named provider's model owns
+// realtime reasoning natively. Providers that do not implement
+// NativeReasoningProvider (or names that are not registered) fall back to
+// the legacy backend-agent integration, so new providers and models opt in
+// by implementing the interface rather than by default.
+func (r *ProviderRegistry) NativeRealtimeReasoning(name, model string) bool {
+	if r == nil {
+		return false
+	}
+	provider, err := r.New(name, ProviderConfig{})
+	if err != nil {
+		return false
+	}
+	if n, ok := provider.(NativeReasoningProvider); ok {
+		return n.NativeRealtimeReasoning(model)
+	}
+	return false
+}
+
 // DefaultProviderRegistry returns the adapters shipped with the daemon. The
 // factories only capture provider-specific construction settings; API keys and
 // per-session options remain in SessionConfig.

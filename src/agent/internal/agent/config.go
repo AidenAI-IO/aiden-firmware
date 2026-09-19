@@ -449,9 +449,10 @@ type VoiceModelConfig struct {
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
 
 // UsesNativeRealtimeReasoning reports whether the selected realtime model
-// replaces the legacy backend agent instead of delegating work to it. This is
-// intentionally limited to Gemini 3.8 Live Extended Thinking; the regular
-// Gemini 3.8 Live model retains the existing backend-agent integration.
+// replaces the legacy backend agent instead of delegating work to it. The
+// capability lives with each provider (realtimevoice.NativeReasoningProvider);
+// Gemini currently reports it for its 3.8 Live Extended Thinking model, and
+// the regular Gemini 3.8 Live model retains the legacy backend integration.
 func (c Config) UsesNativeRealtimeReasoning() bool {
 	providerRef := strings.TrimSpace(c.VoiceModel.Provider)
 	provider := strings.ToLower(providerRef)
@@ -462,7 +463,7 @@ func (c Config) UsesNativeRealtimeReasoning() bool {
 			model = record.Model
 		}
 	}
-	return provider == realtimevoice.ProviderGemini && realtimevoice.IsGemini38ExtendedThinkingModel(model)
+	return realtimevoice.DefaultProviderRegistry().NativeRealtimeReasoning(provider, model)
 }
 
 func (c VoiceModelConfig) Validate() error {

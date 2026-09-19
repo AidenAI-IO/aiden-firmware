@@ -216,6 +216,22 @@ func TestGemini38ExtendedThinkingModelClassificationIsExact(t *testing.T) {
 	}
 }
 
+
+func TestGeminiProviderNativeRealtimeReasoningMethod(t *testing.T) {
+	provider := GeminiProvider{}
+	for _, model := range []string{
+		Gemini38ThinkingModel,
+		"models/" + Gemini38ThinkingModel,
+		DefaultGeminiLiveModel,
+		"gemini-3.8-live",
+	} {
+		want := model != DefaultGeminiLiveModel && model != "gemini-3.8-live"
+		if got := provider.NativeRealtimeReasoning(model); got != want {
+			t.Fatalf("model=%s native=%t want=%t", model, got, want)
+		}
+	}
+}
+
 func TestGeminiEndpointPreservesDelegatedAccessToken(t *testing.T) {
 	provider := GeminiProvider{Endpoint: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", DelegatedCredential: true}
 	got, err := provider.endpoint("gemini-3.1-flash-live-preview", "delegated")

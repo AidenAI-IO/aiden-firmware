@@ -51,3 +51,42 @@ func TestDefaultProviderRegistryPropagatesOpenAIRealtimeProtocol(t *testing.T) {
 type testProvider struct{}
 
 func (testProvider) Open(context.Context, SessionConfig) (Session, error) { return nil, nil }
+
+type nativeTestProvider struct{}
+
+func (nativeTestProvider) Open(context.Context, SessionConfig) (Session, error) { return nil, nil }
+func (nativeTestProvider) NativeRealtimeReasoning(model string) bool            { return model == "thinking-1" }
+
+func TestProviderRegistryDispatchesNativeRealtimeReasoning(t *testing.T) {
+	registry := NewProviderRegistry()
+	registry.Register("native", func(ProviderConfig) Provider { return nativeTestProvider{} })
+	registry.Register("plain", func(ProviderConfig) Provider { return testProvider{} })
+
+	if !registry.NativeRealtimeReasoning("native", "thinking-1") {
+		t.Fatal("native provider did not report native reasoning")
+	}
+	if registry.NativeRealtimeReasoning("native", "plain-model") {
+		t.Fatal("native provider reported native reasoning for a plain model")
+	}
+	if registry.NativeRealtimeReasoning("plain", "thinking-1") {
+		t.Fatal("provider without the capability reported native reasoning")
+	}
+	if registry.NativeRealtimeReasoning("missing", "thinking-1") {
+		t.Fatal("unknown provider reported native reasoning")
+	}
+	var nilRegistry *ProviderRegistry
+	if nilRegistry.NativeRealtimeReasoning("gemini", "thinking-1") {
+		t.Fatal("nil registry reported native reasoning")
+	}
+
+	gemini := DefaultProviderRegistry()
+	if !gemini.NativeRealtimeReasoning("gemini", "gemini-3.8-live-extended-thinking") {
+		t.Fatal("default gemini provider did not report native reasoning for extended thinking")
+	}
+	if gemini.NativeRealtimeReasoning("gemini", "gemini-3.1-flash-live-preview") {
+		t.Fatal("default gemini provider reported native reasoning for a plain model")
+	}
+	if gemini.NativeRealtimeReasoning("openai", "gpt-realtime") {
+		t.Fatal("default openai provider reported native reasoning")
+	}
+}
