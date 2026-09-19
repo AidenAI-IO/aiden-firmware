@@ -4,7 +4,6 @@ Requires=oem.mount userdata.mount userdata-ota.mount
 After=oem.mount userdata.mount userdata-ota.mount
 Before=aiden-userdata-migrate.service aiden-root-home.service aiden-bluetooth-state.service
 Before=aiden-machine-id.service aiden-config-web.service aiden-agent.service
-ConditionPathExists=/oem/usr/bin/agent
 
 [Service]
 Type=oneshot

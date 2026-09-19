@@ -351,6 +351,9 @@ func isUSBRequest(r *http.Request, address net.IP, network *net.IPNet) bool {
 	if r == nil {
 		return false
 	}
+	if usb, known := r.Context().Value(usbIngressContextKey{}).(bool); known && !usb {
+		return false
+	}
 	remoteHost, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
 		remoteHost = strings.TrimSpace(r.RemoteAddr)

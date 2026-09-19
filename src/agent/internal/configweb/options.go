@@ -48,6 +48,7 @@ type Options struct {
 	BackupJobStateDir         string
 	USBAddress                string
 	USBSubnet                 string
+	USBInterface              string
 	HardwareIDPath            string
 	SystemctlBinary           string
 	RootHomeMountPoint        string
@@ -99,6 +100,7 @@ func DefaultOptions() Options {
 		BackupJobStateDir:         defaultBackupJobStateDir,
 		USBAddress:                defaultUSBAddress,
 		USBSubnet:                 defaultUSBSubnet,
+		USBInterface:              "usb0",
 		HardwareIDPath:            envOrDefault("AIDEN_HARDWARE_ID_PATH", "/sys/firmware/devicetree/base/serial-number"),
 		SystemctlBinary:           envOrDefault("AIDEN_SYSTEMCTL_BIN", "systemctl"),
 		RootHomeMountPoint:        "/root",

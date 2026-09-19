@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/backup"
@@ -30,6 +31,7 @@ const (
 type Server struct {
 	options                  Options
 	http                     *http.Server
+	usbHTTP                  *http.Server
 	storage                  storageController
 	sttTest                  *agent.STTConfigTestAPI
 	closeMu                  sync.Once
@@ -63,6 +65,9 @@ type Server struct {
 }
 
 func NewServer(options Options) (*Server, error) {
+	if strings.TrimSpace(options.USBInterface) == "" {
+		options.USBInterface = "usb0"
+	}
 	if strings.TrimSpace(options.WiFiProxyConfigPath) == "" {
 		options.WiFiProxyConfigPath = wifiproxy.DefaultConfigPath
 	}
@@ -99,13 +104,10 @@ func NewServer(options Options) (*Server, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("stat Agent config: %w", err)
 	}
-	s.http = &http.Server{
-		Addr:              options.Addr(),
-		Handler:           s,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       65 * time.Second,
-		WriteTimeout:      65 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	usbOnly := options.BindAddress == options.USBAddress
+	s.http = configHTTPServer(options.Addr(), s, usbOnly)
+	if options.BindAddress == "0.0.0.0" {
+		s.usbHTTP = configHTTPServer(net.JoinHostPort(options.USBAddress, strconv.Itoa(options.Port)), s, true)
 	}
 	return s, nil
 }
@@ -120,7 +122,30 @@ func (s *Server) ListenAndServe() error {
 	// transaction behind; finish or discard it before serving requests.
 	s.recoverRestoreTransactions()
 	log.Printf("[config_web] listening on %s", s.options.Addr())
-	err := s.http.ListenAndServe()
+	// A separate SO_BINDTODEVICE socket establishes the USB ingress boundary.
+	// The wildcard portal remains available on Wi-Fi, but its connections are
+	// never maintenance-authorized, even when addressed to the USB IP.
+	errorsCh := make(chan error, 2)
+	if s.usbHTTP != nil {
+		usbListener, err := listenConfigWeb(s.usbHTTP.Addr, s.options.USBInterface)
+		if err != nil {
+			log.Printf("[config_web] USB maintenance listener unavailable (fail closed): %v", err)
+		} else {
+			defer usbListener.Close()
+			go func() { errorsCh <- s.usbHTTP.Serve(usbListener) }()
+		}
+	}
+	device := ""
+	if s.options.BindAddress == s.options.USBAddress {
+		device = s.options.USBInterface
+	}
+	listener, err := listenConfigWeb(s.http.Addr, device)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	go func() { errorsCh <- s.http.Serve(listener) }()
+	err = <-errorsCh
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -134,7 +159,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.restoreJobs != nil {
 		s.restoreJobs.cancelAll()
 	}
-	err := s.http.Shutdown(ctx)
+	shutdownErrors := make(chan error, 2)
+	go func() { shutdownErrors <- s.http.Shutdown(ctx) }()
+	count := 1
+	if s.usbHTTP != nil {
+		count++
+		go func() { shutdownErrors <- s.usbHTTP.Shutdown(ctx) }()
+	}
+	var err error
+	for index := 0; index < count; index++ {
+		err = errors.Join(err, <-shutdownErrors)
+	}
 	s.closeMu.Do(func() {
 		if storage := s.currentStorage(); storage != nil {
 			storage.Stop()

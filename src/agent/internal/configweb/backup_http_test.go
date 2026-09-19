@@ -2,11 +2,25 @@ package configweb
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 )
+
+func TestMaintenanceSessionRejectsNonUSBIngress(t *testing.T) {
+	server := newRestoreTestServer(t, t.TempDir())
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/maintenance/sessions", nil)
+	req.RemoteAddr = "127.0.0.2:1234"
+	req.Header.Set("X-Aiden-Client", "config-web/1.0")
+	req = req.WithContext(context.WithValue(req.Context(), usbIngressContextKey{}, false))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, req)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
 
 func TestHTTPMaintenanceCookieAcceptsUUIDv4Fallback(t *testing.T) {
 	server := newRestoreTestServer(t, t.TempDir())

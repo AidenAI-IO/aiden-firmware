@@ -621,6 +621,58 @@ func TestRestoreRecoveryAtStartupFinishesInterruptedCommit(t *testing.T) {
 	}
 }
 
+func TestRollbackFailureKeepsMaintenanceAndSnapshotLeases(t *testing.T) {
+	maintenance := newMaintenanceController(filepath.Join(t.TempDir(), "maintenance.lock"))
+	maintenanceLease, err := maintenance.begin("restore", "rollback-failed", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotLease := &fakeStorageSnapshotLease{}
+	job := &restoreJob{
+		id: "rollback-failed", state: restoreJobRollingBack, phase: restoreJobRollingBack,
+		maintenance: maintenanceLease, sdLease: snapshotLease, done: make(chan struct{}),
+	}
+	server := &Server{maintenance: maintenance}
+	server.finishRestoreJob(job, restoreJobRollbackFailed, "rollback_failed", "rollback failed")
+	if !maintenance.active() {
+		t.Fatal("rollback failure released maintenance and allowed writers to restart")
+	}
+	if snapshotLease.released.Load() {
+		t.Fatal("rollback failure released the SD snapshot lease")
+	}
+	job.mu.Lock()
+	heldMaintenance, heldSnapshot := job.maintenance, job.sdLease
+	job.mu.Unlock()
+	if heldMaintenance == nil || heldSnapshot == nil {
+		t.Fatal("rollback failure did not retain recovery leases")
+	}
+	maintenanceLease.Release()
+	snapshotLease.Release()
+}
+
+func TestAbortDoesNotInterruptRestoreCommitPhases(t *testing.T) {
+	for _, state := range []string{
+		restoreJobQuiescing, restoreJobCommitting, restoreJobPostProcessing,
+		restoreJobResuming, restoreJobRollingBack,
+	} {
+		t.Run(state, func(t *testing.T) {
+			cancelled := false
+			job := &restoreJob{id: "commit", state: state, phase: state, done: make(chan struct{}), cancel: func() { cancelled = true }}
+			server := &Server{}
+			server.abortRestore(job, "server_shutdown", context.Canceled)
+			job.mu.Lock()
+			gotState := job.state
+			job.mu.Unlock()
+			if gotState != state || cancelled {
+				t.Fatalf("abort changed commit phase: state=%q cancelled=%v", gotState, cancelled)
+			}
+			if job.publicMap()["cancelable"] != false {
+				t.Fatal("commit phase was exposed as cancelable")
+			}
+		})
+	}
+}
+
 func createRestoreTestSession(t *testing.T, server *Server) (string, string) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/maintenance/sessions", nil)

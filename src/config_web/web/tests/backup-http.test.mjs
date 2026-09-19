@@ -45,6 +45,8 @@ test('restore plan uses every manifest component and the inserted SD card', asyn
   assert.match(code, /activeJob\.kind !== 'restore' && !window\.confirm\(t\('backup\.cancel_confirm'\)\)/);
   assert.doesNotMatch(code, /confirmDataRestore|dataRestoreConfirmInput|showStep\('restore-confirm'\)|planGate|showStep\('restore-plan'\)/);
   assert.doesNotMatch(app, /confirmDataRestore|confirm-data-restore|continueDataRestore|continue-data-restore/);
+  assert.match(code, /event\.origin === window\.location\.origin && event\.source === window/);
+  assert.match(code, /!event\.origin && !event\.source && !event\.isTrusted && hasNativeTransfer\(\)/);
 });
 
 test('expired session is recreated once; create uses all components, same device and no password', async () => {

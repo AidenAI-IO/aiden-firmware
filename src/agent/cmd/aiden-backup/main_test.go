@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"aiden-agent/internal/backup"
 )
@@ -46,5 +50,30 @@ func TestVerifyPlainArchiveNeedsNoPassword(t *testing.T) {
 	}
 	if bytes.Contains(errOut.Bytes(), []byte("passphrase")) {
 		t.Fatal("unexpected password prompt")
+	}
+}
+
+func TestArchiveDownloadHasNoWholeRequestTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(75 * time.Millisecond)
+		_, _ = w.Write([]byte("archive"))
+	}))
+	defer server.Close()
+	c := &client{baseURL: server.URL, http: &http.Client{Timeout: 20 * time.Millisecond}}
+	response, err := c.do(http.MethodGet, "/jobs/test/archive", nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "archive" {
+		t.Fatalf("body = %q", data)
 	}
 }

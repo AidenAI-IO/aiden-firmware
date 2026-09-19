@@ -169,6 +169,73 @@ func TestCommitUnitResumesAfterCrashBetweenRenames(t *testing.T) {
 	}
 }
 
+func TestCommitAdoptsUncheckpointedOldRenameAndRollbackRestores(t *testing.T) {
+	root := t.TempDir()
+	unit := &TransactionUnit{Key: "userdata:agent-config", Component: ComponentAgentConfig, Layer: LayerUserdata,
+		Target: filepath.Join(root, "agent/agent.toml"), Staged: filepath.Join(TransactionDir(root, "j"), "new/agent-config"),
+		Old: filepath.Join(TransactionDir(root, "j"), "old/agent-config")}
+	// The rename reached disk but its state checkpoint did not.
+	mustWrite(t, unit.Old, "old")
+	mustWrite(t, unit.Staged, "new")
+	if err := CommitUnit(unit, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !unit.HadOriginal || !unit.OldMoved || mustRead(t, unit.Target) != "new" {
+		t.Fatalf("uncheckpointed rename was not adopted: %+v", unit)
+	}
+	if err := RollbackUnit(unit, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, unit.Target); got != "old" {
+		t.Fatalf("rollback target = %q", got)
+	}
+}
+
+func TestRollbackPreservesAllCopiesWhenStagingIsOccupied(t *testing.T) {
+	root := t.TempDir()
+	unit := &TransactionUnit{Key: "userdata:user-home", Target: filepath.Join(root, "userhome"),
+		Staged: filepath.Join(TransactionDir(root, "j"), "new/user-home"), Old: filepath.Join(TransactionDir(root, "j"), "old/user-home"),
+		HadOriginal: true, OldMoved: true, NewInstalled: true}
+	mustWrite(t, filepath.Join(unit.Target, "value"), "new")
+	mustWrite(t, filepath.Join(unit.Old, "value"), "old")
+	mustWrite(t, filepath.Join(unit.Staged, "value"), "collision")
+	if err := RollbackUnit(unit, nil, nil); err == nil {
+		t.Fatal("rollback replaced occupied staging")
+	}
+	for path, want := range map[string]string{unit.Target: "new", unit.Old: "old", unit.Staged: "collision"} {
+		if got := mustRead(t, filepath.Join(path, "value")); got != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestRollbackRemountsLiveSourceWhenCheckpointFails(t *testing.T) {
+	root := t.TempDir()
+	mounts := newFakeMounts()
+	mountPoint := filepath.Join(t.TempDir(), "root")
+	target := filepath.Join(root, "userhome")
+	unit := &TransactionUnit{Key: "userdata:user-home", Target: target,
+		Staged: filepath.Join(TransactionDir(root, "j"), "new/user-home"), Old: filepath.Join(TransactionDir(root, "j"), "old/user-home"),
+		BindMount: mountPoint, RemountScript: "/usr/lib/aiden/aiden-root-home",
+		HadOriginal: true, OldMoved: true, NewInstalled: true, Unmounted: true, Remounted: true, Committed: true}
+	mustWrite(t, filepath.Join(unit.Target, "value"), "new")
+	mustWrite(t, filepath.Join(unit.Old, "value"), "old")
+	if err := mounts.bind(mountPoint, target); err != nil {
+		t.Fatal(err)
+	}
+	mounts.scripts[unit.RemountScript] = func() error { return mounts.bind(mountPoint, target) }
+	checkpointErr := errors.New("checkpoint failed")
+	if err := RollbackUnit(unit, mounts, func() error { return checkpointErr }); !errors.Is(err, checkpointErr) {
+		t.Fatalf("rollback error = %v, want checkpoint failure", err)
+	}
+	if source, ok := mounts.bound[mountPoint]; !ok || source != target {
+		t.Fatalf("live source was not remounted after rollback failure: %q, %v", source, ok)
+	}
+	if got := mustRead(t, filepath.Join(unit.Target, "value")); got != "new" {
+		t.Fatalf("target changed before durable rollback checkpoint: %q", got)
+	}
+}
+
 func TestBindMountUnitUnmountsExchangesAndRemounts(t *testing.T) {
 	root := t.TempDir()
 	mounts := newFakeMounts()

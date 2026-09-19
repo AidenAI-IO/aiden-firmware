@@ -80,7 +80,9 @@ func run(args []string, out, errOut io.Writer) error {
 		jsonFlag = true
 		args = append(append([]string{}, args[:index]...), args[index+1:]...)
 	}
-	c := &client{baseURL: baseURL, http: &http.Client{Timeout: 10 * time.Minute}, jsonOut: jsonFlag, verbose: errOut}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	c := &client{baseURL: baseURL, http: &http.Client{Transport: transport}, jsonOut: jsonFlag, verbose: errOut}
 	switch args[0] {
 	case "inspect":
 		if len(args) != 2 {
@@ -629,7 +631,17 @@ func (c *client) doWithClient(method, path string, body []byte, bearer string, m
 		request.Header.Set("Content-Type", "application/octet-stream")
 		request.Header.Set("X-Aiden-Chunk-SHA256", chunkHash[0])
 	}
-	response, err := c.http.Do(request)
+	// Client.Timeout includes reading the entire body. Apply it only to
+	// bounded control/chunk requests, never to the full backup download.
+	httpClient := *c.http
+	if httpClient.Timeout == 0 {
+		httpClient.Timeout = 10 * time.Minute
+	}
+	streaming := method == http.MethodGet && strings.HasSuffix(strings.SplitN(url, "?", 2)[0], "/archive")
+	if streaming {
+		httpClient.Timeout = 0
+	}
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, &exitError{code: 1, err: fmt.Errorf("device connection failed: %w", err)}
 	}
@@ -640,7 +652,35 @@ func (c *client) doWithClient(method, path string, body []byte, bearer string, m
 		payload.Status = response.StatusCode
 		return nil, &payload
 	}
+	if streaming {
+		response.Body = newIdleStreamBody(response.Body, 2*time.Minute)
+	}
 	return response, nil
+}
+
+type idleStreamBody struct {
+	io.ReadCloser
+	timer *time.Timer
+	idle  time.Duration
+}
+
+func newIdleStreamBody(body io.ReadCloser, idle time.Duration) *idleStreamBody {
+	return &idleStreamBody{ReadCloser: body, idle: idle, timer: time.AfterFunc(idle, func() { _ = body.Close() })}
+}
+
+func (b *idleStreamBody) Read(buffer []byte) (int, error) {
+	n, err := b.ReadCloser.Read(buffer)
+	if err != nil {
+		b.timer.Stop()
+	} else if n > 0 {
+		b.timer.Reset(b.idle)
+	}
+	return n, err
+}
+
+func (b *idleStreamBody) Close() error {
+	b.timer.Stop()
+	return b.ReadCloser.Close()
 }
 
 // apiPath accepts either a relative API path or the absolute URL returned by
