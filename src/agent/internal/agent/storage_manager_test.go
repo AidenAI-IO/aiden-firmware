@@ -47,6 +47,7 @@ type fakeStorageOps struct {
 	snapshotUUID     string
 	snapshotMountID  string
 	snapshotErr      error
+	snapshotContext  context.Context
 }
 
 func (f *fakeStorageOps) CardDevice() (string, bool) {
@@ -122,7 +123,8 @@ func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 
 func (f *fakeStorageOps) CardIsBlank() bool { return f.blank }
 
-func (f *fakeStorageOps) SnapshotIdentity(_, _ string) (string, string, error) {
+func (f *fakeStorageOps) SnapshotIdentity(ctx context.Context, _, _ string) (string, string, error) {
+	f.snapshotContext = ctx
 	if f.snapshotErr != nil {
 		return "", "", f.snapshotErr
 	}
@@ -143,16 +145,25 @@ func TestStorageSnapshotLeasePinsCardAndBlocksMutations(t *testing.T) {
 	m.card = StorageCardStatus{Present: true, Mounted: true, Device: "/dev/mmcblk2p1"}
 	m.lastEffective = StorageModeDual
 
-	lease, err := m.AcquireSnapshotLease(context.Background())
+	type snapshotContextKey struct{}
+	acquireCtx := context.WithValue(context.Background(), snapshotContextKey{}, "acquire")
+	lease, err := m.AcquireSnapshotLease(acquireCtx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ops.snapshotContext != acquireCtx {
+		t.Fatal("snapshot acquisition did not propagate its context")
 	}
 	snapshot := lease.Snapshot()
 	if snapshot.DevicePath != "/dev/mmcblk2p1" || snapshot.FilesystemUUID != "test-sd-uuid" || snapshot.MountID == "" {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
-	if err := lease.Validate(context.Background()); err != nil {
+	validateCtx := context.WithValue(context.Background(), snapshotContextKey{}, "validate")
+	if err := lease.Validate(validateCtx); err != nil {
 		t.Fatalf("fresh lease validation = %v", err)
+	}
+	if ops.snapshotContext != validateCtx {
+		t.Fatal("snapshot validation did not propagate its context")
 	}
 	if err := m.SafeEject(); err == nil || !strings.Contains(err.Error(), "snapshot lease") {
 		t.Fatalf("SafeEject during lease = %v", err)

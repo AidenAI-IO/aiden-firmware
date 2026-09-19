@@ -410,12 +410,43 @@ func CommitUnit(unit *TransactionUnit, mounts MountController, checkpoint func()
 	if err := EnsureParent(unit.Old); err != nil {
 		return err
 	}
+	// A rename may be durable even when its following checkpoint was lost.
+	oldExists, err := lexists(unit.Old)
+	if err != nil {
+		return err
+	}
+	targetExists, err := lexists(unit.Target)
+	if err != nil {
+		return err
+	}
+	stagedExists, err := lexists(unit.Staged)
+	if err != nil {
+		return err
+	}
+	if !unit.OldMoved && oldExists {
+		if targetExists && stagedExists {
+			return fmt.Errorf("ambiguous exchange paths for %s; preserving all copies", unit.Key)
+		}
+		unit.HadOriginal, unit.OldMoved = true, true
+		if err := checkpoint(); err != nil {
+			return err
+		}
+	}
+	if !unit.NewInstalled && !stagedExists && targetExists && (unit.OldMoved || unit.Unmounted) {
+		unit.NewInstalled = true
+		if err := checkpoint(); err != nil {
+			return err
+		}
+	}
 	if !unit.Unmounted {
 		// The mount still references the live target (or the already moved
 		// original when resuming after a crash between the two renames).
 		expected := unit.Target
 		if unit.OldMoved {
 			expected = unit.Old
+		}
+		if unit.NewInstalled {
+			expected = unit.Target
 		}
 		if err := unmountForExchange(unit, mounts, expected); err != nil {
 			return err
@@ -432,14 +463,14 @@ func CommitUnit(unit *TransactionUnit, mounts MountController, checkpoint func()
 		}
 		if exists {
 			unit.HadOriginal = true
-			if err := os.RemoveAll(unit.Old); err != nil {
-				return err
-			}
 			if err := os.Rename(unit.Target, unit.Old); err != nil {
 				return err
 			}
 			unit.OldMoved = true
 			if err := SyncParent(unit.Old); err != nil {
+				return err
+			}
+			if err := SyncParent(unit.Target); err != nil {
 				return err
 			}
 			if err := checkpoint(); err != nil {
@@ -462,6 +493,9 @@ func CommitUnit(unit *TransactionUnit, mounts MountController, checkpoint func()
 		if err := SyncParent(unit.Target); err != nil {
 			return err
 		}
+		if err := SyncParent(unit.Staged); err != nil {
+			return err
+		}
 		if err := checkpoint(); err != nil {
 			return err
 		}
@@ -482,12 +516,47 @@ func CommitUnit(unit *TransactionUnit, mounts MountController, checkpoint func()
 // RollbackUnit reverses whatever CommitUnit already did for unit. The staged
 // tree is moved back below new/ rather than deleted so that a failed rollback
 // never destroys the only remaining copy of either version.
-func RollbackUnit(unit *TransactionUnit, mounts MountController, checkpoint func() error) error {
+func RollbackUnit(unit *TransactionUnit, mounts MountController, checkpoint func() error) (returnErr error) {
 	if unit == nil {
 		return nil
 	}
 	if checkpoint == nil {
 		checkpoint = func() error { return nil }
+	}
+	oldExists, err := lexists(unit.Old)
+	if err != nil {
+		return err
+	}
+	targetExists, err := lexists(unit.Target)
+	if err != nil {
+		return err
+	}
+	stagedExists, err := lexists(unit.Staged)
+	if err != nil {
+		return err
+	}
+	reconciled := false
+	if oldExists && !unit.OldMoved {
+		unit.HadOriginal, unit.OldMoved = true, true
+		reconciled = true
+	}
+	if oldExists && targetExists && !stagedExists && !unit.NewInstalled {
+		unit.NewInstalled = true
+		reconciled = true
+	}
+	// Resume either rollback rename when it happened before its checkpoint.
+	if unit.NewInstalled && !targetExists && stagedExists {
+		unit.NewInstalled = false
+		reconciled = true
+	}
+	if unit.OldMoved && !oldExists && targetExists && stagedExists {
+		unit.NewInstalled, unit.OldMoved = false, false
+		reconciled = true
+	}
+	if reconciled {
+		if err := checkpoint(); err != nil {
+			return err
+		}
 	}
 	if !unit.Unmounted && !unit.OldMoved && !unit.NewInstalled {
 		unit.Committed = false
@@ -503,20 +572,43 @@ func RollbackUnit(unit *TransactionUnit, mounts MountController, checkpoint func
 				return err
 			}
 		}
+		unit.Unmounted = true
 		unit.Remounted = false
+		// If rollback fails before replacing the live source, rebind it for
+		// observability. Keep the error and transaction for the recovery gate;
+		// writers must remain stopped until the whole rollback succeeds.
+		defer func() {
+			if returnErr == nil {
+				return
+			}
+			if exists, err := lexists(unit.Target); err != nil || !exists {
+				return
+			}
+			if err := remountAndVerify(unit, mounts, unit.Target); err != nil {
+				returnErr = errors.Join(returnErr, err)
+			}
+		}()
+		if err := checkpoint(); err != nil {
+			return err
+		}
 	}
 	if unit.NewInstalled {
 		if err := EnsureParent(unit.Staged); err != nil {
 			return err
 		}
-		if err := os.RemoveAll(unit.Staged); err != nil {
+		if exists, err := lexists(unit.Staged); err != nil {
 			return err
+		} else if exists {
+			return fmt.Errorf("rollback staging already exists for %s; preserving both copies", unit.Key)
 		}
-		if err := os.Rename(unit.Target, unit.Staged); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := os.Rename(unit.Target, unit.Staged); err != nil {
 			return err
 		}
 		unit.NewInstalled = false
 		if err := SyncParent(unit.Target); err != nil {
+			return err
+		}
+		if err := SyncParent(unit.Staged); err != nil {
 			return err
 		}
 		if err := checkpoint(); err != nil {
@@ -532,9 +624,14 @@ func RollbackUnit(unit *TransactionUnit, mounts MountController, checkpoint func
 			if err := os.Rename(unit.Old, unit.Target); err != nil {
 				return err
 			}
+		} else if exists, err := lexists(unit.Target); err != nil || !exists {
+			return fmt.Errorf("original restore path is missing for %s", unit.Key)
 		}
 		unit.OldMoved = false
 		if err := SyncParent(unit.Target); err != nil {
+			return err
+		}
+		if err := SyncParent(unit.Old); err != nil {
 			return err
 		}
 		if err := checkpoint(); err != nil {

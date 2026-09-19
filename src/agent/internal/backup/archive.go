@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -129,11 +128,10 @@ func writePlannedRegular(ctx context.Context, writer io.Writer, entry PlannedEnt
 		state.BytesRead += int64(len(entry.Generated))
 		return nil
 	}
-	fd, err := unix.Open(entry.SourcePath, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	file, err := openSourcePath(entry.SourcePath, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", entry.SourcePath, err)
 	}
-	file := os.NewFile(uintptr(fd), entry.SourcePath)
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
@@ -173,7 +171,7 @@ func writePlannedRegular(ctx context.Context, writer io.Writer, entry PlannedEnt
 	if count, err := file.Read(extra[:]); count != 0 || (err != nil && err != io.EOF) {
 		return fmt.Errorf("source size changed while archiving: %s", entry.SourcePath)
 	}
-	after, err := os.Lstat(entry.SourcePath)
+	after, err := sourceLstat(entry.SourcePath)
 	if err != nil || !sameFingerprint(entry.fingerprint, fingerprint(after)) {
 		return fmt.Errorf("source changed while archiving: %s", entry.SourcePath)
 	}
@@ -184,7 +182,7 @@ func writePlannedRegular(ctx context.Context, writer io.Writer, entry PlannedEnt
 }
 
 func verifyNonRegularEntry(entry PlannedEntry) error {
-	info, err := os.Lstat(entry.SourcePath)
+	info, err := sourceLstat(entry.SourcePath)
 	if err != nil {
 		return err
 	}
@@ -195,7 +193,7 @@ func verifyNonRegularEntry(entry PlannedEntry) error {
 		return fmt.Errorf("source is no longer a directory: %s", entry.SourcePath)
 	}
 	if entry.Manifest.Type == FileTypeSymlink {
-		target, err := os.Readlink(entry.SourcePath)
+		target, err := sourceReadlink(entry.SourcePath)
 		if err != nil || filepathToSlash(target) != entry.Manifest.LinkTarget {
 			return fmt.Errorf("source symlink changed after planning: %s", entry.SourcePath)
 		}
@@ -254,9 +252,7 @@ func VerifyArchive(ctx context.Context, reader io.Reader, passphrase []byte) (Ve
 	if err != nil || int64(len(manifestData)) != first.Size {
 		return result, errorf("manifest_invalid", err, "manifest.json is truncated")
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(manifestData)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&result.Manifest); err != nil {
+	if err := decodeManifest(manifestData, &result.Manifest); err != nil {
 		return result, errorf("manifest_invalid", err, "manifest.json is invalid")
 	}
 	if err := result.Manifest.Validate(); err != nil {

@@ -2,6 +2,7 @@
 Description=Aiden device agent
 Requires=oem.mount aiden-userdata-migrate.service aiden-environment.service aiden-boot-timeline-init.service
 Requires=aiden-wifi-proxy.service
+Requires=aiden-backup-recover.service
 Wants=aiden-frame.service aiden-audio.service aiden-ble.service
 After=oem.mount aiden-userdata-migrate.service aiden-environment.service aiden-boot-timeline-init.service
 After=aiden-frame.service aiden-audio.service aiden-ble.service aiden-wifi-proxy.service time-set.target

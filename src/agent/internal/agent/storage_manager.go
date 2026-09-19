@@ -562,7 +562,7 @@ func (m *StorageManager) maybeStartMigrationLocked() {
 }
 
 type storageSnapshotIdentityOps interface {
-	SnapshotIdentity(device, mountPoint string) (filesystemUUID, mountID string, err error)
+	SnapshotIdentity(ctx context.Context, device, mountPoint string) (filesystemUUID, mountID string, err error)
 }
 
 type storageSnapshotLease struct {
@@ -601,7 +601,7 @@ func (l *storageSnapshotLease) Validate(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("storage backend cannot verify snapshot identity")
 	}
-	uuid, mountID, err := identityOps.SnapshotIdentity(l.snapshot.DevicePath, l.snapshot.MountPoint)
+	uuid, mountID, err := identityOps.SnapshotIdentity(ctx, l.snapshot.DevicePath, l.snapshot.MountPoint)
 	if err != nil {
 		return fmt.Errorf("verify SD snapshot identity: %w", err)
 	}
@@ -673,7 +673,7 @@ func (m *StorageManager) AcquireSnapshotLease(ctx context.Context) (StorageSnaps
 		return nil, fmt.Errorf("storage backend cannot identify snapshots")
 	}
 	mountPoint := m.cfg.MountPointOrDefault()
-	uuid, mountID, err := identityOps.SnapshotIdentity(m.card.Device, mountPoint)
+	uuid, mountID, err := identityOps.SnapshotIdentity(ctx, m.card.Device, mountPoint)
 	if err != nil {
 		return nil, fmt.Errorf("identify SD snapshot: %w", err)
 	}
@@ -1576,8 +1576,10 @@ func (o *realStorageOps) Healthy(mountPoint string) bool {
 	return syscall.Statfs(mountPoint, &st) == nil
 }
 
-func (o *realStorageOps) SnapshotIdentity(device, mountPoint string) (string, string, error) {
-	output, err := exec.Command("blkid", "-s", "UUID", "-o", "value", device).CombinedOutput()
+func (o *realStorageOps) SnapshotIdentity(ctx context.Context, device, mountPoint string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "blkid", "-s", "UUID", "-o", "value", device).CombinedOutput()
 	if err != nil {
 		return "", "", fmt.Errorf("blkid %s: %w: %s", device, err, strings.TrimSpace(string(output)))
 	}

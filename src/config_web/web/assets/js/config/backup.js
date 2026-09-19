@@ -489,6 +489,11 @@ export function initBackup() {
   const input = byId('dataRestoreInput');
   if (input) input.addEventListener('change', () => { const file = input.files?.[0]; input.value = ''; restoreFileSelected(file); });
   window.addEventListener('message', event => {
+    const samePage = event.origin === window.location.origin && event.source === window;
+    // The native adapter injects a synthetic MessageEvent with no source or
+    // origin. The capability handshake must already be present in the page.
+    const nativeAdapter = !event.origin && !event.source && !event.isTrusted && hasNativeTransfer();
+    if (!samePage && !nativeAdapter) return;
     let message;
     try { message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch (_error) { return; }
     handleHostTransferMessage(message);

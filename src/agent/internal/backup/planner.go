@@ -152,7 +152,7 @@ func (p *Planner) planFile(ctx context.Context, component ComponentID, source So
 }
 
 func (p *Planner) planDirectory(ctx context.Context, component ComponentID, source SourceSpec) ([]PlannedEntry, error) {
-	info, err := os.Lstat(source.Path)
+	info, err := sourceLstat(source.Path)
 	if errors.Is(err, fs.ErrNotExist) && source.Optional {
 		return nil, nil
 	}
@@ -163,7 +163,7 @@ func (p *Planner) planDirectory(ctx context.Context, component ComponentID, sour
 		return nil, fmt.Errorf("expected directory at %s", source.Path)
 	}
 	var result []PlannedEntry
-	err = filepath.WalkDir(source.Path, func(current string, entry fs.DirEntry, walkErr error) error {
+	err = walkSourceDirectory(ctx, source.Path, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -207,7 +207,7 @@ func inspectPath(ctx context.Context, component ComponentID, sourcePath, archive
 	if err := validateArchivePath(filepath.ToSlash(archivePath)); err != nil {
 		return PlannedEntry{}, err
 	}
-	info, err := os.Lstat(sourcePath)
+	info, err := sourceLstat(sourcePath)
 	if err != nil {
 		return PlannedEntry{}, err
 	}
@@ -230,7 +230,7 @@ func inspectPath(ctx context.Context, component ComponentID, sourcePath, archive
 			return PlannedEntry{}, err
 		}
 		if !stable {
-			info, err = os.Lstat(sourcePath)
+			info, err = sourceLstat(sourcePath)
 			if err != nil {
 				return PlannedEntry{}, err
 			}
@@ -250,7 +250,7 @@ func inspectPath(ctx context.Context, component ComponentID, sourcePath, archive
 		planned.Manifest.Type = FileTypeDirectory
 		planned.Manifest.Mode = fmt.Sprintf("%04o", info.Mode().Perm()&0o777)
 	case info.Mode()&os.ModeSymlink != 0:
-		target, err := os.Readlink(sourcePath)
+		target, err := sourceReadlink(sourcePath)
 		if err != nil {
 			return PlannedEntry{}, err
 		}
@@ -267,11 +267,10 @@ func inspectPath(ctx context.Context, component ComponentID, sourcePath, archive
 }
 
 func hashRegularFile(ctx context.Context, path string, before fs.FileInfo) (string, int64, bool, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	file, err := openSourcePath(path, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return "", 0, false, err
 	}
-	file := os.NewFile(uintptr(fd), path)
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil {
@@ -299,7 +298,7 @@ func hashRegularFile(ctx context.Context, path string, before fs.FileInfo) (stri
 			return "", 0, false, readErr
 		}
 	}
-	after, err := os.Lstat(path)
+	after, err := sourceLstat(path)
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -321,7 +320,7 @@ func sameFingerprint(left, right fileFingerprint) bool {
 }
 
 func (p *Planner) planOTASettings(ctx context.Context, component ComponentID, source SourceSpec) ([]PlannedEntry, error) {
-	data, err := os.ReadFile(source.Path)
+	data, err := readSourceSettings(source.Path)
 	if errors.Is(err, fs.ErrNotExist) && source.Optional {
 		return nil, nil
 	}
@@ -394,20 +393,14 @@ func (p *Planner) readApprovedOTAFile(value string) ([]byte, error) {
 	if !allowed {
 		return nil, fmt.Errorf("OTA credential path is outside approved persistent roots")
 	}
-	info, err := os.Lstat(value)
+	info, err := sourceLstat(value)
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() || info.Size() > maxLogicalSettingsFileSize {
 		return nil, fmt.Errorf("OTA credential is not an approved regular file")
 	}
-	fd, err := unix.Open(value, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), value)
-	defer file.Close()
-	return io.ReadAll(io.LimitReader(file, maxLogicalSettingsFileSize+1))
+	return readSourceSettings(value)
 }
 
 func deduplicateAudioEntries(entries []PlannedEntry) {

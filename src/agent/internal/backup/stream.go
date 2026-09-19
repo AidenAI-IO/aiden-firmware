@@ -261,8 +261,9 @@ func decodeManifest(data []byte, manifest *Manifest) error {
 	if err := decoder.Decode(manifest); err != nil {
 		return err
 	}
-	if decoder.More() {
-		return fmt.Errorf("manifest contains trailing JSON values")
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("manifest contains trailing data")
 	}
 	return nil
 }

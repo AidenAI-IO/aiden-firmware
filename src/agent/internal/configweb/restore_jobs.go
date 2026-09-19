@@ -341,8 +341,7 @@ func (j *restoreJob) publicMapLocked() map[string]any {
 		"archive_size": j.archiveSize, "received_bytes": j.receivedBytes,
 		"staged_bytes": j.stagedBytes, "files_processed": j.filesProcessed,
 		"created_at": j.createdAt, "started_at": j.startedAt, "finished_at": j.finishedAt,
-		"plan_digest": j.planDigest, "cancelable": !isTerminalRestoreState(j.state) && j.state != restoreJobCommitting &&
-			j.state != restoreJobPostProcessing && j.state != restoreJobResuming && j.state != restoreJobRollingBack,
+		"plan_digest": j.planDigest, "cancelable": !isTerminalRestoreState(j.state) && !restoreCommitInProgress(j.state),
 		"reboot_required": j.identityRebootRequired,
 	}
 	if len(j.warnings) > 0 {
@@ -501,7 +500,7 @@ func (s *Server) handleRestoreJob(w http.ResponseWriter, r *http.Request, id str
 		job.mu.Lock()
 		state := job.state
 		job.mu.Unlock()
-		if state == restoreJobCommitting || state == restoreJobPostProcessing || state == restoreJobResuming || state == restoreJobRollingBack {
+		if restoreCommitInProgress(state) {
 			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "restore_committing", "state": state, "message": "restore is already committing"})
 			return
 		}
@@ -751,8 +750,7 @@ func (s *Server) restoreWatchdog(job *restoreJob) {
 				reason = "restore was not continued by the client"
 			}
 		}
-		if reason == "" && total > restoreTotalTimeout && !isTerminalRestoreState(state) &&
-			state != restoreJobCommitting && state != restoreJobPostProcessing && state != restoreJobResuming && state != restoreJobRollingBack {
+		if reason == "" && total > restoreTotalTimeout && !isTerminalRestoreState(state) && !restoreCommitInProgress(state) {
 			reason = "restore exceeded the maximum job duration"
 		}
 		if reason != "" {
@@ -1136,7 +1134,7 @@ func checkFreeSpace(path string, required int64) error {
 	}
 	var stat unix.Statfs_t
 	if err := unix.Statfs(path, &stat); err != nil {
-		return nil // host tests may use a not-yet-mounted synthetic root
+		return fmt.Errorf("inspect restore filesystem space at %s: %w", path, err)
 	}
 	free := int64(stat.Bavail) * int64(stat.Bsize)
 	if free < required+restoreSafetyBytes {
@@ -1930,25 +1928,11 @@ func prepareOTAStagedFiles(s *Server, job *restoreJob) error {
 // abortRestore cancels a job from outside its handlers (client cancel, server
 // shutdown, watchdog) and releases everything the job holds.
 func (s *Server) abortRestore(job *restoreJob, code string, err error) {
-	job.mu.Lock()
-	cancel := job.cancel
-	parserCancel := job.parserCancel
-	input := job.input
-	job.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	if parserCancel != nil {
-		parserCancel()
-	}
-	if input != nil {
-		input.CloseWithError(context.Canceled)
-	}
 	state := restoreJobFailed
 	if code == "cancelled" || code == "server_shutdown" || code == "job_expired" {
 		state = restoreJobCancelled
 	}
-	s.finishRestoreJob(job, state, code, sanitizeBackupError(err))
+	s.finishRestoreJobWithPolicy(job, state, code, sanitizeBackupError(err), true)
 }
 
 func (s *Server) failRestore(job *restoreJob, code string, err error) {
@@ -1979,8 +1963,19 @@ func (s *Server) failRestore(job *restoreJob, code string, err error) {
 // finishRestoreJob moves the job to a terminal state exactly once and releases
 // the SD lease, maintenance lock, key material, transfer token and services.
 func (s *Server) finishRestoreJob(job *restoreJob, state, code, message string) {
+	s.finishRestoreJobWithPolicy(job, state, code, message, false)
+}
+
+func restoreCommitInProgress(state string) bool {
+	return state == restoreJobQuiescing || state == restoreJobCommitting || state == restoreJobPostProcessing || state == restoreJobResuming || state == restoreJobRollingBack
+}
+
+func (s *Server) finishRestoreJobWithPolicy(job *restoreJob, state, code, message string, abortOnly bool) {
 	job.mu.Lock()
-	if isTerminalRestoreState(job.state) {
+	// Check and claim the terminal state under the same lock as apply's
+	// prepared -> committing transition. Shutdown must not release a lease
+	// or restart writers underneath an in-flight commit or rollback.
+	if isTerminalRestoreState(job.state) || (abortOnly && restoreCommitInProgress(job.state)) {
 		job.mu.Unlock()
 		return
 	}
@@ -1989,9 +1984,23 @@ func (s *Server) finishRestoreJob(job *restoreJob, state, code, message string) 
 		job.parserErr = &backup.Error{Code: code, Message: message}
 	}
 	maintenance, sdLease, cancel, material := job.maintenance, job.sdLease, job.cancel, job.material
+	parserCancel, input := job.parserCancel, job.input
 	services := job.services
-	job.maintenance, job.sdLease, job.cancel, job.material, job.services = nil, nil, nil, nil, nil
+	job.cancel, job.material, job.parserCancel, job.input = nil, nil, nil, nil
+	// A failed rollback leaves a live filesystem in an indeterminate state.
+	// Hold maintenance and the SD snapshot lease, and keep writers stopped,
+	// until a reboot lets the mandatory recovery gate retry the transaction.
+	rollbackFailed := state == restoreJobRollbackFailed
+	if !rollbackFailed {
+		job.maintenance, job.sdLease, job.services = nil, nil, nil
+	}
 	job.mu.Unlock()
+	if parserCancel != nil {
+		parserCancel()
+	}
+	if input != nil {
+		input.CloseWithError(context.Canceled)
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -2003,10 +2012,10 @@ func (s *Server) finishRestoreJob(job *restoreJob, state, code, message string) 
 	} else {
 		s.cleanupRestoreStaging(job)
 	}
-	if sdLease != nil {
+	if sdLease != nil && !rollbackFailed {
 		sdLease.Release()
 	}
-	if len(services) > 0 {
+	if len(services) > 0 && !rollbackFailed {
 		if err := s.resumeServices(context.Background(), services); err != nil {
 			logConfigWebError("restore " + job.id + ": resume services: " + err.Error())
 		}
@@ -2014,7 +2023,7 @@ func (s *Server) finishRestoreJob(job *restoreJob, state, code, message string) 
 	if material != nil {
 		material.Destroy()
 	}
-	if maintenance != nil {
+	if maintenance != nil && !rollbackFailed {
 		maintenance.Release()
 	}
 	if s.maintenanceSessions != nil {

@@ -50,8 +50,18 @@ func excludedPath(relative string, patterns []string) bool {
 	relative = filepath.ToSlash(relative)
 	for _, pattern := range patterns {
 		pattern = filepath.ToSlash(pattern)
-		if strings.HasPrefix(pattern, "**/") && strings.HasSuffix(relative, strings.TrimPrefix(pattern, "**/")) {
-			return true
+		if strings.HasPrefix(pattern, "**/") {
+			remainder := strings.TrimPrefix(pattern, "**/")
+			for suffix := relative; ; {
+				if matched, _ := path.Match(remainder, suffix); matched {
+					return true
+				}
+				index := strings.IndexByte(suffix, '/')
+				if index < 0 {
+					break
+				}
+				suffix = suffix[index+1:]
+			}
 		}
 		if strings.HasSuffix(pattern, "/**") {
 			prefix := strings.TrimSuffix(pattern, "/**")
