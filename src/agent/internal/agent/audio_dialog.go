@@ -880,9 +880,6 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	))
 	var finalAssistantEvent *RunEvent
 
-	// Send to LLM
-	logging.Infof("agent", "llm", "Sending request to provider '%s' (model=%s)...", d.config.Model.Provider, d.config.Model.Model)
-
 	var speechWriter *speech.StreamWriter
 	req := RunRequest{
 		Input:          input.InputText,
@@ -1271,8 +1268,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		logging.Field{Key: "message", Value: text})
 	d.playPromptSoundAsyncWithWait(promptSoundAgentSend, "agent send", false)
 
-	// Send to LLM
-	logging.Infof("agent", "llm", "Sending request to provider '%s' (model=%s)...", d.config.Model.Provider, d.config.Model.Model)
 	var speechWriter *speech.StreamWriter
 
 	req := RunRequest{
