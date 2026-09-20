@@ -22,19 +22,27 @@ type ConnectionWarmer struct {
 func NewConnectionWarmer(client *http.Client, endpoints []string) *ConnectionWarmer {
 	return &ConnectionWarmer{
 		client:    client,
-		endpoints: endpoints,
+		endpoints: append([]string(nil), endpoints...),
 	}
+}
+
+// SetEndpoints updates future warmups without changing an in-flight batch.
+func (w *ConnectionWarmer) SetEndpoints(endpoints []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.endpoints = append([]string(nil), endpoints...)
 }
 
 // WarmupAsync starts warming connections in the background
 // This sends lightweight HEAD or OPTIONS requests to establish and reuse connections
 func (w *ConnectionWarmer) WarmupAsync(ctx context.Context) {
 	w.mu.Lock()
-	if w.warming {
+	if w.warming || len(w.endpoints) == 0 {
 		w.mu.Unlock()
 		return
 	}
 	w.warming = true
+	endpoints := w.endpoints
 	w.mu.Unlock()
 
 	go func() {
@@ -45,7 +53,7 @@ func (w *ConnectionWarmer) WarmupAsync(ctx context.Context) {
 		}()
 
 		var wg sync.WaitGroup
-		for _, endpoint := range w.endpoints {
+		for _, endpoint := range endpoints {
 			if endpoint == "" {
 				continue
 			}

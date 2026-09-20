@@ -337,6 +337,7 @@ func TestInputLifecycleShutdownCancelStopsVoiceWithoutRestart(t *testing.T) {
 func TestVoiceConfigCoversVoiceLoopFields(t *testing.T) {
 	exempt := map[string]string{
 		"DeviceTypeOverride":         "CLI-only; already folded into Device before comparison",
+		"Model":                      "shared model manager is replaced by Runtime at Agent task boundaries",
 		"ModelProviders":             "resolved into Model at config load time",
 		"TTSProviders":               "resolved into TTS / the shared TTS provider manager",
 		"STTProviders":               "resolved into STT at config load time",
