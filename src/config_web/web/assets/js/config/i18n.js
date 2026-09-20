@@ -925,6 +925,12 @@ const messages = {
     'config.fields.voice_model_providers.realtime_protocol.label': '实时协议',
     'config.fields.voice_model_providers.realtime_protocol.options.default': 'OpenAI GA（默认）',
     'config.fields.voice_model_providers.realtime_protocol.options.legacy': 'Legacy / Beta 兼容',
+    'config.fields.voice_model_providers.thinking_level.label': '思考级别',
+    'config.fields.voice_model_providers.thinking_level.options.default': 'LOW（默认）',
+    'config.fields.voice_model_providers.thinking_level.options.minimal': 'MINIMAL',
+    'config.fields.voice_model_providers.thinking_level.options.low': 'LOW',
+    'config.fields.voice_model_providers.thinking_level.options.medium': 'MEDIUM',
+    'config.fields.voice_model_providers.thinking_level.options.high': 'HIGH',
     'config.fields.voice_model_providers.base_url.label': '提供商基础 URL',
     'config.fields.voice_model_providers.region.label': '地域',
     'config.fields.voice_model_providers.region.options.default': '自动',
@@ -1189,3 +1195,4 @@ registerRuntime({
   applyLocale, getActiveLocale, getLocaleRevision, getPersistedLocale, initI18n,
   isLocaleSavePending, saveLocale, t,
 });
+
