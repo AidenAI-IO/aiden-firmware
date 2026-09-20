@@ -48,6 +48,13 @@ func TestGetDisplayModelsForProvider(t *testing.T) {
 			hasRecommend: true,
 		},
 		{
+			name:         "gemini has current multimodal models",
+			provider:     "gemini",
+			wantCount:    3,
+			wantFirstID:  "gemini-3.8-flash",
+			hasRecommend: true,
+		},
+		{
 			name:      "unknown provider returns empty",
 			provider:  "unknown-provider",
 			wantCount: 0,

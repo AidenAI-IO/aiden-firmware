@@ -61,6 +61,32 @@ func TestModelProviderRegistryIsCanonicalSource(t *testing.T) {
 	}
 }
 
+func TestModelProviderTemperatureDefaultPolicyIsRegistryBacked(t *testing.T) {
+	wantTypes := make([]string, 0, len(modelProviderDefinitions))
+	for _, definition := range modelProviderDefinitions {
+		if definition.usesProviderTemperatureDefault {
+			wantTypes = append(wantTypes, definition.providerType)
+		}
+	}
+	if got := modelProviderTypesUsingProviderTemperatureDefault(); !reflect.DeepEqual(got, wantTypes) {
+		t.Fatalf("modelProviderTypesUsingProviderTemperatureDefault() = %#v, want %#v", got, wantTypes)
+	}
+
+	for _, test := range []struct {
+		providerType string
+		want         bool
+	}{
+		{providerType: "gemini", want: true},
+		{providerType: " GEMINI ", want: true},
+		{providerType: "openai", want: false},
+		{providerType: "unknown", want: false},
+	} {
+		if got := modelProviderUsesProviderTemperatureDefault(test.providerType); got != test.want {
+			t.Errorf("modelProviderUsesProviderTemperatureDefault(%q) = %v, want %v", test.providerType, got, test.want)
+		}
+	}
+}
+
 func TestModelProviderBaseURLCapabilityIsCanonicalSource(t *testing.T) {
 	wantAllowed := make([]string, 0, len(modelProviderDefinitions))
 	for _, definition := range modelProviderDefinitions {
