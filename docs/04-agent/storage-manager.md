@@ -478,7 +478,9 @@ or Emergency, the timer instead trims it to
 MiB. Trimming atomically collapses an aligned range at the front of the file,
 preserving the inode and newest content so systemd can continue appending
 without restarting the Agent. Filesystem alignment may leave the retained size
-up to one block below the target.
+up to one block below the target. One filesystem block is the minimum effective
+limit for byte-level deployment overrides; product configuration is expressed
+in MiB and is therefore unaffected.
 
 ### Status Model
 

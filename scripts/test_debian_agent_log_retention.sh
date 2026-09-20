@@ -51,8 +51,11 @@ inode_before=$(stat -c %i "${log_path}")
 exec 3>>"${log_path}"
 run_retention 10485760 5242880
 normal_size=$(wc -c <"${log_path}" | tr -d '[:space:]')
+normal_block_size=$(stat -f -c %S "${log_path}")
 [ "${normal_size}" -le 5242880 ] \
     || fail "normal retention did not reduce the log to the retained limit"
+[ "${normal_size}" -gt $((5242880 - normal_block_size)) ] \
+    || fail "normal retention discarded more than one filesystem block"
 [ "$(tail -c 11 "${log_path}")" = 'normal-tail' ] \
     || fail "normal retention did not preserve the newest log bytes"
 [ "$(stat -c %i "${log_path}")" = "${inode_before}" ] \
@@ -68,6 +71,12 @@ below_limit_size=$(wc -c <"${log_path}" | tr -d '[:space:]')
 run_retention 10485760 5242880
 [ "$(wc -c <"${log_path}" | tr -d '[:space:]')" = "${below_limit_size}" ] \
     || fail "a log at the retained size was modified"
+
+printf 'sub-block-log' >"${log_path}"
+sub_block_size=$(wc -c <"${log_path}" | tr -d '[:space:]')
+run_retention 1 1
+[ "$(wc -c <"${log_path}" | tr -d '[:space:]')" = "${sub_block_size}" ] \
+    || fail "sub-block retention modified a file below the atomic block bound"
 
 cat >"${config_path}" <<'EOF'
 [storage_settings.storage.degraded_mode]

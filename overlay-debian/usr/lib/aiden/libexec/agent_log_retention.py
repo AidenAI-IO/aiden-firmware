@@ -84,22 +84,14 @@ def fallocate_collapse_range(file_descriptor: int, length: int) -> None:
         raise OSError(error_number, os.strerror(error_number))
 
 
-def collapse_log(file_descriptor: int, current_bytes: int, retain_bytes: int) -> int:
+def collapse_log(
+    file_descriptor: int, current_bytes: int, retain_bytes: int, block_size: int
+) -> int:
     """Remove enough aligned leading bytes to leave no more than retain_bytes."""
-    filesystem = os.fstatvfs(file_descriptor)
-    block_size = filesystem.f_frsize or filesystem.f_bsize
-    if block_size <= 0:
-        raise RetentionError("cannot determine Agent log filesystem block size")
-
     required_collapse = current_bytes - retain_bytes
     collapse_bytes = ((required_collapse + block_size - 1) // block_size) * block_size
     largest_valid_collapse = ((current_bytes - 1) // block_size) * block_size
     collapse_bytes = min(collapse_bytes, largest_valid_collapse)
-    if collapse_bytes <= 0:
-        raise RetentionError(
-            "Agent log is too small for aligned atomic collapse: "
-            f"size={current_bytes} block={block_size}"
-        )
 
     # Linux serializes collapse-range with append writes on the inode. Appends
     # made before or during this syscall therefore remain at the new EOF.
@@ -145,9 +137,21 @@ def retain_agent_log() -> None:
         if not stat.S_ISREG(file_info.st_mode):
             raise RetentionError(f"refusing non-regular Agent log: {log_path}")
         current_bytes = file_info.st_size
+        filesystem = os.fstatvfs(file_descriptor)
+        block_size = filesystem.f_frsize or filesystem.f_bsize
+        if block_size <= 0:
+            raise RetentionError("cannot determine Agent log filesystem block size")
+
+        # collapse-range requires block-aligned input. A smaller configured
+        # byte override cannot be honored atomically, so one block is the
+        # minimum effective bound. Production limits are expressed in MiB.
+        max_bytes = max(max_bytes, block_size)
+        retain_bytes = max(retain_bytes, block_size)
         if current_bytes <= max_bytes:
             return
-        final_bytes = collapse_log(file_descriptor, current_bytes, retain_bytes)
+        final_bytes = collapse_log(
+            file_descriptor, current_bytes, retain_bytes, block_size
+        )
     finally:
         os.close(file_descriptor)
 
