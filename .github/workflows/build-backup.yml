@@ -3,8 +3,33 @@ name: Debian Build (backup / self-hosted-02)
 on:
   workflow_dispatch:
     inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [dev, staging, prod]
+        default: dev
+        required: true
+      source_ref:
+        description: 'Commit, tag or branch to build (resolved once by the planner)'
+        type: string
+        default: main
+      version:
+        description: 'Optional MAJOR.MINOR.PATCH; blank increments the global patch version'
+        type: string
+      force_ota:
+        description: 'Rebuild the system and increment its contract, including external dependency refreshes'
+        type: boolean
+        default: false
+      plan_only:
+        description: 'Preview classification, version, contract and changelog without building'
+        type: boolean
+        default: true
+      publish:
+        description: 'Publish verified build assets to GitHub (requires plan_only=false and dry_run=false)'
+        type: boolean
+        default: false
       dry_run:
-        description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
+        description: 'Preflight only: check the backup runner, secrets and toolchain; overrides plan and publish options'
         type: boolean
         default: false
 
@@ -16,11 +41,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+  preflight:
+    if: ${{ inputs.dry_run && startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     uses: ./.github/workflows/build.yml
     with:
       runner: aiden-hosted-02
+      source_ref: ${{ inputs.source_ref }}
       free_disk_space: false
-      dry_run: ${{ inputs.dry_run }}
+      dry_run: true
+    secrets: inherit
+
+  release:
+    if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    # The callee keeps planning/build jobs read-only and grants write only to publication.
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      runner: aiden-hosted-02
+      channel: ${{ inputs.channel }}
+      source_ref: ${{ inputs.source_ref }}
+      version: ${{ inputs.version }}
+      force_ota: ${{ inputs.force_ota }}
+      plan_only: ${{ inputs.plan_only }}
+      publish: ${{ inputs.publish }}
     secrets: inherit

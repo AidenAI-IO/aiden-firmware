@@ -1,6 +1,40 @@
 name: Aiden Channel Release
 
 on:
+  workflow_call:
+    inputs:
+      channel:
+        description: 'Release channel: dev, staging or prod'
+        type: string
+        required: true
+      source_ref:
+        description: 'Commit, tag or branch to build (resolved once by the planner)'
+        type: string
+        default: main
+      version:
+        description: 'Optional MAJOR.MINOR.PATCH; blank increments the global patch version'
+        type: string
+      force_ota:
+        description: 'Rebuild the system and increment its contract, including external dependency refreshes'
+        type: boolean
+        default: false
+      plan_only:
+        description: 'Preview classification, version, contract and changelog without building'
+        type: boolean
+        default: true
+      publish:
+        description: 'Publish verified build assets to GitHub (requires plan_only=false)'
+        type: boolean
+        default: false
+      runner:
+        description: Firmware build runner
+        type: string
+        default: aiden-hosted-01
+    secrets:
+      OTA_ED25519_PRIVATE_KEY:
+        required: false
+      AGENT_CONFIG_TOML:
+        required: false
   workflow_dispatch:
     inputs:
       channel:

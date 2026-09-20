@@ -1,8 +1,9 @@
 # 三通道发布
 
-正式发布统一使用 Actions 中的 **Aiden Channel Release**（`.github/workflows/release.yml`）。
+正式发布共用 **Aiden Channel Release**（`.github/workflows/release.yml`）流程，
+可直接手动触发，也可通过 **Debian Build (backup / self-hosted-02)** 入口调用。
 `dev`、`staging`、`prod` 全部手动触发，不随提交或定时任务自动发布。
-原主构建、备用构建和独立业务包工作流只保留构建产物功能。
+原主构建、fallback 和独立业务包工作流只保留构建产物功能。
 
 ## 发布决策
 
@@ -61,10 +62,22 @@ SDK gitlink 提交。草稿、失败构建和 workflow artifact 不推进基线�
 3. 正式构建设 `plan_only=false`；`publish=false` 只生成可下载的验证产物。
 4. 正式发布再设 `publish=true`。发布任务经过对应 channel 的 GitHub Environment。
 
+备用入口 **Debian Build (backup / self-hosted-02)**（`build-backup.yml`）提供同样的
+`channel`、`source_ref`、`version`、`force_ota`、`plan_only`、`publish` 参数，
+OTA 固定在 `aiden-hosted-02` 构建；业务包仍在 GitHub 托管 Ubuntu 构建。
+默认 `plan_only=true`、`publish=false`。要发布，设置 `dry_run=false`、
+`plan_only=false`、`publish=true`。`dry_run=true` 优先，仅检查备用机环境、
+签名密钥和工具链，忽略其余发布选项，不生成计划、不构建、不发布。
+
+两个入口复用相同的变更分类、契约分配、通道 Environment、草稿上传和下载校验，
+并由被调用的发布工作流持有同一个全局发布锁。备用入口自身的 `backup-build`
+并发组只负责串行化备用入口，不能改成相同的发布锁名称，否则嵌套调用会互相等待。
+
 需要仓库 secret `OTA_ED25519_PRIVATE_KEY`（Ed25519 PEM，仅 OTA 构建使用），可选
 `AGENT_CONFIG_TOML`。业务包构建不需要这两个 secret。发布使用 workflow 自带的
-`GITHUB_TOKEN`，只在发布 job 授予 `contents: write`。仓库的 Actions 权限必须允许
-该权限。建议为 `staging`、`prod` Environment 配置审核人和允许发布的分支。
+`GITHUB_TOKEN`，发布流程中只有发布 job 使用 `contents: write`。备用入口的调用 job
+也需声明该权限上限，才能传给被调用的发布 job；规划和构建 job 仍为只读。
+仓库的 Actions 权限必须允许该权限。建议为 `staging`、`prod` Environment 配置审核人和允许发布的分支。
 
 固件可选择 `aiden-hosted-01`、`aiden-hosted-02` 或 `ubuntu-24.04`；业务包在 GitHub
 托管 Ubuntu 构建。固件复用 `build.yml` 的 SDK 清理、工具链、缓存、签名和最终审计。
