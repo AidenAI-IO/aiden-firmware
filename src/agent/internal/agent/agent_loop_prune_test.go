@@ -112,7 +112,15 @@ func TestAgentLoopOutboundTransformsEnableForAnthropic(t *testing.T) {
 		ScreenshotPruning: executor.ScreenshotPruningConfig{}.WithDefaults(),
 	}
 	transforms := loop.outboundTransforms()
-	pruner, ok := transforms[0].(executor.AnthropicScreenshotPruner)
+	if len(transforms) < 2 {
+		t.Fatalf("expected at least 2 transforms, got %d: %#v", len(transforms), transforms)
+	}
+	// First transform should be MergeConsecutiveMessagesTransform
+	if _, ok := transforms[0].(executor.MergeConsecutiveMessagesTransform); !ok {
+		t.Fatalf("transforms[0] should be MergeConsecutiveMessagesTransform, got %T", transforms[0])
+	}
+	// Second transform should be enabled AnthropicScreenshotPruner
+	pruner, ok := transforms[1].(executor.AnthropicScreenshotPruner)
 	if !ok || !pruner.Enabled {
 		t.Fatalf("transforms = %#v", transforms)
 	}
@@ -124,7 +132,15 @@ func TestAgentLoopOutboundTransformsDisableForNonAnthropic(t *testing.T) {
 		ScreenshotPruning: executor.ScreenshotPruningConfig{}.WithDefaults(),
 	}
 	transforms := loop.outboundTransforms()
-	pruner, ok := transforms[0].(executor.AnthropicScreenshotPruner)
+	if len(transforms) < 2 {
+		t.Fatalf("expected at least 2 transforms, got %d: %#v", len(transforms), transforms)
+	}
+	// First transform should be MergeConsecutiveMessagesTransform
+	if _, ok := transforms[0].(executor.MergeConsecutiveMessagesTransform); !ok {
+		t.Fatalf("transforms[0] should be MergeConsecutiveMessagesTransform, got %T", transforms[0])
+	}
+	// Second transform should be disabled AnthropicScreenshotPruner
+	pruner, ok := transforms[1].(executor.AnthropicScreenshotPruner)
 	if !ok || pruner.Enabled {
 		t.Fatalf("transforms = %#v", transforms)
 	}

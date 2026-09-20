@@ -89,6 +89,7 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 	modelName := l.Model.Spec().Name
 	modelProvider := l.Model.Spec().Provider
 	return []executor.OutboundMessageTransform{
+		executor.MergeConsecutiveMessagesTransform{},
 		executor.AnthropicScreenshotPruner{
 			Enabled: IsAnthropicModel(modelProvider, modelName),
 			Config:  l.ScreenshotPruning,

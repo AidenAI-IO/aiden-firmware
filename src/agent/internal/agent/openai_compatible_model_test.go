@@ -1176,7 +1176,11 @@ func TestOpenAICompatibleModelMergesSystemMessages(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatibleModelMergesConsecutiveSameRoleMessages(t *testing.T) {
+// TestOpenAICompatibleModelConsecutiveSameRoleMessages verifies that the model
+// correctly handles consecutive messages with the same role. Message merging is now
+// handled by OutboundMessageTransform (see merge_messages_test.go), so the model
+// itself just passes through the messages as-is.
+func TestOpenAICompatibleModelConsecutiveSameRoleMessages(t *testing.T) {
 	var captured struct {
 		Messages []struct {
 			Role      string      `json:"role"`
@@ -1200,6 +1204,8 @@ func TestOpenAICompatibleModelMergesConsecutiveSameRoleMessages(t *testing.T) {
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
 
 	// Test consecutive user messages (simulating state/notice role conversion)
+	// Note: Message merging is now handled by OutboundMessageTransform,
+	// so the model passes messages through without merging.
 	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("System prompt")}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("User message 1")}},
@@ -1211,9 +1217,9 @@ func TestOpenAICompatibleModelMergesConsecutiveSameRoleMessages(t *testing.T) {
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
 
-	// Should have: system, merged user, assistant, user
-	if len(captured.Messages) != 4 {
-		t.Fatalf("expected 4 messages after normalization, got %d: %#v", len(captured.Messages), captured.Messages)
+	// Should have: system, user, user, assistant, user (no merging at model level)
+	if len(captured.Messages) != 5 {
+		t.Fatalf("expected 5 messages (no merging), got %d: %#v", len(captured.Messages), captured.Messages)
 	}
 
 	if captured.Messages[0].Role != "system" {
@@ -1223,17 +1229,23 @@ func TestOpenAICompatibleModelMergesConsecutiveSameRoleMessages(t *testing.T) {
 	if captured.Messages[1].Role != "user" {
 		t.Fatalf("message 1: expected user, got %#v", captured.Messages[1])
 	}
-	userContent, ok := captured.Messages[1].Content.(string)
-	if !ok || userContent != "User message 1\n\nUser message 2" {
-		t.Fatalf("message 1: expected merged user content, got %#v", captured.Messages[1].Content)
+	if captured.Messages[1].Content != "User message 1" {
+		t.Fatalf("message 1: expected 'User message 1', got %#v", captured.Messages[1].Content)
 	}
 
-	if captured.Messages[2].Role != "assistant" {
-		t.Fatalf("message 2: expected assistant, got %#v", captured.Messages[2])
+	if captured.Messages[2].Role != "user" {
+		t.Fatalf("message 2: expected user, got %#v", captured.Messages[2])
+	}
+	if captured.Messages[2].Content != "User message 2" {
+		t.Fatalf("message 2: expected 'User message 2', got %#v", captured.Messages[2].Content)
 	}
 
-	if captured.Messages[3].Role != "user" {
-		t.Fatalf("message 3: expected user, got %#v", captured.Messages[3])
+	if captured.Messages[3].Role != "assistant" {
+		t.Fatalf("message 3: expected assistant, got %#v", captured.Messages[3])
+	}
+
+	if captured.Messages[4].Role != "user" {
+		t.Fatalf("message 4: expected user, got %#v", captured.Messages[4])
 	}
 }
 
