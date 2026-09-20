@@ -57,6 +57,7 @@ def stage(root, apps, output):
     package = release / package_name
     shutil.copyfile(output / package_name, package)
     (release / "release-manifest.json").write_bytes(package_manifest(package))
+    compatibility = json.loads(package_manifest(package))["required_platform_contract"]
     metadata = {
         "format": 1, "package": "aiden-business", "version": version, "architecture": "armhf",
         "tag": f"business-v{version}", "source_commit": commit, "sdk_commit": sdk_commit,
@@ -66,7 +67,7 @@ def stage(root, apps, output):
     (release / "RELEASE-NOTES.md").write_text(
         f"Aiden business package {version} for armhf.\n\n"
         f"Source: `{commit}`\n\n"
-        "Requires the no-OEM Debian platform contract >=1.0.0 and <2.0.0. "
+        f"Requires Debian platform contract >={compatibility['min']} and <{compatibility['max_exclusive']}. "
         "Contains applications and resources only; no boot, rootfs or partition changes.\n\n"
         "Verify SHA256SUMS before installing with apt. Package maintainer scripts "
         "stop and restore previously running Aiden services; then run the OTA self-check. "

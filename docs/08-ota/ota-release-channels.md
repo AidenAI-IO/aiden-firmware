@@ -4,75 +4,31 @@ sidebar_position: 9
 
 # OTA Release Channels
 
-GitHub Actions publication is outside the current Debian build scope. This
-document is a deferred manual-reference convention only. Current local or
-self-hosted deployments should use an explicit `manifest_url`; they do not
-depend on GitHub release discovery.
+Use the manually dispatched **Aiden Channel Release** workflow. All three
+channels, `dev`, `staging`, and `prod`, are selected explicitly; the source branch
+does not select the channel. See [Channel Releases](channel-release.md) for
+classification, version allocation, contracts, repository setup and retries.
 
-## Channel Strategy
+| Channel | GitHub release type | Device discovery |
+| --- | --- | --- |
+| dev | Prerelease | Highest dev OTA version |
+| staging | Prerelease | Highest staging OTA version |
+| prod | Normal release | Highest prod OTA version |
 
-The publisher assigns a release channel and GitHub release type based on the source branch:
+Each channel compares against its own previous successful release. Business-only
+changes publish a `.deb`; system changes publish signed boot/rootfs OTA images
+and establish a new platform contract. Package-only releases are skipped during
+firmware discovery. Only prod OTA releases update GitHub Latest.
 
-| Branch | Channel | GitHub Release | Default Manual OTA Behavior |
-|--------|---------|----------------|----------------------|
-| `main` | `stable` | Normal release | Discoverable by `ota update` |
-| any other branch | `dev-{branch-name}` | Prerelease | Ignored by default `ota update` |
+The factory config at `/userdata/debian/ota/config.json` carries `repo` and
+`channel`. Managed devices query the release list, select their channel's highest
+OTA version, and verify that the signed manifest matches the configured channel.
+This check also applies to explicit `--manifest-url` overrides.
 
-For example:
-- `main` → channel `stable`, normal release
-- `feat/new-feature` → channel `dev-feat-new-feature`, prerelease
+Legacy devices with no channel, or old local/stable channel labels, continue to
+use `/releases/latest`. Flash a channel's full image to provision the new base
+and its channel config. Do not edit the contract file to make a package install;
+its contents describe the system that was actually built and installed.
 
-The `channel` value is recorded in the manifest as a human-readable label. The
-OTA client does **not** match it against an expected channel (it only validates
-the channel string format). Isolation comes entirely from the prerelease
-mechanism described below.
-
-## How It Prevents Interference
-
-Non-main branch builds are protected from affecting production OTA by their
-**prerelease** status on GitHub.
-
-Non-main branch releases are marked as **prerelease**. A manual `ota update`
-without `--manifest-url` uses the `releases/latest` API, which only returns the
-newest non-prerelease release, so the default update path never discovers
-development builds. The `dev-*` channel name is just a label that makes the
-manifest easy to identify; it is not what keeps the build off production
-devices.
-
-This means an experimental build can be published manually as a prerelease
-without being selected by devices using the default release lookup.
-
-## Testing a Development Branch Build
-
-When you want to install a development build on a device for testing, fetch its manifest directly by URL. This bypasses the `releases/latest` lookup, so point the device at the development release explicitly.
-
-```bash
-# 1. Find the manually published development tag on the Releases page
-#    (it will be marked as "Pre-release")
-TAG="20260604-120000-abc1234"
-REPO="AidenAI-IO/aiden-firmware"
-
-# 2. Update the device using the dev release manifest URL
-ota update \
-  --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
-  --public-key /usr/share/keyrings/aiden-ota.pem
-```
-
-Notes:
-- The official signing key is already trusted on the device at `/usr/share/keyrings/aiden-ota.pem`, so no extra public key is needed for official-repo builds.
-- Use `--dry-run` first to download and verify without switching slots or rebooting.
-
-## Why Branch Builds Are Safe to Publish
-
-Because development releases are published as prereleases, they:
-
-- **Do not** appear as the latest stable release
-- **Do not** get selected by the default `ota update` release lookup
-- **Do** remain available for manual testing via `--manifest-url`
-
-This lets individual developers build and debug firmware on their own branches without coordinating with, or disrupting, anyone else.
-
-## Related
-
-- For distributing firmware from a fork or your own server, see [ota-external-developers.md](ota-external-developers.md).
-- For quick command examples, see [ota-quick-examples.md](ota-quick-examples.md).
+Custom static distribution remains available through `manifest_url`; use a test
+device configured for that custom source. See [External Developer Guide](ota-external-developers.md).

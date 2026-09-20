@@ -52,6 +52,7 @@ jobs:
           bash scripts/test_debian_package.sh
           python3 scripts/test_debian_package_release.py
           python3 scripts/test_debian_package_lifecycle.py
+          python3 scripts/test_channel_release.py
       - name: Verify normalized UI coordinates
         run: |
           python3 scripts/check_normalized_coords.py

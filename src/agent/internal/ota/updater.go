@@ -64,6 +64,8 @@ type UpdaterConfig struct {
 	MiscPath                  string                       `json:"misc_path,omitempty"`
 	BlockDir                  string                       `json:"block_dir,omitempty"`
 	ManifestURL               string                       `json:"manifest_url,omitempty"`
+	Repo                      string                       `json:"repo,omitempty"`
+	Channel                   string                       `json:"channel,omitempty"`
 	ReleaseURL                string                       `json:"-"` // Test override for default release URL
 	PublicKeyPath             string                       `json:"public_key_path,omitempty"`
 	PublicKey                 ed25519.PublicKey            `json:"-"`
@@ -344,9 +346,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 	} else {
-		releaseURL := u.config.ReleaseURL
-		if releaseURL == "" {
-			releaseURL = DefaultReleaseURL
+		releaseURL, endpointErr := releaseEndpoint(u.config)
+		if endpointErr != nil {
+			u.recordError("release", endpointErr)
+			return UpdateResult{}, endpointErr
 		}
 		logging.Infof("ota", "updater", "ota release: fetching %s", releaseURL)
 		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
@@ -374,6 +377,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	}
 	manifest, err := VerifyManifestJSON(manifestBytes, publicKey)
 	if err != nil {
+		u.recordError("manifest", err)
+		return UpdateResult{}, err
+	}
+	if err := requireManifestChannel(u.config.Channel, manifest); err != nil {
 		u.recordError("manifest", err)
 		return UpdateResult{}, err
 	}
@@ -1358,6 +1365,10 @@ func (u *Updater) partitionSizes() map[string]int64 {
 func (u *Updater) fetchLatestReleaseAssets(parent context.Context, releaseURL string, token string) (map[string]string, error) {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
+	if managedChannel(u.config.Channel) {
+		assets, err := FetchChannelReleaseAssets(ctx, releaseURL, u.config.Channel, token, u.config.GitHubProxyURL)
+		return assets, describeTimeout(parent, err, "channel release metadata request", u.httpTimeout())
+	}
 	assets, err := FetchLatestReleaseAssetsWithProxy(ctx, releaseURL, token, u.config.GitHubProxyURL)
 	return assets, describeTimeout(parent, err, "release metadata request", u.httpTimeout())
 }

@@ -24,8 +24,8 @@ Debian 构建链使用 `aiden-business` 作为业务基线包。应用构建阶�
 提供。取消 OEM 分区和 `/oem` 目录，不提供兼容路径；旧版本设备必须完整强刷。`/userdata/agent`、`/userdata/system` 和用户 Skill 不在包内。
 
 包内的 `release-manifest.json` 记录业务版本、架构、平台契约范围、配置 schema 和
-`business_epoch`。发布或升级前，更新器必须验证这些字段、包签名、磁盘空间和当前
-platform contract。目前这些检查是发布契约要求，独立业务升级编排器尚未实现。
+`business_epoch`。三通道发布包的 `preinst` 会核对当前平台契约、通道和底座标识。
+包签名、磁盘空间等完整升级策略仍需独立业务升级编排器；当前通过 apt 安装下载的包。
 新布局从契约 `1.0.0` 开始，包要求为 `[1.0.0, 2.0.0)`。
 基座通过 `/usr/lib/aiden/platform/contract.json` 声明契约，该文件不属于业务包。
 旧布局不能通过
@@ -79,13 +79,12 @@ rootfs 阶段每次重新打包当前 apps，避免复用带旧路径的缓存�
 ## 版本管理
 
 `scripts/debian-package/version.sh` 是业务版本默认值的唯一来源：业务版本 `0.0.1`、
-Debian revision `2`，完整包版本为 `0.0.1-2`。正式发包先修改该文件并提交：业务内容变化
-递增业务版本，只有打包变化时递增 revision。命令行可用 `AIDEN_BUSINESS_VERSION` 和
-`AIDEN_BUSINESS_REVISION` 覆盖；GitHub Actions 使用提交中的默认值。
+Debian revision `2`，完整本地包版本为 `0.0.1-2`。命令行可用 `AIDEN_BUSINESS_VERSION` 和
+`AIDEN_BUSINESS_REVISION` 覆盖。正式三通道发布由发布计划自动分配版本和基础契约，
+详见 [三通道发布](channel-release.md)。
 
-平台契约 `1.0.0`、业务版本 `0.0.1` 和固件 OTA 时间戳版本分别管理。OTA 清单仍使用
-schema 2；配置 schema 也不因重新编号而改变。契约发生不兼容变化时更新基座的
-`contract.json` 和业务包声明范围，再发布完整镜像。
+未使用发布计划时，平台契约默认为 `1.0.0`。正式发布每次系统 OTA 都分配新契约，
+后续业务包继承本通道的最新底座。OTA 清单仍使用 schema 2。
 
 ## 独立构建和 GitHub Release
 
@@ -112,22 +111,10 @@ RELEASE-NOTES.md
 SHA256SUMS
 ```
 
-本地发布需 GitHub CLI 登录及仓库写权限：
-
-```bash
-GH_REPO=AidenAI-IO/aiden-firmware scripts/debian-package/release.sh publish
-```
-
-发布脚本验证包版本、内嵌 manifest 和所有附件哈希，创建或核对指向构建提交的
-`business-v0.0.1-2` 标签，再创建草稿，上传后重新下载验证，最后发布为 prerelease，
-明确设置 `latest=false`。已发布标签不可覆盖；失败留下的同提交标签和草稿可重试。
-将业务包标成 prerelease 是为了让现有
-固件 OTA 的 `/releases/latest` 查询继续只选整包固件。
-
-GitHub Actions：在 Actions 中选择 **Debian Business Package**，选择已提交的分支并运行。
-默认只保存可下载的 workflow artifact；勾选 `publish_release` 才发布 Release。工作流使用
-GitHub 托管的 Ubuntu runner，发布任务使用 `GITHUB_TOKEN` 的 `contents: write` 权限，
-无需新增密钥。手动触发工作流需要该 workflow 文件先进入默认分支。
+**Debian Business Package (artifacts only)** 工作流只构建产物。
+正式发布使用 **Aiden Channel Release**，全部手动触发，由计划判断该发业务包还是
+完整 OTA。旧 `scripts/debian-package/release.sh publish` 入口已关闭。
+发布操作、自动变更对比、失败重试和所需仓库设置见 [三通道发布](channel-release.md)。
 
 此流程提供 GitHub Release 下载，不是 `apt update` 可读取的 APT 源。
 `SHA256SUMS` 用于传输完整性，不等同包签名。若需要 APT 源，应另行发布并签名

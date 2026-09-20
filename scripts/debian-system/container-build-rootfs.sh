@@ -166,6 +166,8 @@ EOF
     chroot "${ROOTFS_DIR}" /bin/sh -ec \
         'DEBIAN_FRONTEND=noninteractive SYSTEMD_OFFLINE=1 apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 install -y --no-install-recommends $(grep -v "^[[:space:]]*#" /tmp/debian-system-packages.list | xargs)'
     if [ -s /aiden-business.deb ]; then
+        python3 "${REPO_ROOT}/scripts/release/contract.py" platform \
+            "${ROOTFS_DIR}/usr/lib/aiden/platform/contract.json"
         install -m 0644 /aiden-business.deb "${ROOTFS_DIR}/tmp/aiden-business.deb"
         chroot "${ROOTFS_DIR}" dpkg -i /tmp/aiden-business.deb
         rm -f "${ROOTFS_DIR}/tmp/aiden-business.deb"
@@ -217,6 +219,7 @@ validate_platform_inputs() {
 
 stage_platform() {
     local platform=${ROOTFS_DIR}/usr/lib/aiden/platform
+    python3 "${REPO_ROOT}/scripts/release/contract.py" platform "${platform}/contract.json"
     install -d -m 0755 "${platform}/lib" "${platform}/modules" \
         "${ROOTFS_DIR}/usr/share/keyrings"
     rsync -aH --chown=0:0 /apps/lib/ "${platform}/lib/"

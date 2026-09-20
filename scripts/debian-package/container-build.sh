@@ -26,12 +26,14 @@ Section: misc
 Priority: optional
 Architecture: armhf
 Maintainer: Aiden AI <firmware@aiden.ai>
+Pre-Depends: python3-minimal
 Depends: libc6, systemd
 Description: Aiden business runtime
  Agent, hardware services, configuration web assets, bundled skills and runtime models.
 CTL
 bash "${REPO_ROOT}/scripts/debian-package/write-maintainer-scripts.sh" "${PKG_ROOT}/DEBIAN"
-printf '%s\n' "{\"format\":1,\"product\":\"aiden\",\"artifact_kind\":\"debian-package\",\"package\":\"${PACKAGE_NAME}\",\"business_release\":\"${VERSION}\",\"package_revision\":\"${REVISION}\",\"architecture\":\"armhf\",\"required_platform_contract\":{\"min\":\"1.0.0\",\"max_exclusive\":\"2.0.0\"},\"config_schema\":{\"min_supported\":3,\"target\":4},\"business_epoch\":1}" >"${PKG_ROOT}/usr/share/doc/${PACKAGE_NAME}/release-manifest.json"
+python3 "${REPO_ROOT}/scripts/release/contract.py" package \
+    "${PKG_ROOT}/usr/share/doc/${PACKAGE_NAME}/release-manifest.json"
 find "${PKG_ROOT}" -type d -exec chmod 0755 {} +
 find "${PKG_ROOT}" -type f ! -path '*/DEBIAN/*' -exec chmod 0644 {} +
 for binary in agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd; do chmod 0755 "${PKG_ROOT}/usr/lib/aiden/${binary}"; done

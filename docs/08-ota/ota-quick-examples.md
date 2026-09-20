@@ -70,11 +70,11 @@ ota update \
   --public-key /userdata/ota/company_pubkey.pem
 ```
 
-## Example 3: Manual GitHub Release Reference (Deferred)
+## Example 3: Custom GitHub Release
 
-GitHub Release hosting is retained as a compatibility option for a future
-manual distribution process. GitHub Actions and automatic publication are
-outside the current scope.
+Official dev/staging/prod releases use the [manual channel workflow](channel-release.md).
+This example publishes to a separate custom repository and uses a test device
+configured for that custom source.
 
 ```bash
 TAG="v1.0.0-custom"

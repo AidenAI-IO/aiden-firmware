@@ -7,13 +7,9 @@ on:
         description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
         type: boolean
         default: false
-      publish_release:
-        description: 'Publish the images as a GitHub release'
-        type: boolean
-        default: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: backup-build
@@ -27,5 +23,4 @@ jobs:
       runner: aiden-hosted-02
       free_disk_space: false
       dry_run: ${{ inputs.dry_run }}
-      publish_release: ${{ inputs.publish_release }}
     secrets: inherit

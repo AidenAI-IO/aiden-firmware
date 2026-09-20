@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # OTA Architecture and Runtime
 
-OTA is accomplished through three layers: `debian_build.sh` orchestrates the Debian apps/system images and signed local artifacts, the vendor SDK supplies BSP and image-packing internals, and the device-side `ota` completes download, write, and switching on manual trigger. One-shot systemd health handling commits a healthy slot after startup. Publication automation is outside the current scope.
+OTA is accomplished through three layers: `debian_build.sh` orchestrates the Debian apps/system images and signed artifacts, the vendor SDK supplies BSP and image-packing internals, and the device-side `ota` completes download, write, and switching on manual trigger. One-shot systemd health handling commits a healthy slot after startup. The manually dispatched [channel release workflow](channel-release.md) automates classification, contracts, builds and publication.
 
 ## Partition Layout
 
@@ -39,11 +39,11 @@ Production images use A/B layout:
 ## Update Process
 
 1. `ota` reads `/userdata/debian/ota/config.json` and `/usr/share/keyrings/aiden-ota.pem`.
-2. Fetch the manifest from the configured `manifest_url`. For older factory
-   configurations that have no direct URL, the client retains a GitHub
-   `releases/latest` fallback for compatibility; current local/self-hosted
-   deployments should use an explicit manifest URL.
-3. Download `manifest.json`, remove `signature.value`, and perform canonical JSON Ed25519 signature verification.
+2. Fetch the configured `manifest_url`, or discover the highest OTA version for
+   the configured dev/staging/prod channel from the repository's release list.
+   Business-only releases are skipped. Older factory configurations retain the
+   `releases/latest` fallback; custom static sources use an explicit manifest URL.
+3. Download `manifest.json`, remove `signature.value`, and verify its canonical JSON Ed25519 signature. Managed channels must also match the signed channel and version prefix, including when a direct manifest URL is used.
 4. Reject downgrades with older `build_time` or different version with same build time.
 5. Select inactive slot and parse corresponding slot assets from manifest.
 6. Clean stale download cache and calculate the remaining bytes after verified cache and resumable partials.

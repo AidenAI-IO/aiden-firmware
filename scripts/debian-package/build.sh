@@ -25,6 +25,10 @@ docker image inspect "${IMAGE}" >/dev/null
 docker run --rm \
     -e "AIDEN_BUSINESS_VERSION=${AIDEN_BUSINESS_VERSION}" \
     -e "AIDEN_BUSINESS_REVISION=${AIDEN_BUSINESS_REVISION}" \
+    -e "AIDEN_PLATFORM_CONTRACT=${AIDEN_PLATFORM_CONTRACT:-}" \
+    -e "AIDEN_RELEASE_CHANNEL=${AIDEN_RELEASE_CHANNEL:-}" \
+    -e "AIDEN_PLATFORM_BASE=${AIDEN_PLATFORM_BASE:-}" \
+    -e "AIDEN_SYSTEM_FINGERPRINT=${AIDEN_SYSTEM_FINGERPRINT:-}" \
     -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
     -v "${REPO_ROOT}:/work:ro" \
     -v "${APPS_OUTPUT}/apps:/apps:ro" \

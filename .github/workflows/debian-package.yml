@@ -1,12 +1,7 @@
-name: Debian Business Package
+name: Debian Business Package (artifacts only)
 
 on:
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: 'Publish a business-vVERSION-REVISION prerelease (otherwise artifacts only)'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -47,24 +42,3 @@ jobs:
           path: output/debian-package/release/
           if-no-files-found: error
           retention-days: 30
-
-  publish:
-    if: ${{ inputs.publish_release }}
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: aiden-business-${{ github.sha }}
-          path: output/debian-package/release/
-      - name: Publish business prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: scripts/debian-package/release.sh publish

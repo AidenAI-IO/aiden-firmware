@@ -50,7 +50,8 @@ class ReleaseTests(unittest.TestCase):
         )
         manifest = pkg / "usr/share/doc/aiden-business/release-manifest.json"
         manifest.parent.mkdir(parents=True)
-        manifest.write_text(json.dumps({"business_release": "0.0.1", "package_revision": "1"}))
+        manifest.write_text(json.dumps({"business_release": "0.0.1", "package_revision": "1",
+                                        "required_platform_contract": {"min": "1.0.0", "max_exclusive": "2.0.0"}}))
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(pkg),
                         str(self.output / "aiden-business_0.0.1-1_armhf.deb")], check=True, stdout=subprocess.DEVNULL)
         with patch.dict(os.environ, AIDEN_BUSINESS_VERSION="0.0.1", AIDEN_BUSINESS_REVISION="1"):
@@ -92,88 +93,11 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Commit source"):
             release.check_source(self.root, self.apps)
 
-    def test_published_release_is_not_overwritten(self):
-        mock = self.root / "mock-bin"
-        mock.mkdir()
-        gh = mock / "gh"
-        gh.write_text('#!/bin/sh\nif [ "$1 $2" = "release view" ]; then echo false; exit 0; fi\necho unexpected mutation >&2\nexit 99\n')
-        gh.chmod(0o755)
+    def test_legacy_publisher_requires_channel_workflow(self):
         result = subprocess.run([str(ROOT / "scripts/debian-package/release.sh"), "publish"],
-                                env={**os.environ, "PATH": str(mock) + os.pathsep + os.environ["PATH"],
-                                     "DEBIAN_PACKAGE_OUTPUT_DIR": str(self.output), "GH_REPO": "test/test"},
                                 text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("already published", result.stderr)
-        self.assertNotIn("unexpected mutation", result.stderr)
-
-    def publish_with_mock(self, *, draft=False, tag_commit=None, corrupt=False):
-        mock = self.root / "mock-publish"
-        mock.mkdir()
-        if tag_commit:
-            (mock / "tag").write_text(tag_commit)
-        gh = mock / "gh"
-        gh.write_text('''#!/usr/bin/env python3
-import json, os, shutil, sys
-from pathlib import Path
-args = sys.argv[1:]
-root = Path(os.environ["MOCK_DIR"])
-with (root / "calls").open("a") as log:
-    log.write(json.dumps(args) + "\\n")
-if args[:2] == ["release", "view"]:
-    if os.environ["MOCK_DRAFT"] == "1":
-        print("true")
-    else:
-        sys.exit(1)
-elif args[:3] == ["api", "--method", "POST"]:
-    (root / "tag").write_text(os.environ["MOCK_COMMIT"])
-elif args[0] == "api":
-    if not (root / "tag").exists():
-        sys.exit(1)
-    print((root / "tag").read_text())
-elif args[:2] == ["release", "download"]:
-    dest = Path(args[args.index("--dir") + 1])
-    shutil.copytree(os.environ["MOCK_ASSETS"], dest, dirs_exist_ok=True)
-    if os.environ["MOCK_CORRUPT"] == "1":
-        (dest / "RELEASE-NOTES.md").write_text("corrupted download")
-elif args[:2] not in (["release", "create"], ["release", "upload"], ["release", "edit"]):
-    sys.exit(99)
-''')
-        gh.chmod(0o755)
-        result = subprocess.run([str(ROOT / "scripts/debian-package/release.sh"), "publish"],
-                                env={**os.environ, "PATH": str(mock) + os.pathsep + os.environ["PATH"],
-                                     "DEBIAN_PACKAGE_OUTPUT_DIR": str(self.output), "GH_REPO": "test/test",
-                                     "MOCK_DIR": str(mock), "MOCK_ASSETS": str(self.assets),
-                                     "MOCK_COMMIT": self.commit, "MOCK_DRAFT": str(int(draft)),
-                                     "MOCK_CORRUPT": str(int(corrupt))}, text=True, capture_output=True)
-        calls = [json.loads(line) for line in (mock / "calls").read_text().splitlines()]
-        return result, calls
-
-    def test_new_release_verifies_download_before_publication(self):
-        result, calls = self.publish_with_mock()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(["api", "--method", "POST"], [call[:3] for call in calls])
-        self.assertEqual(calls[-2][:2], ["release", "download"])
-        self.assertEqual(calls[-1][:2], ["release", "edit"])
-        for flag in ("--draft=false", "--prerelease", "--latest=false"):
-            self.assertIn(flag, calls[-1])
-
-    def test_existing_draft_can_be_retried(self):
-        result, calls = self.publish_with_mock(draft=True, tag_commit=self.commit)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn(["release", "create"], [call[:2] for call in calls])
-        self.assertEqual(calls[-1][:2], ["release", "edit"])
-
-    def test_conflicting_tag_is_rejected_before_upload(self):
-        result, calls = self.publish_with_mock(tag_commit="0" * 40)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not point", result.stderr)
-        self.assertNotIn(["release", "upload"], [call[:2] for call in calls])
-
-    def test_corrupted_download_is_not_published(self):
-        result, calls = self.publish_with_mock(corrupt=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("checksum", result.stderr)
-        self.assertNotIn(["release", "edit"], [call[:2] for call in calls])
+        self.assertIn("scripts/release/release.py publish", result.stderr)
 
 
 class VersionTests(unittest.TestCase):

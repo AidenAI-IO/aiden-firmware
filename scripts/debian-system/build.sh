@@ -170,6 +170,10 @@ run_rootfs_container() {
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -e "PICO_SDK_COMMIT=${sdk_commit}" \
+        -e "AIDEN_PLATFORM_CONTRACT=${AIDEN_PLATFORM_CONTRACT:-}" \
+        -e "AIDEN_RELEASE_CHANNEL=${AIDEN_RELEASE_CHANNEL:-}" \
+        -e "AIDEN_PLATFORM_BASE=${AIDEN_PLATFORM_BASE:-}" \
+        -e "AIDEN_SYSTEM_FINGERPRINT=${AIDEN_SYSTEM_FINGERPRINT:-}" \
         -e "DEBIAN_SYSTEM_APT_CACHE_PROXY=${DEBIAN_SYSTEM_APT_CACHE_PROXY:-}" \
         -v "${REPO_ROOT}:/work:ro" \
         -v "${REPO_ROOT}:${REPO_ROOT}:ro" \
