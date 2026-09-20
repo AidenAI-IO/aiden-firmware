@@ -141,10 +141,20 @@ Executes one mouse/keyboard provider operation. Requests use the normalized
 
 ```json
 {
-  "operation": "drag",
-  "drag": {"path": [[100, 500], [900, 500]], "button": "left"}
+  "operation": "swipe",
+  "swipe": {
+    "path": [[500, 800], [500, 400]],
+    "button": "left",
+    "duration_ms": 1200
+  }
 }
 ```
+
+`swipe` and `drag` preserve a positive `duration_ms` through to the environment
+gesture. The optional value must be an integer in `[0, 10000]`; zero or omission
+keeps the backend's default timing. The Go agent also uses this field to carry
+the duration calculated from its `speed` argument, so the bridge preserves the
+agent's selected timing instead of replacing it with a backend default.
 
 Success is `{"success": true}`. Invalid requests return HTTP 400 and device
 execution failures return HTTP 500 with a top-level `error` string.
