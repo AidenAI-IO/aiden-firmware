@@ -475,8 +475,10 @@ The Agent main log is not completely disabled through AllowWrite. The
 operation, a log larger than 10 MiB is trimmed to its newest 5 MiB. At Critical
 or Emergency, the timer instead trims it to
 `storage_settings.storage.degraded_mode.max_agent_log_mb`, which defaults to 1
-MiB. Trimming preserves the file inode and the newest content, so systemd can
-continue appending without restarting the Agent.
+MiB. Trimming atomically collapses an aligned range at the front of the file,
+preserving the inode and newest content so systemd can continue appending
+without restarting the Agent. Filesystem alignment may leave the retained size
+up to one block below the target.
 
 ### Status Model
 
