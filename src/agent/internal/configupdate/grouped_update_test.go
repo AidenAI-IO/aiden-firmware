@@ -18,8 +18,16 @@ api_key = "secret"
 provider = "local"
 model = "gpt-old"
 
+[voice_settings.classic.stt]
+provider = "openai-whisper"
+api_key = "key"
+
+[voice_settings.classic.tts]
+provider = "minimax-cn"
+api_key = "key"
+
 [voice_settings.mode]
-input_mode = "text"
+input_mode = "stt"
 `
 	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -28,8 +36,19 @@ input_mode = "text"
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if !result.OK || len(result.ChangedPaths) != 1 || result.ChangedPaths[0] != "model_settings.model.model" {
-		t.Fatalf("unexpected result: %#v", result)
+	if !result.OK {
+		t.Fatalf("Update() OK = false, want true")
+	}
+	// ChangedPaths includes both the explicit change and legacy provider sync paths
+	foundModelChange := false
+	for _, p := range result.ChangedPaths {
+		if p == "model_settings.model.model" {
+			foundModelChange = true
+			break
+		}
+	}
+	if !foundModelChange {
+		t.Fatalf("model_settings.model.model not in ChangedPaths: %v", result.ChangedPaths)
 	}
 	updated, err := os.ReadFile(path)
 	if err != nil {

@@ -171,8 +171,18 @@ run_rootfs() {
     run_rootfs_container scripts/debian-system/container-build-rootfs.sh
 }
 
+ensure_bsp_build_image() {
+    if docker image inspect "${BSP_BUILD_IMAGE}" >/dev/null 2>&1; then
+        return
+    fi
+
+    echo "BSP builder image is not available locally; pulling ${BSP_BUILD_IMAGE}"
+    docker pull "${BSP_BUILD_IMAGE}"
+}
+
 run_bsp() {
     local build_timestamp
+    ensure_bsp_build_image
     prepare_sdk
     build_timestamp=$(date -u -d "@${BUILD_EPOCH}" '+%Y-%m-%d %H:%M:%S UTC')
     docker image inspect "${BSP_BUILD_IMAGE}" --format '{{.Id}}' \
@@ -373,4 +383,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

@@ -3819,19 +3819,19 @@ func TestServerWebAudioInputModeNeverFallsBackToRemovedAudio(t *testing.T) {
 			want: TurnModalitySTT,
 		},
 		{
-			name: "text with stt client",
-			cfg:  Config{InputMode: "text"},
+			name: "unconfigured mode with stt client",
+			cfg:  Config{},
 			stt:  &stubSTTClient{},
 			want: TurnModalitySTT,
 		},
 		{
-			name: "default text without stt client",
+			name: "unconfigured mode without stt client",
 			cfg:  Config{},
 			want: TurnModalityText,
 		},
 		{
-			name: "explicit text without stt client",
-			cfg:  Config{InputMode: " text "},
+			name: "realtime browser channel stays text",
+			cfg:  Config{InputMode: " realtime "},
 			want: TurnModalityText,
 		},
 	}

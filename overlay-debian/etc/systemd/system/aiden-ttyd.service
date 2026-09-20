@@ -8,6 +8,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+User=aiden
+Group=aiden
 EnvironmentFile=/etc/aiden_boot.conf
 EnvironmentFile=/run/aiden/system.env
 ExecCondition=/usr/lib/aiden/aiden-feature-enabled ENABLE_TTYD

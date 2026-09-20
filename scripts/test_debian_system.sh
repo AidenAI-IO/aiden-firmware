@@ -29,6 +29,34 @@ bash -n \
     "${SYSTEM_DIR}/container-assemble-images.sh" \
     "${SYSTEM_DIR}/container-install-ota-config.sh" \
     "${SYSTEM_DIR}/container-audit-images.sh"
+
+bsp_image_mock_bin=${TEST_ROOT}/bsp-image-mock-bin
+bsp_image_mock_log=${TEST_ROOT}/bsp-image-docker.log
+bsp_image_state=${TEST_ROOT}/bsp-image-present
+mkdir -p "${bsp_image_mock_bin}"
+cat >"${bsp_image_mock_bin}/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${MOCK_DOCKER_LOG}"
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+    [ -e "${MOCK_DOCKER_IMAGE_STATE}" ] || exit 1
+    printf 'sha256:mock-bsp-builder\n'
+elif [ "${1:-}" = pull ]; then
+    : >"${MOCK_DOCKER_IMAGE_STATE}"
+fi
+EOF
+chmod +x "${bsp_image_mock_bin}/docker"
+MOCK_DOCKER_LOG="${bsp_image_mock_log}" \
+MOCK_DOCKER_IMAGE_STATE="${bsp_image_state}" \
+PATH="${bsp_image_mock_bin}:${PATH}" \
+    bash -c 'set -euo pipefail
+source "$1"
+ensure_bsp_build_image
+ensure_bsp_build_image' _ "${SYSTEM_DIR}/build.sh"
+[ "$(grep -Fc 'pull luckfoxtech/luckfox_pico:1.0' \
+    "${bsp_image_mock_log}")" -eq 1 ] \
+    || fail "a missing BSP builder image is not pulled exactly once"
+
 PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
     "${SYSTEM_DIR}/canonicalize-ext4.py" \
     "${SYSTEM_DIR}/canonicalize-bsp.py" \
@@ -42,12 +70,30 @@ for script in \
     [ -x "${SYSTEM_DIR}/${script}" ] || fail "${script} is not executable"
 done
 
-grep -q 'snapshot.debian.org/archive/debian/20260803T000000Z' \
-    "${SYSTEM_DIR}/debian.sources"
-grep -q 'snapshot.debian.org/archive/debian-security/20260803T000000Z' \
-    "${SYSTEM_DIR}/debian.sources"
-grep -q '^Check-Valid-Until: no$' "${SYSTEM_DIR}/debian.sources"
+# Plain http on purpose: apt verifies InRelease signatures itself, and this
+# mirror serves HTTP/1.1 clients such as apt and debootstrap at full speed
+# (mirrors.aliyun.com throttles HTTP/1.1 to ~300 kB/s; only HTTP/2 is fast).
+grep -qx 'URIs: http://mirrors.ustc.edu.cn/debian' "${SYSTEM_DIR}/debian.sources" \
+    || fail "system builder does not fetch the Debian archive from mirrors.ustc.edu.cn"
+grep -qx 'URIs: http://mirrors.ustc.edu.cn/debian-security' "${SYSTEM_DIR}/debian.sources" \
+    || fail "system builder does not fetch debian-security from mirrors.ustc.edu.cn"
+if grep -q '^Check-Valid-Until:' "${SYSTEM_DIR}/debian.sources"; then
+    fail "a live mirror must keep the InRelease Valid-Until check"
+fi
 grep -q '^FROM debian:trixie-slim@sha256:' "${SYSTEM_DIR}/Dockerfile"
+# debootstrap takes its mirror from debian.sources rather than a second copy.
+grep -Fq 'trixie "${ROOTFS_DIR}" "${DEBIAN_MIRROR}"' \
+    "${SYSTEM_DIR}/container-build-rootfs.sh" \
+    || fail "debootstrap does not use the mirror declared in debian.sources"
+for metadata_key in debian_mirror debian_release_date debian_release_version \
+    debian_security_date debian_updates_date; do
+    grep -Fq "\"${metadata_key}\":" "${SYSTEM_DIR}/container-build-rootfs.sh" \
+        || fail "build metadata does not record ${metadata_key}"
+done
+if grep -q 'snapshot.debian.org' "${SYSTEM_DIR}/container-build-rootfs.sh" \
+    "${SYSTEM_DIR}/debian.sources"; then
+    fail "the rootfs build still references snapshot.debian.org"
+fi
 grep -Fq 'mount -t binfmt_misc binfmt_misc "${BINFMT_DIR}"' \
     "${SYSTEM_DIR}/container-build-rootfs.sh"
 grep -Fq '/usr/lib/systemd/systemd-binfmt' \
@@ -151,6 +197,8 @@ fi
     || fail "Debian boot timeline helper is missing"
 [ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-ttyd-start" ] \
     || fail "Debian ttyd helper is missing"
+[ -x "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-ttyd-login" ] \
+    || fail "Debian ttyd login helper is missing"
 grep -Fq 'aiden-ttyd.service' \
     "${REPO_ROOT}/overlay-debian/etc/systemd/system/aiden.target"
 grep -Fq 'overlay-debian/" "${ROOTFS_DIR}/"' \

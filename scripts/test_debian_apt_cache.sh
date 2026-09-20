@@ -103,7 +103,7 @@ done
 
 # The validation must run in the rootfs container before bootstrap, and the
 # host launcher must pass the candidate separately from standard proxies.
-grep -Fq 'configure_apt_cache_proxy "${SNAPSHOT}"' \
+grep -Fq 'configure_apt_cache_proxy "${DEBIAN_MIRROR}"' \
     "${REPO_ROOT}/scripts/debian-system/container-build-rootfs.sh"
 grep -Fq -- '-e "DEBIAN_SYSTEM_APT_CACHE_PROXY=${DEBIAN_SYSTEM_APT_CACHE_PROXY:-}"' \
     "${REPO_ROOT}/scripts/debian-system/build.sh"
