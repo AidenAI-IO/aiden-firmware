@@ -37,6 +37,7 @@ export const VISIBLE_FIELDS = {
 
   // Realtime mode
   'voice_model.provider': true,
+  'voice_model.use_backend_agent': true,
   'voice_model.model': true,
   // Other voice_model fields are shown dynamically for each provider.
 
@@ -128,3 +129,4 @@ export function applyFieldVisibilityRules() {
     }
   });
 }
+
