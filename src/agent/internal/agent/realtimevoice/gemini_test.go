@@ -179,8 +179,6 @@ func TestGeminiExtendedThinkingSessionUsesServerAuthoritativeInterruption(t *tes
 		model string
 		want  bool
 	}{
-		// Only extended thinking speaks fillers mid-turn, so only it gets
-		// server interruption authority.
 		{model: Gemini38ThinkingModel, want: true},
 		{model: Gemini38LiveModel, want: false},
 		{model: DefaultGeminiLiveModel, want: false},
@@ -614,8 +612,6 @@ func TestGeminiInterruptSendsClientContentWithoutStartingNewTurn(t *testing.T) {
 	}
 }
 func TestGeminiRequiresActionClosesResponse(t *testing.T) {
-	// IN_PROGRESS keeps the turn open; IDLE closes it and REQUIRES_ACTION is a
-	// deprecated alias for IDLE that must also close it.
 	s := &geminiSession{toolNames: map[string]string{}}
 	started := s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"checking"}]}}}`))
 	if len(started) == 0 || started[0].Kind != EventResponseStarted {
@@ -652,7 +648,6 @@ func TestGeminiThinkingLevelComesFromSessionConfig(t *testing.T) {
 }
 
 func TestGeminiToolResultSchedulingOnlyForExtendedThinking(t *testing.T) {
-	// NON_BLOCKING tools need scheduling; regular models must not send it.
 	for _, model := range []string{Gemini38ThinkingModel, DefaultGeminiLiveModel} {
 		received := make(chan map[string]any, 1)
 		upgrader := websocket.Upgrader{}

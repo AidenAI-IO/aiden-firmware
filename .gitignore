@@ -69,5 +69,3 @@ skillopt/runs/
 
 # VPhone local environment (machine-specific paths/hosts; use vphone.env.example)
 benchmark/vphone/vphone.env
-
-
