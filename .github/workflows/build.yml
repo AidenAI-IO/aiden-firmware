@@ -417,8 +417,8 @@ jobs:
       if: ${{ !inputs.dry_run }}
       env:
         RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
-        # The rootfs container validates this candidate against the signed
-        # snapshot metadata before using it. Existing proxies take precedence.
+        # The rootfs container validates this candidate against the mirror's
+        # signed InRelease before using it. Existing proxies take precedence.
         DEBIAN_SYSTEM_APT_CACHE_PROXY: ${{ inputs.apt_cache_proxy || vars.DEBIAN_SYSTEM_APT_CACHE_PROXY }}
         OTA_REPO: ${{ github.repository }}
         OTA_CHANNEL: ${{ steps.meta.outputs.channel }}

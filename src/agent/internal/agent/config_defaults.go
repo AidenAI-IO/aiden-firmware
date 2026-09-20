@@ -75,18 +75,23 @@ const (
 	defaultPointerMode                = "absolute"
 	defaultDeviceType                 = "iOS"
 	defaultInputBackend               = "hid"
-	defaultInputMode                  = "text"
-	defaultSilenceMs                  = 550
-	defaultMinSpeechMs                = 300
-	defaultVoiceFollowupTimeoutMs     = 5000
-	defaultVoiceFirstTurnTimeoutMs    = 10000
-	defaultVoiceMaxTurns              = 0
-	defaultVoiceMaxResponseTokens     = 300
-	defaultMaxIterations              = -1
-	defaultVoiceModelProvider         = realtimevoice.ProviderQwen
-	defaultVoiceModelModel            = realtimevoice.DefaultQwenRealtimeModel
-	defaultVoiceModelVoice            = realtimevoice.DefaultQwenRealtimeVoice
-	defaultVoiceModelTurnDetection    = "server_vad"
+	// defaultInputMode is empty on purpose: speech providers are opt-in (see
+	// applyRuntimeOptionalProviderDefaults), so a device that never configured
+	// voice must not inherit a mode whose providers are required. An empty mode
+	// means "voice not configured" and is skipped by Config.Validate; the
+	// effective mode is resolved by InputModeOrDefault.
+	defaultInputMode               = ""
+	defaultSilenceMs               = 550
+	defaultMinSpeechMs             = 300
+	defaultVoiceFollowupTimeoutMs  = 5000
+	defaultVoiceFirstTurnTimeoutMs = 10000
+	defaultVoiceMaxTurns           = 0
+	defaultVoiceMaxResponseTokens  = 300
+	defaultMaxIterations           = -1
+	defaultVoiceModelProvider      = realtimevoice.ProviderQwen
+	defaultVoiceModelModel         = realtimevoice.DefaultQwenRealtimeModel
+	defaultVoiceModelVoice         = realtimevoice.DefaultQwenRealtimeVoice
+	defaultVoiceModelTurnDetection = "server_vad"
 	// defaultContextCompactionThreshold is the fraction of the usable model
 	// input budget at which conversation compaction summarizes the transcript.
 	defaultContextCompactionThreshold = 0.8
