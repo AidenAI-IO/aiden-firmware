@@ -4,7 +4,7 @@ import {bindFieldVisibility, hydrateSelectOptions} from './config-meta.js';
 import {
   cancelEditSection, closeTestToast, disableAgentConfigEditing, enterEditSection,
   cancelEditSectionFields, enterEditSectionFields, initialReadyMessage, loadConfig, loadConfigMeta,
-  lockAllSections, rebootDevice, saveFieldGroups, saveSection, saveSections, saveSectionFields, testSection
+  lockAllSections, rebootDevice, saveFieldGroups, saveSection, saveSections, saveSectionFields, saveVoiceMode, testSection
 } from './config-form.js';
 import {initI18n, saveLocale, t} from './i18n.js';
 import {applyPendingAgentLogSnapshotIfIdle, exportLogs, refreshAgentLog, setAgentLogAutoScroll, syncAgentLogAutoScroll, toggleAgentLogAutoScroll} from './logs.js';
@@ -12,7 +12,7 @@ import {cancelManualConfigEdit, enterManualConfigEdit, loadManualConfig, saveMan
 import {refreshAgentStatus} from './agent-status.js';
 import {refreshOtaLog, triggerOtaUpdate} from './ota.js';
 import {
-  deleteSelectedProvider, editSelectedProvider, handleProviderAction, initProviders,
+  addProviderRecord, deleteSelectedProvider, editSelectedProvider, handleProviderAction, initProviders,
   ModelProvidersManager, SttProvidersManager, TtsProvidersManager, VoiceModelProvidersManager
 } from './providers.js';
 import {appState, byId, configureTerminalLink} from './state.js';
@@ -62,16 +62,16 @@ const simpleActions = {
   'close-wifi-modal': closeWifiModal,
   'connect-selected-wifi': connectSelectedWifi,
   'toggle-wifi-list': toggleWifiListExpanded,
-  'add-model-provider': () => ModelProvidersManager.addRecord(),
-  'add-tts-provider': () => TtsProvidersManager.addRecord(),
-  'add-stt-provider': () => SttProvidersManager.addRecord(),
-  'add-voice-model-provider': () => VoiceModelProvidersManager.addRecord(),
+  'add-model-provider': () => addProviderRecord(ModelProvidersManager),
+  'add-tts-provider': () => addProviderRecord(TtsProvidersManager),
+  'add-stt-provider': () => addProviderRecord(SttProvidersManager),
+  'add-voice-model-provider': () => addProviderRecord(VoiceModelProvidersManager),
   'enter-edit-voice-mode': () => enterEditSectionFields('voice-mode', 'agent', ['input_mode'], 'section-voice_mode'),
   'cancel-edit-voice-mode': () => {
     cancelEditSectionFields('voice-mode');
     applyVoiceModeVisibility();
   },
-  'save-voice-mode': () => saveSectionFields('voice-mode', 'agent', ['input_mode'], 'section-voice_mode', 'save-voice_mode')
+  'save-voice-mode': () => saveVoiceMode()
     .finally(applyVoiceModeVisibility),
   'enter-edit-realtime-mode': () => enterEditSection('voice_model', 'realtime-mode-group'),
   'cancel-edit-realtime-mode': () => cancelEditSection('voice_model', 'realtime-mode-group'),
@@ -196,10 +196,10 @@ setAgentLogAutoScroll(true);
 async function reloadAll() {
   byId('reloadBtn').disabled = true;
   try {
-    await loadConfig();
+    const payload = await loadConfig();
     await loadManualConfig(true);
     await scanWifi(false);
-    setBanner(t('page.config_refreshed'), false);
+    setBanner(payload.config_valid === false ? t('config.invalid_recovery') : t('page.config_refreshed'), payload.config_valid === false);
   } catch (err) {
     setBanner(t('page.refresh_failed'), true);
     setDetails(err.message);
@@ -235,13 +235,13 @@ async function init() {
   lockAllSections();
   setBanner(t('page.reading_config'), false);
   try {
-    await loadConfig();
+    const payload = await loadConfig();
     applyVoiceModeVisibility();
     setManualConfigLocked(true);
     await loadManualConfig(false);
     await scanWifi(false);
     await refreshAgentLog(false);
-    setBanner(initialReadyMessage(metaOk), !metaOk);
+    setBanner(initialReadyMessage(metaOk, payload), !metaOk || payload.config_valid === false);
   } catch (err) {
     setBanner(t('page.initialization_failed'), true);
     setDetails(err.message);

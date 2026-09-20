@@ -38,6 +38,13 @@ systemctl status aiden-config-web.service
 The service is enabled through the Debian systemd preset and is also pulled in
 by `aiden.target`.
 
+Config Web treats the Agent configuration as a recovery resource. A readable,
+parseable `agent.toml` with invalid values does not stop port 80 from starting:
+the page reports the configuration as invalid, highlights the responsible
+field, and keeps editing available. Startup fails only when the configuration
+file itself cannot be read or decoded, such as a permissions error, a damaged
+TOML document, or an invalid file target.
+
 ## Access
 
 Connect the device to your computer via USB-C. The device establishes a USB network at `192.168.42.1`. Visit:

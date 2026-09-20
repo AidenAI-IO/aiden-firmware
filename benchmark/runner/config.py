@@ -188,7 +188,22 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
         migrated_legacy = True
 
     if target_start is None:
-        missing = list(VOICE_SIDE_EFFECT_DEFAULTS)
+        # Check if any voice defaults are present at root level (before any [section])
+        root_end = next(
+            (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
+            len(lines),
+        )
+        root_body = "\n".join(lines[:root_end])
+        root_present = {
+            match.group("quoted") or match.group("bare")
+            for match in re.finditer(
+                r'(?m)^\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=',
+                root_body,
+            )
+        }
+        missing = [key for key in VOICE_SIDE_EFFECT_DEFAULTS if key not in root_present]
+        if not missing:
+            return content
         suffix = "\n" if lines and lines[-1].strip() else ""
         return "\n".join(lines) + suffix + "\n" + target_header + "\n" + "\n".join(
             f"{key} = false" for key in missing

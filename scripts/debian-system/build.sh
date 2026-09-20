@@ -35,6 +35,9 @@ Environment:
                                  pico-sdk submodule; built in place).
   DEBIAN_APPS_OUTPUT_DIR         Audited application output.
   DEBIAN_SYSTEM_BUILD_IMAGE      Rootfs/image builder image name.
+  DEBIAN_SYSTEM_APT_CACHE_PROXY  Optional HTTP cache URL reachable from the rootfs
+                                 container; used only after signed metadata validation.
+                                 Existing HTTP/all_proxy settings take precedence.
   DEBIAN_SYSTEM_BSP_BUILD_IMAGE  Luckfox BSP builder image name.
   OTA_PUBLIC_KEY_PATH            Production Ed25519 public key (required by images).
   AGENT_CONFIG_PATH              External agent.toml installed into userdata.img
@@ -152,6 +155,7 @@ run_rootfs_container() {
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
         -e "DEBIAN_SYSTEM_BUILD_IMAGE_ID=${image_id}" \
         -e "PICO_SDK_COMMIT=${sdk_commit}" \
+        -e "DEBIAN_SYSTEM_APT_CACHE_PROXY=${DEBIAN_SYSTEM_APT_CACHE_PROXY:-}" \
         -v "${REPO_ROOT}:/work:ro" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${SDK_DIR}:/sdk:ro" \
@@ -167,8 +171,18 @@ run_rootfs() {
     run_rootfs_container scripts/debian-system/container-build-rootfs.sh
 }
 
+ensure_bsp_build_image() {
+    if docker image inspect "${BSP_BUILD_IMAGE}" >/dev/null 2>&1; then
+        return
+    fi
+
+    echo "BSP builder image is not available locally; pulling ${BSP_BUILD_IMAGE}"
+    docker pull "${BSP_BUILD_IMAGE}"
+}
+
 run_bsp() {
     local build_timestamp
+    ensure_bsp_build_image
     prepare_sdk
     build_timestamp=$(date -u -d "@${BUILD_EPOCH}" '+%Y-%m-%d %H:%M:%S UTC')
     docker image inspect "${BSP_BUILD_IMAGE}" --format '{{.Id}}' \
@@ -369,4 +383,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

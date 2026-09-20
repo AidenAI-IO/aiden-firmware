@@ -37,13 +37,6 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 
 ## Input Modes
 
-### `input_mode = "text"`
-
-Runs the HTTP server and Web UI without starting the device-side audio loop. Browser clients can still upload or record audio:
-
-- If `[voice_settings.classic.stt]` is configured, browser audio is transcribed to text first;
-- Otherwise audio is passed as model attachment.
-
 ### `input_mode = "stt"`
 
 Runs the device-side audio loop alongside the HTTP server and Web UI:

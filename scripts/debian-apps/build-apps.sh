@@ -81,6 +81,9 @@ run_builder() {
         >"${OUTPUT_DIR}/builder-image-id.txt"
 }
 
+# Run an application build script with the pinned Go toolchain and writable
+# caches. Preserve the caller's GOPROXY when configured, including fallback
+# separators, while leaving the container default in place when it is unset.
 run_container_script() {
     local script=$1
     local image_id source_git_common_dir
@@ -100,12 +103,24 @@ run_container_script() {
         ;;
     esac
     mkdir -p "${GO_BUILD_CACHE}" "${GO_MODULE_CACHE}"
+    # Forward the module-fetch configuration only. The bare `-e NAME` form leaves
+    # a variable undefined in the container when the host has not set it, so the
+    # image defaults still apply. Without this the runner's GOPROXY stops at the
+    # container boundary and `go install module@version` reaches for
+    # proxy.golang.org, which the self-hosted builders cannot resolve. Build
+    # inputs that would change output (GOFLAGS) and the container-local
+    # GOCACHE/GOMODCACHE/GOPATH/GOTOOLCHAIN are deliberately not forwarded.
     docker run --rm \
         -u "$(id -u):$(id -g)" \
         -e "DEBIAN_APPS_OUTPUT_DIR=/out" \
         -e "DEBIAN_APPS_BUILD_IMAGE_ID=${image_id}" \
         -e "RK_JOBS=${JOBS}" \
         -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
+        -e GOPROXY \
+        -e GONOPROXY \
+        -e GOPRIVATE \
+        -e GOSUMDB \
+        -e GONOSUMDB \
         -v "${REPO_ROOT}:/work" \
         -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
         -v "${OUTPUT_DIR}:/out" \

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -408,8 +409,8 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	if defaults.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {
 		t.Fatalf("log defaults were not populated: %+v", defaults.Log)
 	}
-	if defaults.Agent.InputMode != "text" {
-		t.Fatalf("agent input mode default = %q, want text", defaults.Agent.InputMode)
+	if defaults.Agent.InputMode != "" {
+		t.Fatalf("agent input mode default = %q, want empty (unconfigured)", defaults.Agent.InputMode)
 	}
 	if defaults.Agent.VoiceFollowupTimeoutMs == 0 ||
 		defaults.Agent.VoiceFirstTurnTimeoutMs == 0 ||
@@ -937,6 +938,33 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			expectedField: "search.provider",
 		},
 		{
+			// Validators echo the offending value, so a value that happens to spell
+			// a field name must not steal that field's highlight.
+			name:          "search provider value that names another field",
+			errorMsg:      "invalid search.provider: timezone (expected duckduckgo, brave, or tavily)",
+			expectedField: "search.provider",
+		},
+		{
+			name:          "api mode value that names another field",
+			errorMsg:      "invalid model.api_mode: timezone (expected chat_completions, responses, or responses_stateful)",
+			expectedField: "model.api_mode",
+		},
+		{
+			name:          "invalid locale",
+			errorMsg:      "invalid locale: fr-FR (expected zh-CN or en-US)",
+			expectedField: "locale",
+		},
+		{
+			name:          "unsupported timezone",
+			errorMsg:      "unsupported timezone: Mars/Olympus",
+			expectedField: "timezone",
+		},
+		{
+			name:          "unloadable timezone",
+			errorMsg:      "load timezone Mars/Olympus: unknown time zone Mars/Olympus",
+			expectedField: "timezone",
+		},
+		{
 			name:          "model provider error",
 			errorMsg:      "model.provider is required",
 			expectedField: "model.provider",
@@ -970,6 +998,33 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 			name:          "telemetry base_url error",
 			errorMsg:      "telemetry.base_url is required when telemetry.enabled=true",
 			expectedField: "telemetry.base_url",
+		},
+		{
+			name:          "wrapped model provider error",
+			errorMsg:      "model: provider is required",
+			expectedField: "model.provider",
+		},
+		{
+			name:          "realtime voice key error",
+			errorMsg:      "voice_model.api_key is required when input_mode=realtime",
+			expectedField: "voice_model.api_key",
+		},
+		{
+			// The Responses API knobs are rendered fields, and each one reports its
+			// own path first, so the recovery page can highlight it.
+			name:          "responses knob choice error",
+			errorMsg:      "invalid model.responses_context_management: bogus (expected empty, compaction, ark_context_edit, or disabled)",
+			expectedField: "model.responses_context_management",
+		},
+		{
+			name:          "responses knob range error",
+			errorMsg:      "model.responses_compact_threshold must be 0 or >= 1000, got 12",
+			expectedField: "model.responses_compact_threshold",
+		},
+		{
+			name:          "responses include list error",
+			errorMsg:      "model.responses_include entries must be non-empty",
+			expectedField: "model.responses_include",
 		},
 	}
 
@@ -1045,4 +1100,142 @@ func TestValidationResult_JSONFormat(t *testing.T) {
 	}
 
 	t.Logf("JSON output: %s", string(data))
+}
+
+// The section Test buttons are most useful while the persisted config is in
+// recovery: the flagged field is what the user is testing a replacement for. So
+// config-test must load the surrounding context without requiring the file to
+// pass semantic validation, while still refusing a file it cannot decode.
+//
+// The request carries no values on purpose: the command then stops at its own
+// argument check, which tells the two load outcomes apart without reaching a
+// provider.
+func TestRunConfigTestLoadsRecoveryConfigAndRejectsDamagedFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	recovery := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(recovery, []byte(`[model_settings.model]
+provider = "openai"
+model = "gpt-4o"
+
+[voice_settings.mode]
+input_mode = "stt"
+`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// The runtime rejects this file, which is what puts the portal in recovery.
+	if _, err := agent.LoadRuntimeConfig(recovery); err == nil {
+		t.Fatal("expected the runtime loader to reject a declared stt mode with no provider")
+	}
+
+	result, code := runConfigTestWithStdin(t, recovery, `{"section":"model"}`)
+	if check := configTestCheck(result); check == "load_config" {
+		t.Fatalf("config-test refused a recoverable config: %+v", result.Results)
+	}
+	if check := configTestCheck(result); check != "request" || code != 1 {
+		t.Fatalf("config-test did not stop at its request check: check=%q code=%d", check, code)
+	}
+
+	damaged := filepath.Join(dir, "damaged.toml")
+	if err := os.WriteFile(damaged, []byte("[broken"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	result, _ = runConfigTestWithStdin(t, damaged, `{"section":"model"}`)
+	if check := configTestCheck(result); check != "load_config" {
+		t.Fatalf("config-test accepted a config it cannot decode: %+v", result.Results)
+	}
+}
+
+func configTestCheck(result ConfigTestResult) string {
+	if len(result.Results) == 0 {
+		return ""
+	}
+	return result.Results[0].Check
+}
+
+// runConfigTestWithStdin drives the subcommand the way the config page does, and
+// returns its exit code with the decoded result it printed.
+func runConfigTestWithStdin(t *testing.T, configPath, request string) (ConfigTestResult, int) {
+	t.Helper()
+	stdinReader, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdin, originalStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinReader, stdoutWriter
+	defer func() {
+		os.Stdin, os.Stdout = originalStdin, originalStdout
+	}()
+	go func() {
+		_, _ = stdinWriter.WriteString(request)
+		_ = stdinWriter.Close()
+	}()
+	code := runConfigTest([]string{"--stdin", "--config=" + configPath})
+	_ = stdoutWriter.Close()
+	output, err := io.ReadAll(stdoutReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ConfigTestResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("config-test output %q: %v", string(output), err)
+	}
+	return result, code
+}
+
+// The Config Web recovery portal and `agent config-check --config` read different
+// views of the same file on purpose: the portal uses the runtime loader because it
+// describes the state the Agent boots in, while this command is the CI and release
+// gate and stays strict, so a config the runtime would silently paper over still
+// fails here. They must not disagree about *which* field is wrong, or the gate's
+// output sends a user to a value that is not the problem.
+//
+// This drives the exported command the gates run, rather than its loader step.
+func TestRunConfigCheckReportsTheFieldTheRuntimeVerdictNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	body := `[model_settings.model]
+provider = "fake"
+
+[voice_settings.mode]
+input_mode = "stt"
+`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	// What the portal reports for this file.
+	_, runtimeErr := agent.LoadRuntimeConfig(path)
+	if runtimeErr == nil {
+		t.Fatal("the runtime loader accepted a declared stt mode with no provider")
+	}
+	want := agent.ParseConfigValidationErrors(runtimeErr)
+	if len(want) != 1 || want[0].Field != "stt.provider" {
+		t.Fatalf("runtime verdict = %+v, want the missing stt provider flagged", want)
+	}
+
+	got := checkConfigPath(path)
+	if got.Valid || len(got.Errors) != 1 || got.Errors[0].Field != want[0].Field {
+		t.Fatalf("checkConfigPath = %+v, want the same field as the runtime verdict %+v", got, want)
+	}
+
+	// The gate branches on the exit code, so it has to be non-zero here.
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = stdoutWriter
+	code := RunConfigCheck([]string{"--config=" + path, "--format=json"})
+	_ = stdoutWriter.Close()
+	os.Stdout = originalStdout
+	if _, err := io.ReadAll(stdoutReader); err != nil {
+		t.Fatal(err)
+	}
+	if code == 0 {
+		t.Fatal("config-check exited 0 for a config the release gate must reject")
+	}
 }

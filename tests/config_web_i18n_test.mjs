@@ -463,7 +463,7 @@ requestError = null;
 
 const confirmedAgentConfig = {input_mode: 'stt'};
 appState.config = {agent: confirmedAgentConfig};
-registerRuntime({readSection: () => ({input_mode: 'text'})});
+registerRuntime({readSection: () => ({input_mode: 'realtime'})});
 requestImpl = async () => { throw new Error('raw save failure'); };
 await configFormModule.namespace.saveSection('agent');
 assert.equal(appState.config.agent, confirmedAgentConfig);
