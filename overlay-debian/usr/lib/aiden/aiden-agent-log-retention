@@ -1,0 +1,87 @@
+#!/bin/sh
+set -eu
+
+log_path=${AIDEN_AGENT_LOG_PATH:-/userdata/agent/log/agent.log}
+storage_level_path=${AIDEN_AGENT_STORAGE_LEVEL_PATH:-/run/agent/storage_level}
+config_path=${AIDEN_AGENT_CONFIG_PATH:-/userdata/agent/agent.toml}
+temp_dir=${AIDEN_AGENT_LOG_TEMP_DIR:-${TMPDIR:-/tmp}}
+
+normal_max_bytes=${AIDEN_AGENT_LOG_MAX_BYTES:-10485760}
+normal_retain_bytes=${AIDEN_AGENT_LOG_RETAIN_BYTES:-5242880}
+
+positive_integer_or_default() {
+    value=$1
+    fallback=$2
+    case "${value}" in
+        ''|0|*[!0-9]*) printf '%s\n' "${fallback}" ;;
+        *) printf '%s\n' "${value}" ;;
+    esac
+}
+
+configured_degraded_max_mb() {
+    [ -r "${config_path}" ] || return 0
+    awk '
+        /^[[:space:]]*\[(storage_settings\.)?storage\.degraded_mode\][[:space:]]*(#.*)?$/ {
+            in_degraded_mode = 1
+            next
+        }
+        /^[[:space:]]*\[/ {
+            in_degraded_mode = 0
+        }
+        in_degraded_mode && /^[[:space:]]*max_agent_log_mb[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]#].*$/, "", value)
+            print value
+            exit
+        }
+    ' "${config_path}"
+}
+
+normal_max_bytes=$(positive_integer_or_default "${normal_max_bytes}" 10485760)
+normal_retain_bytes=$(positive_integer_or_default "${normal_retain_bytes}" 5242880)
+if [ "${normal_retain_bytes}" -gt "${normal_max_bytes}" ]; then
+    normal_retain_bytes=${normal_max_bytes}
+fi
+
+[ -e "${log_path}" ] || exit 0
+if [ -L "${log_path}" ] || [ ! -f "${log_path}" ]; then
+    echo "Refusing to trim non-regular agent log: ${log_path}" >&2
+    exit 1
+fi
+
+max_bytes=${normal_max_bytes}
+retain_bytes=${normal_retain_bytes}
+storage_level=$(cat "${storage_level_path}" 2>/dev/null || true)
+case "${storage_level}" in
+    critical|emergency)
+        degraded_max_mb=$(configured_degraded_max_mb)
+        degraded_max_mb=$(positive_integer_or_default "${degraded_max_mb}" 1)
+        degraded_max_bytes=$((degraded_max_mb * 1024 * 1024))
+        if [ "${degraded_max_bytes}" -lt "${max_bytes}" ]; then
+            max_bytes=${degraded_max_bytes}
+            retain_bytes=${degraded_max_bytes}
+        fi
+        ;;
+esac
+
+current_bytes=$(wc -c <"${log_path}" | tr -d '[:space:]')
+case "${current_bytes}" in
+    ''|*[!0-9]*)
+        echo "Cannot determine agent log size: ${log_path}" >&2
+        exit 1
+        ;;
+esac
+[ "${current_bytes}" -gt "${max_bytes}" ] || exit 0
+
+mkdir -p "${temp_dir}"
+retained_log=$(mktemp "${temp_dir%/}/agent.log.retention.XXXXXX")
+cleanup() {
+    rm -f "${retained_log}"
+}
+trap cleanup EXIT INT TERM
+
+tail -c "${retain_bytes}" "${log_path}" >"${retained_log}"
+cat "${retained_log}" >"${log_path}"
+printf 'agent_log_trimmed previous_bytes=%s retained_bytes=%s max_bytes=%s level=%s\n' \
+    "${current_bytes}" "${retain_bytes}" "${max_bytes}" "${storage_level:-normal}"

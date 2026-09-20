@@ -148,7 +148,7 @@ allowlist. Copy a required CLI to `/userdata` for a bounded device test.
 
 | Path | Description |
 | --- | --- |
-| `/userdata/agent/log/agent.log` | Agent supervisor and runtime output |
+| `/userdata/agent/log/agent.log` | Agent supervisor and runtime output; capped by `aiden-agent-log-retention.timer` |
 | `/userdata/agent/log/llm-http-*.log` | Session-partitioned LLM HTTP JSONL |
 | `/var/log/frame_service/frame_service.log` | Frame service output |
 | `/var/log/audio_service/audio_service.log` | Audio service output |

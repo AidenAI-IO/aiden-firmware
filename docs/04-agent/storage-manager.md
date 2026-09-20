@@ -470,9 +470,13 @@ Capabilities are recalculated after every successful check and recover automatic
 
 #### Agent Main Log
 
-The Agent main log is not completely disabled through AllowWrite. Instead, `aiden-agent.service` reads `/run/agent/storage_level`.
-
-At Critical or Emergency, the agent trims `<CONFIG_DIR>/log/agent.log` to `storage_settings.storage.degraded_mode.max_agent_log_mb`, which defaults to 1 MB. It preserves the newest content so storage pressure does not remove the most useful diagnostics.
+The Agent main log is not completely disabled through AllowWrite. The
+`aiden-agent-log-retention.timer` checks it once per minute. During normal
+operation, a log larger than 10 MiB is trimmed to its newest 5 MiB. At Critical
+or Emergency, the timer instead trims it to
+`storage_settings.storage.degraded_mode.max_agent_log_mb`, which defaults to 1
+MiB. Trimming preserves the file inode and the newest content, so systemd can
+continue appending without restarting the Agent.
 
 ### Status Model
 

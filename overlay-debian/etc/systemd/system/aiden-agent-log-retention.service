@@ -1,0 +1,18 @@
+[Unit]
+Description=Limit the persistent Aiden agent log
+Requires=aiden-userdata-migrate.service
+After=aiden-userdata-migrate.service
+ConditionPathExists=/userdata/agent/log/agent.log
+
+[Service]
+Type=oneshot
+Environment=AIDEN_AGENT_LOG_PATH=/userdata/agent/log/agent.log
+Environment=AIDEN_AGENT_STORAGE_LEVEL_PATH=/run/agent/storage_level
+Environment=AIDEN_AGENT_CONFIG_PATH=/userdata/agent/agent.toml
+Environment=AIDEN_AGENT_LOG_TEMP_DIR=/run/agent-log-retention
+Environment=AIDEN_AGENT_LOG_MAX_BYTES=10485760
+Environment=AIDEN_AGENT_LOG_RETAIN_BYTES=5242880
+RuntimeDirectory=agent-log-retention
+RuntimeDirectoryMode=0700
+ExecStart=/usr/lib/aiden/aiden-agent-log-retention
+UMask=0077
