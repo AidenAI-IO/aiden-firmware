@@ -1014,6 +1014,7 @@ def test_run_one_task_fetches_unique_episode_and_saves_it(tmp_path: Path):
     assert result.status == "passed"
     assert client.episode_requests == ["ep/one"]
     assert json.loads((tmp_path / "artifacts" / "episode.json").read_text()) == episode
+    assert result.metrics["episode_id"] == "ep/one"
     assert result.metrics["memory_recall_evidence_source"] == "episode"
 
 

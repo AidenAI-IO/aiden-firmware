@@ -595,6 +595,7 @@ def run_one_task(
         base.metrics["agent_error"] = str(e)[:300]
     episode_id = _unique_episode_id(history)
     if episode_id is not None:
+        base.metrics["episode_id"] = episode_id
         try:
             episode = client.get_episode(episode_id)
         except Exception as e:

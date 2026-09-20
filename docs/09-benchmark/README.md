@@ -244,6 +244,69 @@ uv run python -m runner compare --runs runs/<run_a> runs/<run_b>
 
 Compare task status flips, latency, and pass-rate changes between two runs.
 
+### Publish a completed run to Langfuse
+
+Publishing is a separate post-run step, so a failed upload can be retried without
+rerunning the Agent or device environment. Each stable suite name maps to one
+Langfuse Dataset, every task attempt maps to a stable Dataset Item, and each
+benchmark execution creates an Experiment Run with item-level and aggregate
+benchmark scores. Updating a suite upserts new Dataset Item versions instead of
+creating a new Dataset. Each new run also stores `suite.json` beside its manifest,
+so it remains publishable after the source suite changes.
+
+```bash
+cd benchmark
+export LANGFUSE_PUBLIC_KEY="pk-lf-..."
+export LANGFUSE_SECRET_KEY="sk-lf-..."
+export LANGFUSE_BASE_URL="http://127.0.0.1:3010"
+
+uv run python -m runner publish-langfuse --run-dir runs/<run-id>
+```
+
+Runs with the same suite name appear in the same Dataset. The experiment metadata
+records the Git SHA, suite hash, workload hash, model, judge, platform, metrics
+schema, and fixed `k`. Runs with matching suite hash, workload hash, and `k` are
+strictly comparable. Runs from different suite versions can still be inspected
+in Langfuse, but their aggregate scores should not be treated as a like-for-like
+regression unless the unchanged item intersection is used or the old product
+version is rerun against the new suite definition. When an Agent episode ID is
+present, the experiment trace also records the deterministic Agent trace ID for
+correlation with Aiden telemetry.
+
+Publishing is idempotent by run ID. A retry verifies the Dataset Run Item set,
+adds any missing items, and rewrites scores with stable IDs. A conflicting run ID
+fails instead of silently mixing results. Langfuse's native Latency and Cost
+columns describe the artifact replay used to construct the Experiment Run; use
+the `benchmark.*`, `efficiency.*`, `reliability.*`, and
+`cost_to_first_success.*` scores for real benchmark measurements.
+
+The separate publish command is the CI integration point. A GitHub Actions job
+can run a suite with a unique run ID and publish the completed artifacts in a
+second step:
+
+```yaml
+- name: Run benchmark
+  working-directory: benchmark
+  run: |
+    RUN_ID="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::8}"
+    echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+    uv run python -m runner run \
+      --suite suites/<suite>.json \
+      --run-id "$RUN_ID" \
+      <environment-options>
+
+- name: Publish benchmark to Langfuse
+  working-directory: benchmark
+  env:
+    LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+    LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+    LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+  run: uv run python -m runner publish-langfuse --run-dir "runs/$RUN_ID"
+```
+
+The repository does not yet schedule benchmark suites in GitHub Actions; runner,
+device environment, suite selection, and trigger policy remain to be configured.
+
 ## Environment Variables
 
 - `AIDEN_BENCHMARK_AGENT_PROVIDER` - Agent provider type for the default config template.

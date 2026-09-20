@@ -128,6 +128,7 @@ class Suite:
     tasks: list[TaskSpec]
     sha256: str
     source_path: Path
+    source_bytes: bytes = b""
     prompt_prefix: str = ""
     trace_observations: list[TraceObservationSpec] = dc.field(default_factory=list)
     mock_environment: MockEnvironmentSpec | None = None
@@ -396,6 +397,7 @@ def load_suite(path: Path) -> Suite:
         tasks=tasks,
         sha256=sha,
         source_path=Path(path),
+        source_bytes=raw_bytes,
         prompt_prefix=prompt_prefix,
         trace_observations=trace_observations,
         mock_environment=mock_environment,
