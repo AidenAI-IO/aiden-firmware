@@ -557,6 +557,38 @@ def test_provider_screenshot_routes_by_task_id():
             server.stop()
 
 
+@pytest.mark.parametrize("operation", ["swipe", "drag"])
+@pytest.mark.parametrize("duration_ms", [None, 0, 1, 120, 2400, 10_000])
+def test_provider_mnk_preserves_motion_duration_to_environment(operation, duration_ms):
+    with RunningBridge() as bridge:
+        status, _ = start_episode(bridge)
+        assert status == 200
+        params = {"path": [[500, 800], [500, 400]], "button": "left"}
+        if duration_ms is not None:
+            params["duration_ms"] = duration_ms
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/providers/mnk",
+            {"operation": operation, operation: params},
+        )
+
+        assert status == 200
+        assert body == {"success": True}
+        assert len(bridge.env.actions) == 1
+        # Legacy callers without a positive duration keep the backend default.
+        expected_duration = duration_ms or (160 if operation == "swipe" else 700)
+        assert action_to_dict(bridge.env.actions[0]) == {
+            "action_type": operation.upper(),
+            "data": {
+                "point1": [500.0, 800.0],
+                "point2": [500.0, 400.0],
+                "duration": expected_duration,
+            },
+        }
+
+
 def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordinates():
     with RunningBridge() as bridge:
         status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
