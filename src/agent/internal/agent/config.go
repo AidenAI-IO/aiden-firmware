@@ -450,9 +450,6 @@ type VoiceModelConfig struct {
 
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
 
-// UsesNativeRealtimeReasoning reports whether the realtime session gets the
-// runtime tools directly without the legacy backend agent, per the
-// voice_settings.realtime.use_backend_agent switch.
 func (c Config) UsesNativeRealtimeReasoning() bool {
 	// voice_settings.realtime.use_backend_agent is the single decision point.
 	// There is no model- or provider-based auto-detection: unset uses the

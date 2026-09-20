@@ -15,9 +15,6 @@ AGENTS.md
 # Cross-compiled agent binary
 /src/agent/aiden-agent
 /src/agent/daemon
-/aiden-agent-arm7
-/src/agent/aiden-agent-arm7
-/aiden-agent-test
 /bin/
 
 # Secrets
@@ -72,4 +69,5 @@ skillopt/runs/
 
 # VPhone local environment (machine-specific paths/hosts; use vphone.env.example)
 benchmark/vphone/vphone.env
+
 

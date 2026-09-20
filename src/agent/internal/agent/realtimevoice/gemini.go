@@ -41,8 +41,6 @@ var geminiExtendedThinkingModelIDs = map[string]struct{}{
 	Gemini38ThinkingModel: {},
 }
 
-// IsGemini38ExtendedThinkingModel reports whether model is a Gemini Live
-// variant whose native reasoning replaces the legacy backend agent.
 func IsGemini38ExtendedThinkingModel(model string) bool {
 	_, ok := geminiExtendedThinkingModelIDs[geminiModelID(model)]
 	return ok
@@ -317,8 +315,6 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 	// Valid values: LOW, MEDIUM, HIGH (uppercase per Live API docs)
 	// Always set thinking config for extended-thinking models
 	if IsGemini38ExtendedThinkingModel(model) {
-		// Only thinking models receive thinkingConfig; the level is configurable
-		// per provider record and defaults to LOW.
 		level := strings.ToUpper(strings.TrimSpace(cfg.ThinkingLevel))
 		if level == "" {
 			level = "LOW"
