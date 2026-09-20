@@ -1,7 +1,6 @@
 [Unit]
 Description=Load the Luckfox AIC8800 Wi-Fi driver and firmware
-Requires=oem.mount
-After=oem.mount systemd-udevd.service
+After=systemd-udevd.service
 Before=wpa_supplicant@wlan0.service
 
 [Service]

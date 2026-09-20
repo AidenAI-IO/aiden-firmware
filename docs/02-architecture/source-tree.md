@@ -15,7 +15,7 @@ aiden-firmware/
 ├── docs/                          # Structured documentation
 ├── edid/                          # HDMI EDID development assets
 ├── overlay-debian/                # Debian rootfs files, helpers, and systemd units
-├── overlay-debian-oem/            # Debian OEM scripts, models, audio, and EDID assets
+├── assets/business/              # Business package models and notification sounds
 ├── pico-sdk/                      # Pinned Luckfox BSP SDK submodule
 ├── scripts/
 │   ├── debian-apps/               # Debian armhf application build and audit
@@ -81,24 +81,17 @@ These files are copied only into the Debian rootfs. Executable source files
 remain executable in the image; all other files and directories are normalized
 to deterministic modes and root ownership.
 
-## Debian OEM Overlay
+## Platform and Business Files
 
-```text
-overlay-debian-oem/
-└── usr/
-    ├── bin/aiden-dynamic-keyboard
-    ├── lib/aiden-log.sh
-    ├── model/
-    └── share/aiden/
-        ├── audio/
-        └── edid/
-```
+`overlay-debian/usr/lib/aiden/` contains base-owned startup helpers and
+`platform/lib/` contains the pinned VQE libraries. Rootfs assembly adds audited
+RGA libraries to `platform/lib/` and SDK modules/firmware to `platform/modules/`.
+EDID and VQE configuration live under `overlay-debian/usr/share/aiden/`.
 
-The system stage combines this overlay with the audited apps production
-allowlist,
-vendor libraries, kernel modules, Config Web assets, bundled Agent skills, and
-the OTA public key. Development executables, static libraries, object files,
-maps, headers, and package metadata are rejected by the image audit.
+`assets/business/models/` and `assets/business/audio/voice-notifications/` are
+inputs to `aiden-business`, together with application binaries, web files and
+skills. They are installed by dpkg into rootfs. The package does not own platform
+libraries, modules, EDID, VQE configuration, or the OTA trust key.
 
 ## Build Layers
 

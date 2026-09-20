@@ -3,7 +3,6 @@ set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly OVERLAY=${REPO_ROOT}/overlay-debian
-readonly OEM_OVERLAY=${REPO_ROOT}/overlay-debian-oem
 readonly UNIT_DIR=${OVERLAY}/etc/systemd/system
 readonly TMPFILES=${OVERLAY}/etc/tmpfiles.d/aiden.conf
 readonly TEST_ROOT=$(mktemp -d)
@@ -42,7 +41,7 @@ if grep -Eq '^(Wants|Requires|After)=.*dev-rtc0\.device' \
 fi
 
 while IFS= read -r script; do
-    [ -x "${script}" ] || fail "helper is not executable: ${script#${REPO_ROOT}/}"
+    [ "${script##*/}" = aiden-log.sh ] || [ -x "${script}" ] || fail "helper is not executable: ${script#${REPO_ROOT}/}"
     sh -n "${script}"
 done < <(find "${OVERLAY}/usr/lib/aiden" -maxdepth 1 -type f | LC_ALL=C sort)
 
@@ -101,9 +100,9 @@ bypass_output=$(env -i AIDEN_WIFI_PROXY_ENABLED=0 \
 printf '%s\n' "${bypass_output}" \
     | grep -qx 'HTTP_PROXY=http://upstream.example:8080'
 
-grep -qx 'What=/run/aiden/oem-device' "${UNIT_DIR}/oem.mount"
-grep -qx 'What=/dev/mmcblk0p11' "${UNIT_DIR}/userdata.mount"
-grep -qx 'What=/dev/mmcblk0p12' "${UNIT_DIR}/userdata-ota.mount"
+test ! -e "${UNIT_DIR}/oem.mount"
+grep -qx 'What=/dev/mmcblk0p9' "${UNIT_DIR}/userdata.mount"
+grep -qx 'What=/dev/mmcblk0p10' "${UNIT_DIR}/userdata-ota.mount"
 grep -q 'aiden.slot_suffix' "${OVERLAY}/usr/lib/aiden/aiden-slot-resolve"
 grep -q 'Root slot.*disagrees' "${OVERLAY}/usr/lib/aiden/aiden-slot-resolve"
 grep -q 'rootfs${AIDEN_SLOT_SUFFIX}' "${OVERLAY}/usr/lib/aiden/aiden-rootfs-grow"
@@ -127,7 +126,7 @@ if rg -n 'networkctl reconfigure (usb0|"?\$\{?interface\}?")' \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-ecm-watchdog" \
     "${OVERLAY}/usr/lib/aiden/aiden-wait-interface-ip" \
-    "${OEM_OVERLAY}/usr/bin/aiden-dynamic-keyboard"; then
+    "${OVERLAY}/usr/lib/aiden/aiden-dynamic-keyboard"; then
     fail "USB helpers must not ask networkd to replace an address they just configured"
 fi
 grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
@@ -138,7 +137,7 @@ grep -Fqx 'Environment=AIDEN_WPA_SUPPLICANT_CONFIG=/userdata/debian/wifi/wpa_sup
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
 grep -Fqx 'ExecStart=/usr/sbin/wpa_supplicant -c ${AIDEN_WPA_SUPPLICANT_CONFIG} -i %I' \
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
-grep -q -- '/oem/usr/bin/agent config-web' \
+grep -q -- '/usr/lib/aiden/agent config-web' \
     "${UNIT_DIR}/aiden-config-web.service"
 grep -q -- '--wifi-config-environment=/run/aiden/wpa_supplicant-config.env' \
     "${UNIT_DIR}/aiden-config-web.service"
@@ -185,9 +184,9 @@ grep -q -- '--wifi-backend=systemd-networkd' \
 if grep -q -- '--wifi-iface' "${UNIT_DIR}/aiden-config-web.service"; then
     fail "Config Web still uses the retired --wifi-iface flag"
 fi
-grep -qx 'ConditionPathExists=/oem/usr/bin/agent' \
+grep -qx 'ConditionPathExists=/usr/lib/aiden/agent' \
     "${UNIT_DIR}/aiden-config-web.service"
-grep -q '/oem/usr/bin/agent wifi-proxy' \
+grep -q '/usr/lib/aiden/agent wifi-proxy' \
     "${UNIT_DIR}/aiden-wifi-proxy.service"
 grep -q 'aiden-wifi-proxy.service' "${UNIT_DIR}/aiden-agent.service"
 grep -q 'aiden-wifi-proxy-agent-restart.path' "${UNIT_DIR}/aiden.target"
@@ -201,7 +200,7 @@ grep -Eq '^After=.*aiden-wifi-proxy\.service' \
     || fail "Wi-Fi proxy restart service must wait for the proxy"
 grep -q 'AIDEN_WIFI_PROXY_INIT_SCRIPT=/usr/lib/aiden/aiden-wifi-proxy-control' \
     "${UNIT_DIR}/aiden-config-web.service"
-grep -q 'aiden-managed-env-run /oem/usr/bin/agent' \
+grep -q 'aiden-managed-env-run /usr/lib/aiden/agent' \
     "${UNIT_DIR}/aiden-agent.service"
 grep -q 'AIDEN_USB_COMPOSITE_REFRESH_COMMAND=/usr/lib/aiden/aiden-usb-ecm-watchdog' \
     "${UNIT_DIR}/aiden-agent.service"
@@ -306,7 +305,11 @@ run_ecm_watchdog() {
     AIDEN_USB_GRACE_FILE="${root}/grace" \
     AIDEN_USB_REFRESH_STATE_FILE="${root}/refresh.state" \
     USB_ECM_PROBE_INTERVAL=1 USB_ECM_FAIL_THRESHOLD=2 USB_ECM_COOLDOWN=1 \
-        timeout "${seconds}" "${watchdog}" watch >/dev/null 2>&1 || true
+        "${watchdog}" watch >/dev/null 2>&1 &
+    watchdog_pid=$!
+    sleep "${seconds}"
+    kill "${watchdog_pid}" 2>/dev/null || true
+    wait "${watchdog_pid}" 2>/dev/null || true
 }
 
 live_root=${TEST_ROOT}/usb-watchdog-live
@@ -338,7 +341,7 @@ run_ecm_watchdog "${stalled_root}" 6
 grep -qx 'last_refresh_reason=ECM stall' "${stalled_root}/refresh.state" \
     || fail "a stalled ECM session must be recovered with the ECM stall reason"
 
-grep -q '/oem/usr/bin/aiden-environment' "${UNIT_DIR}/aiden-environment.service"
+grep -q '/usr/lib/aiden/aiden-environment' "${UNIT_DIR}/aiden-environment.service"
 grep -q '/run/aiden/environment.invalid' "${UNIT_DIR}/aiden-environment.service"
 grep -q 'schema_version' "${OVERLAY}/usr/lib/aiden/aiden-userdata-migrate"
 grep -q 'backup_root=${state_dir}/backups' \

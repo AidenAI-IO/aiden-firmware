@@ -71,7 +71,7 @@ load boundary; Config Web writes only the grouped paths below.
 
 9. **About**:
    - Firmware Version: Displayed through Config Web
-   - Component Versions: Boot, OEM, and RootFS versions for the running slot
+   - Component Versions: Boot and RootFS versions for the running slot
 
 The group tables are the canonical on-disk configuration schema. New options
 should be added to the closest existing group and its section rather than
@@ -136,7 +136,7 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 ## Config Web: the device config page
 
 Config Web is the browser client served by the `config-web` subcommand of the
-Go Agent binary (`/oem/usr/bin/agent`). It maintains the device Agent
+Go Agent binary (`/usr/lib/aiden/agent`). It maintains the device Agent
 configuration, system environment variables, and Wi-Fi configuration, and is
 the primary way to edit the fields documented on this page without manually
 editing `agent.toml`. Its device operations use the
@@ -269,8 +269,8 @@ input_mode = "stt"
 
 [voice_settings.classic.runtime]
 vad_backend = "rknn"
-vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-vad_helper_path = "/oem/usr/bin/rknn_vad"
+vad_model_path = "/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+vad_helper_path = "/usr/lib/aiden/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 550
 min_speech_ms = 300
@@ -378,8 +378,8 @@ These fields apply to the `stt` input mode.
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `vad_backend`                   | `rknn`                                                      | VAD backend: `rknn` uses NPU encoder + CPU LSTM/decoder, `cpu` uses a pure-CPU helper                                                                                                  |
-| `vad_model_path`                | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
-| `vad_helper_path`               | `/oem/usr/bin/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad`                                                                                                         |
+| `vad_model_path`                | `/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
+| `vad_helper_path`               | `/usr/lib/aiden/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/usr/lib/aiden/cpu_vad`                                                                                                         |
 | `vad_speech_threshold`          | `0.5`                                                       | Silero VAD speech probability threshold                                                                                                                                                |
 | `silence_ms`                    | `550`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
 | `min_speech_ms`                 | `300`                                                       | Minimum valid speech duration                                                                                                                                                          |

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultIOSKeyboardIsolationControl  = "/oem/usr/bin/aiden-dynamic-keyboard"
+	defaultIOSKeyboardIsolationControl  = "/usr/lib/aiden/aiden-dynamic-keyboard"
 	iosKeyboardProfileSwitchTimeout     = 30 * time.Second
 	iosKeyboardReenumerationWakeTimeout = 2 * time.Second
 	iosKeyboardRestoreRetryCooldown     = 5 * time.Second

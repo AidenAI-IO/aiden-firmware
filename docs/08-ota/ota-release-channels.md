@@ -55,11 +55,11 @@ REPO="AidenAI-IO/aiden-firmware"
 # 2. Update the device using the dev release manifest URL
 ota update \
   --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \
-  --public-key /oem/etc/ota_pubkey.pem
+  --public-key /usr/share/keyrings/aiden-ota.pem
 ```
 
 Notes:
-- The official signing key is already trusted on the device at `/oem/etc/ota_pubkey.pem`, so no extra public key is needed for official-repo builds.
+- The official signing key is already trusted on the device at `/usr/share/keyrings/aiden-ota.pem`, so no extra public key is needed for official-repo builds.
 - Use `--dry-run` first to download and verify without switching slots or rebooting.
 
 ## Why Branch Builds Are Safe to Publish

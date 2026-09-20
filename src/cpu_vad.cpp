@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char* kDefaultWeightsPath = "/oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin";
+constexpr const char* kDefaultWeightsPath = "/usr/lib/aiden/models/silero_vad_6_2_lstm_decoder_weights.bin";
 
 struct Args {
     std::string weights_path = kDefaultWeightsPath;

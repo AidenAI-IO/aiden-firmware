@@ -47,7 +47,7 @@ Aiden Hardware combines HDMI video capture, audio recording/playback, USB HID co
 | Hardware Services | `frame_service`, `audio_service`, `ble_service` | Centrally manage hardware resources and expose them to other processes |
 | Utility Programs | `*_cli`, `example_*`, `image_process` | Debugging, validation, and single-capability examples |
 | Go Agent | `src/agent` | LLM runtime, tool invocation, Web UI, HTTP Tool API, voice pipeline |
-| Firmware Integration | `overlay-debian/`, `overlay-debian-oem/`, `pico-sdk/` | Debian systemd integration, rootfs/OEM assets, and RV1106 BSP |
+| Firmware Integration | `overlay-debian/`, `assets/business/`, `pico-sdk/` | Debian systemd integration, rootfs assets and business package, and RV1106 BSP |
 
 ## Key Design Principles
 

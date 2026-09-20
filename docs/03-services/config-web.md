@@ -5,7 +5,7 @@ sidebar_position: 2
 # Config Web: Web-based Configuration Interface
 
 Config Web is the bundled browser client served by the `config-web` subcommand
-of the Go Agent binary (`/oem/usr/bin/agent`). Device operations are exposed by
+of the Go Agent binary (`/usr/lib/aiden/agent`). Device operations are exposed by
 the independently mountable [Device Management API](device-management-api.md),
 so the page can be replaced or removed without coupling those operations to the
 static UI. Configuration changes are persisted to
@@ -23,8 +23,8 @@ and USB-ECM access use the same API behavior.
 | --- | --- |
 | Port | `80` |
 | Config | `/userdata/agent/agent.toml` |
-| Binary | `/oem/usr/bin/agent config-web` |
-| Web root | `/oem/usr/share/aiden/config-web` |
+| Binary | `/usr/lib/aiden/agent config-web` |
+| Web root | `/usr/share/aiden/config-web` |
 
 ## Startup
 

@@ -186,7 +186,7 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 		config.BlockDir = DefaultOTABlockDir
 	}
 	if config.PublicKeyPath == "" {
-		config.PublicKeyPath = "/oem/etc/ota_pubkey.pem"
+		config.PublicKeyPath = "/usr/share/keyrings/aiden-ota.pem"
 	}
 	if config.MachineIDPath == "" {
 		config.MachineIDPath = DefaultPersistentMachineIDPath
@@ -1668,9 +1668,9 @@ func rootSlotFromCmdline(cmdline string) (Slot, bool, error) {
 		}
 		value = strings.Trim(strings.ToLower(value), "\"'")
 		switch {
-		case value == "partlabel=rootfs_a" || value == "rootfs_a" || strings.HasSuffix(value, "/rootfs_a") || value == "/dev/mmcblk0p9":
+		case value == "partlabel=rootfs_a" || value == "rootfs_a" || strings.HasSuffix(value, "/rootfs_a") || value == "/dev/mmcblk0p7":
 			return SlotA, true, nil
-		case value == "partlabel=rootfs_b" || value == "rootfs_b" || strings.HasSuffix(value, "/rootfs_b") || value == "/dev/mmcblk0p10":
+		case value == "partlabel=rootfs_b" || value == "rootfs_b" || strings.HasSuffix(value, "/rootfs_b") || value == "/dev/mmcblk0p8":
 			return SlotB, true, nil
 		default:
 			return SlotA, false, fmt.Errorf("unsupported root device %q", value)

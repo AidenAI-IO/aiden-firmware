@@ -202,7 +202,7 @@ keyboard and pointer are advertised by the same USB composite. Plain key input
 may work while shortcuts such as `Cmd+A` or `Cmd+V` are ignored.
 
 When `[basic_settings.device].device_type` derives `pointer_mode = "absolute"`, firmware builds that include
-`/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate keyboard actions
+`/usr/lib/aiden/aiden-dynamic-keyboard` automatically isolate keyboard actions
 whose HID reports contain Ctrl, Shift, Option/Alt, or Cmd/Meta. This includes
 `keyboard_text` values containing uppercase letters or symbols that require
 Shift or AltGr on the configured keyboard layout. Plain key taps, unmodified text, pointer input, and
@@ -258,9 +258,9 @@ refresh during the planned switch.
 Inspect or exercise the profiles manually with:
 
 ```bash
-/oem/usr/bin/aiden-dynamic-keyboard status
-/oem/usr/bin/aiden-dynamic-keyboard isolate
-/oem/usr/bin/aiden-dynamic-keyboard restore
+/usr/lib/aiden/aiden-dynamic-keyboard status
+/usr/lib/aiden/aiden-dynamic-keyboard isolate
+/usr/lib/aiden/aiden-dynamic-keyboard restore
 ```
 
 After any test, `status` should report `mode=normal` and list `hid.usb0`,

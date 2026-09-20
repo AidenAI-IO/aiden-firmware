@@ -46,10 +46,10 @@ locally built image with:
 
 The image installs these main runtime trees:
 ```text
-/oem/usr/bin/                                  # Audited production applications
-/oem/usr/lib/                                  # Vendor and application libraries
-/oem/usr/model/                                # VAD model and weights
-/oem/usr/share/aiden/                          # Config Web, skills, audio, and EDID assets
+/usr/lib/aiden/                                  # Audited production applications
+/usr/lib/aiden/platform/lib/                                  # Vendor and application libraries
+/usr/lib/aiden/models/                                # VAD model and weights
+/usr/share/aiden/                          # Config Web, skills, audio, and EDID assets
 /usr/lib/aiden/                                # Debian rootfs service helpers
 /etc/systemd/system/aiden-*.service            # Product systemd units
 /userdata/agent/agent.toml                     # External build-time Agent configuration
@@ -57,9 +57,10 @@ The image installs these main runtime trees:
 /userdata/debian/ota/config.json               # Debian OTA factory configuration
 ```
 
-`overlay-debian/` owns the Debian rootfs additions. `overlay-debian-oem/`, the
-audited apps bundle, SDK kernel modules, and generated web assets form the OEM
-image. Neither Debian image stage consumes the legacy root overlay.
+`overlay-debian/` owns the Debian platform additions. The rootfs stage installs
+`aiden-business`, BSP libraries and modules, and the OTA trust key. Business models
+and notification sounds come from `assets/business/`. Both rootfs slots start with
+the same image; no OEM filesystem is produced.
 
 ## Development Binary Update
 
@@ -74,19 +75,19 @@ device-side test, stop the owning systemd unit before replacing its binary:
 
 ```bash
 ssh root@<device-ip> 'systemctl stop aiden-frame.service'
-scp output/debian-apps/apps/bin/frame_service root@<device-ip>:/oem/usr/bin/frame_service
-ssh root@<device-ip> 'chmod 0755 /oem/usr/bin/frame_service && systemctl start aiden-frame.service'
+scp output/debian-apps/apps/bin/frame_service root@<device-ip>:/usr/lib/aiden/frame_service
+ssh root@<device-ip> 'chmod 0755 /usr/lib/aiden/frame_service && systemctl start aiden-frame.service'
 ```
 
 Use the same pattern for `audio_service`, `ble_service`, or `agent`. The Agent
-binary also provides the `config-web` subcommand. Copying a binary directly mutates only the active OEM slot and can
+binary also provides the `config-web` subcommand. Copying a binary directly mutates only the active rootfs slot and can
 invalidate the factory hash expected by OTA diagnostics, so use it for short
 development cycles only. Rebuild and flash a complete image for a reproducible
 deployment.
 
-Diagnostic executables such as `frame_service_cli`, `audio_service_cli`, and
-`example_*` are present in the apps output but excluded from the production
-OEM allowlist. Copy only the tool needed for a bounded test to a directory under
+`frame_service_cli` and `audio_service_cli` are included in the business package
+for OTA self-checks. Other diagnostics such as `example_*` remain apps build
+outputs. Copy only the tool needed for a bounded test to a directory under
 `/userdata`, then remove it when the test is complete.
 
 Do not deploy service definitions by copying individual files into `/etc`.
@@ -98,8 +99,8 @@ must move together.
 `aiden.target` groups the product services. Important ordering is expressed by
 systemd dependencies rather than filename order:
 
-1. Slot resolution and rootfs growth expose the active OEM, userdata, and OTA partitions.
-2. Userdata migration, machine identity, OEM library registration, and strict environment generation complete.
+1. Slot resolution and rootfs growth expose the active rootfs, userdata, and OTA partitions.
+2. Userdata migration, machine identity, platform library registration, and strict environment generation complete.
 3. Media, Wi-Fi, Bluetooth, USB gadget, DHCP, and time services prepare hardware and networking.
 4. Frame, audio, BLE, Agent, Config Web, adb host, and WLAN recovery services start independently.
 5. The OTA health aggregator checks required local services before committing a pending slot.
