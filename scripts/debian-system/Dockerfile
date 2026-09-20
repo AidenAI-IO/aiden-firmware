@@ -17,6 +17,7 @@ RUN apt-get update \
         e2fsprogs \
         file \
         git \
+        gpgv \
         jq \
         libcap2-bin \
         openssl \
@@ -26,6 +27,7 @@ RUN apt-get update \
         rsync \
         shellcheck \
         systemd \
+        wget \
         xz-utils \
         zstd \
     && rm -rf /var/lib/apt/lists/*

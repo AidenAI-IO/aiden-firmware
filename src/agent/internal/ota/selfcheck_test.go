@@ -3,6 +3,7 @@ package ota
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,6 +19,10 @@ func TestSelfCheckTimeoutDoesNotPreventLaterProbes(t *testing.T) {
 	if err := os.WriteFile(fast, []byte("#!/bin/sh\nprintf '%s\\n' '{\"connected\":true}'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	// macOS charges a one-time cost for the first execution of a newly created
+	// file. Pay it here so the probe budget below measures probe isolation
+	// rather than the platform's first-exec latency.
+	warmExecutable(t, fast)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	report := RunSelfCheck(ctx, SelfCheckConfig{
@@ -35,6 +40,17 @@ func TestSelfCheckTimeoutDoesNotPreventLaterProbes(t *testing.T) {
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("probe did not respect its own timeout: %v", ctx.Err())
+	}
+}
+
+// warmExecutable executes a freshly written script once so later runs of the
+// same path are not charged the platform's first-exec cost.
+func warmExecutable(t *testing.T, path string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, path).CombinedOutput(); err != nil {
+		t.Fatalf("warm %s error = %v output=%s", path, err, out)
 	}
 }
 

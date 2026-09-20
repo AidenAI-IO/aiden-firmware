@@ -108,12 +108,13 @@ func TestPersonalizeExt4MachineIDAndHashEffectiveImage(t *testing.T) {
 		t.Fatalf("hashFilePrefix(generic) error = %v", err)
 	}
 	machineID := "0123456789abcdef0123456789abcdef"
+	debugfs, e2fsck := requireE2fsprogs(t, "debugfs"), requireE2fsprogs(t, "e2fsck")
 	effectiveHash, err := personalizeExt4MachineID(
 		imagePath,
 		machineID,
 		info.Size(),
-		DefaultDebugfsPath,
-		DefaultE2fsckPath,
+		debugfs,
+		e2fsck,
 		runPersonalizationCommand,
 	)
 	if err != nil {
@@ -122,14 +123,14 @@ func TestPersonalizeExt4MachineIDAndHashEffectiveImage(t *testing.T) {
 	if effectiveHash == genericHash {
 		t.Fatalf("effective hash = generic hash %s after personalization", effectiveHash)
 	}
-	cat, err := runPersonalizationCommand(DefaultDebugfsPath, "-R", "cat /etc/machine-id", imagePath)
+	cat, err := runPersonalizationCommand(debugfs, "-R", "cat /etc/machine-id", imagePath)
 	if err != nil {
 		t.Fatalf("debugfs cat error = %v stderr=%s", err, cat.Stderr)
 	}
 	if string(cat.Stdout) != machineID+"\n" {
 		t.Fatalf("personalized machine-id = %q", cat.Stdout)
 	}
-	if _, err := runPersonalizationCommand(DefaultE2fsckPath, "-f", "-n", imagePath); err != nil {
+	if _, err := runPersonalizationCommand(e2fsck, "-f", "-n", imagePath); err != nil {
 		t.Fatalf("post-personalization e2fsck error = %v", err)
 	}
 }
@@ -144,8 +145,8 @@ func TestPersonalizeExt4RejectsNonGenericMachineID(t *testing.T) {
 		imagePath,
 		"0123456789abcdef0123456789abcdef",
 		info.Size(),
-		DefaultDebugfsPath,
-		DefaultE2fsckPath,
+		requireE2fsprogs(t, "debugfs"),
+		requireE2fsprogs(t, "e2fsck"),
 		runPersonalizationCommand,
 	)
 	if err == nil || !strings.Contains(err.Error(), "is not empty") {
@@ -175,6 +176,8 @@ func TestDebianUpdaterPersonalizesInactiveRootFSAndCommitsSidecarBeforeActivatio
 	})
 	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	env.config.DebianMode = true
+	env.config.DebugfsPath = requireE2fsprogs(t, "debugfs")
+	env.config.E2fsckPath = requireE2fsprogs(t, "e2fsck")
 	env.config.MachineIDPath = filepath.Join(t.TempDir(), "machine-id")
 	env.config.PersonalizationPath = filepath.Join(t.TempDir(), "debian", "ota", "personalization-v1.json")
 	machineID := "0123456789abcdef0123456789abcdef"
@@ -212,7 +215,7 @@ func TestDebianUpdaterPersonalizesInactiveRootFSAndCommitsSidecarBeforeActivatio
 	if record.EffectivePartitionSHA256 == genericHash || record.HashedBytes != int64(len(genericRootFS)) {
 		t.Fatalf("sidecar effective record = %+v", record)
 	}
-	cat, err := runPersonalizationCommand(DefaultDebugfsPath, "-R", "cat /etc/machine-id", filepath.Join(env.blockDir, "rootfs_b"))
+	cat, err := runPersonalizationCommand(requireE2fsprogs(t, "debugfs"), "-R", "cat /etc/machine-id", filepath.Join(env.blockDir, "rootfs_b"))
 	if err != nil {
 		t.Fatalf("debugfs cat personalized target error = %v stderr=%s", err, cat.Stderr)
 	}
@@ -239,6 +242,8 @@ func TestDebianUpdaterPersonalizesInactiveRootFSAndCommitsSidecarBeforeActivatio
 
 func newGenericExt4RootFS(t *testing.T, machineID string) string {
 	t.Helper()
+	mke2fs := requireE2fsprogs(t, "mke2fs")
+	debugfs := requireE2fsprogs(t, "debugfs")
 	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "rootfs.img")
 	f, err := os.OpenFile(imagePath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
@@ -252,10 +257,10 @@ func newGenericExt4RootFS(t *testing.T, machineID string) string {
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close(image) error = %v", err)
 	}
-	if output, err := runPersonalizationCommand("/usr/sbin/mke2fs", "-q", "-t", "ext4", "-F", imagePath); err != nil {
+	if output, err := runPersonalizationCommand(mke2fs, "-q", "-t", "ext4", "-F", imagePath); err != nil {
 		t.Fatalf("mke2fs error = %v stderr=%s", err, output.Stderr)
 	}
-	if output, err := runPersonalizationCommand(DefaultDebugfsPath, "-w", "-R", "mkdir /etc", imagePath); err != nil {
+	if output, err := runPersonalizationCommand(debugfs, "-w", "-R", "mkdir /etc", imagePath); err != nil {
 		t.Fatalf("debugfs mkdir error = %v stderr=%s", err, output.Stderr)
 	}
 	machineIDSource := filepath.Join(dir, "machine-id")
@@ -263,7 +268,7 @@ func newGenericExt4RootFS(t *testing.T, machineID string) string {
 		t.Fatalf("WriteFile(machine-id) error = %v", err)
 	}
 	command := "write " + machineIDSource + " /etc/machine-id"
-	if output, err := runPersonalizationCommand(DefaultDebugfsPath, "-w", "-R", command, imagePath); err != nil {
+	if output, err := runPersonalizationCommand(debugfs, "-w", "-R", command, imagePath); err != nil {
 		t.Fatalf("debugfs write error = %v stderr=%s", err, output.Stderr)
 	}
 	return imagePath
