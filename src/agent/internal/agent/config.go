@@ -450,27 +450,19 @@ type VoiceModelConfig struct {
 
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
 
-// UsesNativeRealtimeReasoning reports whether the selected realtime model
-// replaces the legacy backend agent. The capability lives on each provider
-// (realtimevoice.NativeReasoningProvider).
+// UsesNativeRealtimeReasoning reports whether the realtime session gets the
+// runtime tools directly without the legacy backend agent, per the
+// voice_settings.realtime.use_backend_agent switch.
 func (c Config) UsesNativeRealtimeReasoning() bool {
-	providerRef := strings.TrimSpace(c.VoiceModel.Provider)
-	provider := strings.ToLower(providerRef)
-	model := strings.TrimSpace(c.VoiceModel.Model)
-	if record, ok := c.VoiceModelProviders[providerRef]; ok {
-		provider = strings.ToLower(strings.TrimSpace(record.Type))
-		if strings.TrimSpace(record.Model) != "" {
-			model = record.Model
-		}
+	// voice_settings.realtime.use_backend_agent is the single decision point.
+	// There is no model- or provider-based auto-detection: unset uses the
+	// legacy backend agent, false forces direct tools (omitting
+	// task/flow-control tools such as create_agent_task), true forces the
+	// legacy backend-agent integration for any model.
+	if c.VoiceModel.UseBackendAgent == nil {
+		return false
 	}
-	if c.VoiceModel.UseBackendAgent != nil {
-		// Explicit realtime-mode switch: false forces direct tools without the
-		// backend agent (task/flow-control tools are omitted), true forces the
-		// legacy backend-agent integration for any model. Unset inherits the
-		// model's native capability below.
-		return !*c.VoiceModel.UseBackendAgent
-	}
-	return realtimevoice.DefaultProviderRegistry().NativeRealtimeReasoning(provider, model)
+	return !*c.VoiceModel.UseBackendAgent
 }
 
 func (c VoiceModelConfig) Validate() error {

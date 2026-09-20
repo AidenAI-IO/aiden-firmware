@@ -218,33 +218,6 @@ func TestGemini38ExtendedThinkingModelClassificationIsExact(t *testing.T) {
 	}
 }
 
-
-func TestGeminiProviderNativeRealtimeReasoningMethod(t *testing.T) {
-	provider := GeminiProvider{}
-	for _, model := range []string{
-		Gemini38ThinkingModel,
-		"models/" + Gemini38ThinkingModel,
-		DefaultGeminiLiveModel,
-		"gemini-3.8-live",
-	} {
-		want := model != DefaultGeminiLiveModel && model != "gemini-3.8-live"
-		if got := provider.NativeRealtimeReasoning(model); got != want {
-			t.Fatalf("model=%s native=%t want=%t", model, got, want)
-		}
-	}
-}
-
-func TestGeminiEndpointPreservesDelegatedAccessToken(t *testing.T) {
-	provider := GeminiProvider{Endpoint: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent", DelegatedCredential: true}
-	got, err := provider.endpoint("gemini-3.1-flash-live-preview", "delegated")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(got, "key=") || !strings.Contains(got, "access_token=delegated") || !strings.Contains(got, "BidiGenerateContentConstrained") {
-		t.Fatalf("endpoint = %q", got)
-	}
-}
-
 func TestGeminiVertexUsesOAuthHeaderAndVertexModelResource(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -48,12 +48,6 @@ func IsGemini38ExtendedThinkingModel(model string) bool {
 	return ok
 }
 
-// NativeRealtimeReasoning reports whether model owns the realtime turn
-// natively.
-func (GeminiProvider) NativeRealtimeReasoning(model string) bool {
-	return IsGemini38ExtendedThinkingModel(model)
-}
-
 // GeminiProvider is the native Google Gemini Live adapter. AuthMode selects
 // the Gemini Developer API (api_key) or Vertex AI (vertex/OAuth) wire path.
 type GeminiProvider struct {
