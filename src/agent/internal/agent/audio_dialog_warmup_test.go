@@ -62,6 +62,7 @@ func TestAudioDialogWarmupFollowsModelReload(t *testing.T) {
 			_ = dialog.vad.Close()
 			dialog.vad, dialog.sttClient = nil, nil
 			dialog.recordBackend = warmupRecordingBackend{}
+			dialog.ttsPlaybackBackend = noopTTSPlaybackBackend{}
 			t.Cleanup(func() { _ = dialog.Close() })
 			record := func() {
 				t.Helper()
