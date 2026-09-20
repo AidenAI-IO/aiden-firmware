@@ -48,16 +48,24 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 }
 
-func TestRuntimeBypassesBackendAgentOnlyForGemini38ExtendedThinking(t *testing.T) {
+func TestRuntimeBypassesBackendAgentInDirectToolkitMode(t *testing.T) {
 	runtime := &Runtime{}
-	extended := Config{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}}
-	if !runtime.shouldBypassBackendAgent(extended) {
-		t.Fatal("Gemini 3.8 Extended Thinking did not bypass the backend agent")
+	direct := false
+	for _, cfg := range []Config{
+		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &direct}},
+		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: &direct}},
+	} {
+		if !runtime.shouldBypassBackendAgent(cfg) {
+			t.Fatalf("direct-toolkit mode did not bypass the backend agent: %+v", cfg.VoiceModel)
+		}
 	}
-	for _, model := range []string{"gemini-3.8-live", "gemini-3.1-flash-live-preview"} {
-		cfg := Config{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: model}}
+	enabled := true
+	for _, cfg := range []Config{
+		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &enabled}},
+	} {
 		if runtime.shouldBypassBackendAgent(cfg) {
-			t.Fatalf("Gemini model %q unexpectedly bypassed the backend agent", model)
+			t.Fatal("backend-agent mode unexpectedly bypassed the backend agent")
 		}
 	}
 	if runtime.shouldBypassBackendAgent(Config{InputMode: "text", VoiceModel: VoiceModelConfig{
@@ -67,7 +75,6 @@ func TestRuntimeBypassesBackendAgentOnlyForGemini38ExtendedThinking(t *testing.T
 		t.Fatal("text mode unexpectedly bypassed the backend agent")
 	}
 }
-
 func TestRuntimeDoesNotRegisterArtifactReadTool(t *testing.T) {
 	toolSet := &ToolSet{tools: map[string]langtools.Tool{}}
 	runtime := NewRuntimeWithDeps(

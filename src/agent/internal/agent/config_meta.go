@@ -454,13 +454,13 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "voice_model",
 				Fields: []FieldMeta{
-					{Key: "use_backend_agent", Label: "Use Backend Agent", Widget: WidgetBoolean,
-						Help:        "Realtime-mode switch. Unset or true: use the legacy backend agent (regular realtime model). False: expose tools directly to the session and omit task/flow-control tools (create_agent_task etc.). No model auto-detection.",
-						Advanced:    true,
-						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
 					{Key: "provider", Label: "Realtime Provider", Widget: WidgetSelect,
 						Enum:        realtimeProviderEnumOptions(),
 						Default:     defaults.VoiceModel.Provider,
+						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+					{Key: "use_backend_agent", Label: "Use Backend Agent", Widget: WidgetBoolean,
+						Help:        "Realtime-mode switch. Unset or true: use the legacy backend agent (regular realtime model). False: expose tools directly to the session and omit task/flow-control tools (create_agent_task etc.). No model auto-detection.",
+						Advanced:    true,
 						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
 				},
 			},
