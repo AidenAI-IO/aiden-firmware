@@ -146,6 +146,21 @@ api_key = "$OPENAI_API_KEY"
 # api_mode = "responses"
 # reasoning_effort = "none"
 
+# Google Gemini always uses the native Interactions API. The OpenAI-compatible
+# /chat/completions path is not used: it cannot replay the thought_signature
+# Gemini 3 requires, so multi-turn tool calls fail there with HTTP 400.
+# "interactions" resubmits the local StepList with store=false;
+# "interactions_stateful" stores the interaction and chains follow-up turns with
+# previous_interaction_id. An unset api_mode selects "interactions".
+# The native endpoint uses x-goog-api-key.
+# [model_settings.providers.gemini-main]
+# type = "gemini"       # native: https://generativelanguage.googleapis.com/v1beta
+# api_key = "$GEMINI_API_KEY"
+# Set [model_settings.model].provider = "gemini-main" to select it.
+# model = "gemini-3.8-flash"
+# api_mode = "interactions"
+# reasoning_effort = "low"  # gemini-3.8-flash: low/medium/high
+
 # Model configuration
 [model_settings.model]
 provider = "openai-main"
@@ -156,6 +171,8 @@ model = "gpt-5.5"
 # "responses_stateful" lets the provider retain and chain context.
 # api_mode = "responses"
 # api_mode = "responses_stateful"
+# Gemini native modes: "interactions" uses local StepList history;
+# "interactions_stateful" chains stored interactions with previous_interaction_id.
 # responses_context_management = "compaction"
 # responses_compact_threshold = 0
 # responses_truncation = "auto"
