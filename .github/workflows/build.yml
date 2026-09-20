@@ -4,8 +4,8 @@ name: Debian Build (reusable)
 #
 # This drives ./debian_build.sh end to end -- applications, system
 # rootfs/BSP, A/B factory images, a locally signed OTA manifest and the final
-# audit -- publishes output/debian/image as workflow artifacts, and (unless
-# disabled) creates the matching GitHub release. It replaced the retired
+# audit -- uploads workflow artifacts. Channel publication belongs to release.yml.
+# It replaced the retired
 # Buildroot image pipeline and the one-off debian-build.yml workflow.
 
 on:
@@ -19,10 +19,14 @@ on:
         description: 'Preflight only: check the runner, secrets and toolchain, then stop before the firmware build'
         type: boolean
         default: false
-      publish_release:
-        description: 'Publish the images as a GitHub release'
-        type: boolean
-        default: true
+      source_ref:
+        description: 'Exact source commit from the channel release plan'
+        type: string
+        default: ''
+      release_plan_artifact:
+        description: 'Optional channel plan artifact; empty builds local firmware artifacts only'
+        type: string
+        default: ''
       free_disk_space:
         description: 'Free up disk space before building (hosted runners only)'
         type: boolean
@@ -38,8 +42,7 @@ on:
         required: false
 
 permissions:
-  # The build publishes its images as a release.
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -116,10 +119,18 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
+        ref: ${{ inputs.source_ref || github.sha }}
         submodules: false
         # Nothing after checkout needs the job token: pico-sdk is a public
         # repository and the build makes no API calls.
         persist-credentials: false
+
+    - name: Download channel release plan
+      if: ${{ inputs.release_plan_artifact != '' }}
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.release_plan_artifact }}
+        path: output/release/
 
     - name: Fetch pico-sdk submodule
       # The repository pico-sdk worktree is the system-stage BSP build tree and is
@@ -281,7 +292,7 @@ jobs:
         cache: false
 
     - name: Prepare agent configuration
-      # The system stage installs an external agent.toml into the OEM image and never
+      # The system stage installs an external agent.toml into the userdata image and never
       # copies one out of the source tree. Validate it here so a bad secret
       # fails in seconds instead of an hour into the image assembly step.
       env:
@@ -414,7 +425,7 @@ jobs:
 
     - name: Run Debian firmware build
       id: firmware
-      if: ${{ !inputs.dry_run }}
+      if: ${{ !inputs.dry_run && inputs.release_plan_artifact == '' }}
       env:
         RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
         # The rootfs container validates this candidate against the mirror's
@@ -426,8 +437,25 @@ jobs:
         OTA_BUILD_TIME: ${{ steps.meta.outputs.build_time }}
       run: ./debian_build.sh
 
+    - name: Build and verify channel firmware
+      if: ${{ !inputs.dry_run && inputs.release_plan_artifact != '' }}
+      env:
+        RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
+        DEBIAN_SYSTEM_APT_CACHE_PROXY: ${{ inputs.apt_cache_proxy || vars.DEBIAN_SYSTEM_APT_CACHE_PROXY }}
+      run: python3 scripts/release/release.py build --plan output/release/plan.json
+
+    - name: Upload channel release assets
+      if: ${{ !inputs.dry_run && inputs.release_plan_artifact != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: channel-release-assets
+        path: output/release/assets/
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+
     - name: Summarize firmware output
-      if: ${{ !inputs.dry_run }}
+      if: ${{ !inputs.dry_run && inputs.release_plan_artifact == '' }}
       shell: bash
       env:
         VERSION: ${{ steps.meta.outputs.version }}
@@ -454,7 +482,7 @@ jobs:
         } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload Debian firmware artifacts
-      if: ${{ !inputs.dry_run }}
+      if: ${{ !inputs.dry_run && inputs.release_plan_artifact == '' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.meta.outputs.artifact_name }}
@@ -467,65 +495,6 @@ jobs:
         if-no-files-found: error
         retention-days: 7
         compression-level: 0
-
-    - name: Publish GitHub release
-      # The main branch produces the stable channel and takes the Latest tag;
-      # every other branch publishes a pre-release so it cannot displace it.
-      #
-      # Gated on the build step rather than on the job so far: the artifact
-      # upload above is a secondary copy of the same files, and a reset
-      # connection to blob storage once threw away a finished 45-minute build
-      # by skipping this step. The job still fails when that upload fails --
-      # the release just goes out first, with create_github_release.sh's own
-      # retries covering the same kind of transient error.
-      if: ${{ !cancelled() && steps.firmware.outcome == 'success' && !inputs.dry_run && inputs.publish_release }}
-      # create_github_release.sh retries, but nothing bounds a single attempt,
-      # so a connection that hangs rather than fails blocks until the job
-      # timeout. One such publish burned three hours of runner time after the
-      # firmware had already been built and uploaded. A healthy publish of this
-      # asset set takes about five minutes.
-      timeout-minutes: 30
-      env:
-        GH_TOKEN: ${{ github.token }}
-        GH_DEBUG: api
-        RELEASE_TAG: ${{ steps.meta.outputs.version }}
-        RELEASE_CHANNEL: ${{ steps.meta.outputs.channel }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        release_assets='boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
-        prerelease_args=()
-        if [ "$RELEASE_CHANNEL" != "debian-stable" ]; then
-          prerelease_args=(--prerelease)
-        fi
-        bash scripts/create_github_release.sh \
-          --release-name "$RELEASE_TAG" \
-          --tag-name "$RELEASE_TAG" \
-          --target-commitish "$GITHUB_SHA" \
-          --asset-glob 'output/debian/image/*' \
-          --required-assets "$release_assets" \
-          --upload-assets "$release_assets update.img.sha256" \
-          --retry-count 10 \
-          --retry-delay-seconds 30 \
-          "${prerelease_args[@]}"
-
-        # create_github_release.sh writes generic notes. Replace them so the
-        # page says which userspace this is and how to get a flashable image
-        # out of the archive.
-        notes="$RUNNER_TEMP/release-notes.md"
-        {
-          printf 'Debian userspace firmware, built by `.github/workflows/build.yml`.\n\n'
-          printf '| Field | Value |\n| --- | --- |\n'
-          printf '| Channel | `%s` |\n' "$RELEASE_CHANNEL"
-          printf '| Commit | `%s` |\n' "$GITHUB_SHA"
-          printf '| update.img SHA-256 | `%s` |\n\n' \
-            "$(awk '{print $1}' output/debian/image/update.img.sha256)"
-          printf 'Flash:\n\n'
-          printf '```\ntar -xzf update.img.tar.gz\n'
-          printf 'sha256sum -c update.img.sha256\n'
-          printf './upgrade_tool/upgrade_tool uf ./update.img\n```\n'
-        } >"$notes"
-        gh release edit "$RELEASE_TAG" --notes-file "$notes"
 
     - name: Upload Debian build reports
       if: ${{ always() && !inputs.dry_run }}

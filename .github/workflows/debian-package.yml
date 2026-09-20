@@ -1,0 +1,44 @@
+name: Debian Business Package (artifacts only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debian-business-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch SDK
+        run: git submodule update --init --depth=1 pico-sdk
+      - name: Check packaging scripts
+        run: |
+          bash scripts/test_debian_package.sh
+          python3 scripts/test_debian_package_release.py
+          python3 scripts/test_debian_package_lifecycle.py
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchains
+            .cache/debian-apps
+          key: business-armhf-${{ runner.os }}-${{ hashFiles('src/agent/go.sum', 'scripts/debian-apps/Dockerfile', 'scripts/debian-apps/*patch') }}
+          restore-keys: business-armhf-${{ runner.os }}-
+      - name: Build business package
+        env:
+          RK_JOBS: '4'
+        run: scripts/debian-package/release.sh build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aiden-business-${{ github.sha }}
+          path: output/debian-package/release/
+          if-no-files-found: error
+          retention-days: 30

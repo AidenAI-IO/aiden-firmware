@@ -11,7 +11,7 @@ maintenance. The board-side public URL is
 ## Debian Integration
 
 The production build downloads the pinned static ttyd 1.7.3 armhf binary,
-verifies its SHA-256 digest, and installs it in the OEM image without adding a
+verifies its SHA-256 digest, and installs it in the business package without adding a
 Node.js runtime. Build it with:
 
 ```bash
