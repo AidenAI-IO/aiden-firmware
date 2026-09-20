@@ -18,7 +18,7 @@ build    Build/audit applications, package them and stage release assets (Linux 
 stage    Package already audited apps from the current clean commit and stage release assets.
 publish  Verify staged assets and publish a business-vVERSION-REVISION GitHub prerelease.
 
-Defaults: scripts/debian-package/version.sh (0.0.1-1).
+Defaults: scripts/debian-package/version.sh (0.0.1-2).
 Overrides: AIDEN_BUSINESS_VERSION, AIDEN_BUSINESS_REVISION,
 DEBIAN_APPS_OUTPUT_DIR, DEBIAN_PACKAGE_OUTPUT_DIR, DEBIAN_PACKAGE_BUILD_IMAGE.
 Build uses the same Go/OpenCV cache variables as debian_build.sh.

@@ -181,7 +181,7 @@ class VersionTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k not in ("AIDEN_BUSINESS_VERSION", "AIDEN_BUSINESS_REVISION")}
         result = subprocess.check_output(["bash", "-c", 'source "$1"; echo "$AIDEN_BUSINESS_VERSION-$AIDEN_BUSINESS_REVISION"',
                                           "bash", str(ROOT / "scripts/debian-package/version.sh")], env=env, text=True)
-        self.assertEqual(result.strip(), "0.0.1-1")
+        self.assertEqual(result.strip(), "0.0.1-2")
 
     def test_unsafe_version_is_rejected(self):
         for version in ("../escape", "1.0.0\nInjected: value", "01.0.0", "1.0.0;echo bad"):

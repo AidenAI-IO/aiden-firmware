@@ -29,6 +29,7 @@ jobs:
         run: |
           bash scripts/test_debian_package.sh
           python3 scripts/test_debian_package_release.py
+          python3 scripts/test_debian_package_lifecycle.py
       - uses: actions/cache@v4
         with:
           path: |

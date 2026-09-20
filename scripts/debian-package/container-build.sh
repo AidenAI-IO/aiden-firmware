@@ -30,13 +30,7 @@ Depends: libc6, systemd
 Description: Aiden business runtime
  Agent, hardware services, configuration web assets, bundled skills and runtime models.
 CTL
-cat >"${PKG_ROOT}/DEBIAN/postinst" <<'POST'
-#!/bin/sh
-set -e
-if [ "$1" = configure ] && command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload || true; fi
-exit 0
-POST
-chmod 0755 "${PKG_ROOT}/DEBIAN/postinst"
+bash "${REPO_ROOT}/scripts/debian-package/write-maintainer-scripts.sh" "${PKG_ROOT}/DEBIAN"
 printf '%s\n' "{\"format\":1,\"product\":\"aiden\",\"artifact_kind\":\"debian-package\",\"package\":\"${PACKAGE_NAME}\",\"business_release\":\"${VERSION}\",\"package_revision\":\"${REVISION}\",\"architecture\":\"armhf\",\"required_platform_contract\":{\"min\":\"1.0.0\",\"max_exclusive\":\"2.0.0\"},\"config_schema\":{\"min_supported\":3,\"target\":4},\"business_epoch\":1}" >"${PKG_ROOT}/usr/share/doc/${PACKAGE_NAME}/release-manifest.json"
 find "${PKG_ROOT}" -type d -exec chmod 0755 {} +
 find "${PKG_ROOT}" -type f ! -path '*/DEBIAN/*' -exec chmod 0644 {} +

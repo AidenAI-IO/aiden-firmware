@@ -51,6 +51,7 @@ jobs:
           bash scripts/test_reusable_rootfs_release_asset.sh
           bash scripts/test_debian_package.sh
           python3 scripts/test_debian_package_release.py
+          python3 scripts/test_debian_package_lifecycle.py
       - name: Verify normalized UI coordinates
         run: |
           python3 scripts/check_normalized_coords.py

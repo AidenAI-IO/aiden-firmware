@@ -462,7 +462,7 @@ mock_output=${TEST_ROOT}/mock-output
 mock_log=${TEST_ROOT}/docker-args
 mock_apps=${TEST_ROOT}/mock-apps
 mkdir -p "${mock_output}" "${mock_apps}/rootfs-cli-tools" "${mock_apps}/apps" "${mock_apps}/apps-audit"
-printf '%s' mock-deb >"${mock_output}/aiden-business_0.0.1-1_armhf.deb"
+printf '%s' mock-deb >"${mock_output}/aiden-business_0.0.1-2_armhf.deb"
 printf 'status=pass\n' >"${mock_apps}/apps-audit/summary.txt"
 printf '%064d  fq\n' 0 >"${mock_apps}/rootfs-cli-tools/manifest.sha256"
 printf 'fq v0.17.0 linux/arm/v7 preserve\n' \

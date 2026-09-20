@@ -79,7 +79,7 @@ rootfs 阶段每次重新打包当前 apps，避免复用带旧路径的缓存�
 ## 版本管理
 
 `scripts/debian-package/version.sh` 是业务版本默认值的唯一来源：业务版本 `0.0.1`、
-Debian revision `1`，完整包版本为 `0.0.1-1`。正式发包先修改该文件并提交：业务内容变化
+Debian revision `2`，完整包版本为 `0.0.1-2`。正式发包先修改该文件并提交：业务内容变化
 递增业务版本，只有打包变化时递增 revision。命令行可用 `AIDEN_BUSINESS_VERSION` 和
 `AIDEN_BUSINESS_REVISION` 覆盖；GitHub Actions 使用提交中的默认值。
 
@@ -105,7 +105,7 @@ Go/OpenCV 缓存环境变量与 `debian_build.sh` 相同。
 产物目录 `output/debian-package/release/` 包含：
 
 ```text
-aiden-business_0.0.1-1_armhf.deb
+aiden-business_0.0.1-2_armhf.deb
 release-manifest.json
 build-metadata.json
 RELEASE-NOTES.md
@@ -119,7 +119,7 @@ GH_REPO=AidenAI-IO/aiden-firmware scripts/debian-package/release.sh publish
 ```
 
 发布脚本验证包版本、内嵌 manifest 和所有附件哈希，创建或核对指向构建提交的
-`business-v0.0.1-1` 标签，再创建草稿，上传后重新下载验证，最后发布为 prerelease，
+`business-v0.0.1-2` 标签，再创建草稿，上传后重新下载验证，最后发布为 prerelease，
 明确设置 `latest=false`。已发布标签不可覆盖；失败留下的同提交标签和草稿可重试。
 将业务包标成 prerelease 是为了让现有
 固件 OTA 的 `/releases/latest` 查询继续只选整包固件。
@@ -135,23 +135,42 @@ Packages/Release/InRelease 元数据，设备通过 `signed-by` 指定仓库公�
 
 ## 在当前设备安装
 
-仅在新布局且契约兼容的设备上安装。先核对 `contract.json` 和包内 manifest；
-现有 `postinst` 只执行 daemon-reload，不负责自动停服、契约拦截、配置迁移或失败回滚。
-保留上一版本 `.deb` 和用户配置备份；安装失败时先恢复旧包，再恢复服务。
+仅在新布局且契约兼容的设备上安装。先核对 `contract.json` 和包内 manifest，
+保留上一版本 `.deb` 和用户配置备份。
 
 ```bash
 cd /path/to/downloaded-release
 sha256sum -c SHA256SUMS
 cat /usr/lib/aiden/platform/contract.json
-sudo systemctl stop aiden-config-web aiden-agent aiden-wifi-proxy aiden-ble aiden-frame aiden-audio aiden-ttyd
-sudo apt install ./aiden-business_0.0.1-1_armhf.deb
-sudo systemctl start aiden-wifi-proxy aiden-frame aiden-audio aiden-ble aiden-agent aiden-config-web aiden-ttyd
+sudo apt install ./aiden-business_0.0.1-2_armhf.deb
 sudo /usr/lib/aiden/ota --config /userdata/debian/ota/config.json self-check
 dpkg-query -W aiden-business
 ```
 
-从此前测试包 `5.2.1-2` 重新编号到 `0.0.1-1` 属于一次明确降级；自动安装时额外使用
-`apt install -y --allow-downgrades ./aiden-business_0.0.1-1_armhf.deb`。
+从 revision 2 开始，`preinst/prerm/postinst/postrm` 维护脚本随 apt/dpkg 自动停启业务。
+升级和重装时记录正在运行的服务，先停止 proxy 重启监听器及其任务，再停止 Agent、
+Config Web、Wi-Fi proxy、frame、audio、BLE 和 ttyd。解包和配置成功后执行 daemon-reload，
+恢复原先运行的服务，最后恢复监听器。启用状态不变；原先停止的服务不会主动启动，
+原先手动启动但未 enable 的服务也会恢复。systemd 的正常依赖关系仍然适用。
+
+首次从旧包升级也会由新包 preinst 接管停服。同版本演练用：
+
+```bash
+sudo apt install --reinstall ./aiden-business_0.0.1-2_armhf.deb
+```
+
+制作 rootfs 时的 chroot、`SYSTEMD_OFFLINE=1`、非空 `DPKG_ROOT` 和无 systemd 环境
+跳过服务操作，并遵守 `policy-rc.d`。首次安装时没有运行的业务不会自动启动，镜像首次
+开机仍由基座的 systemd units 启动。移除包会停服，保留基座 units 和用户数据。
+
+服务快照保存在 `/var/lib/aiden-business/service-transition/`。dpkg 的 abort 回调会尝试
+恢复先前服务；恢复失败时保留快照且维护脚本返回失败，可修复原因后执行
+`sudo dpkg --configure -a` 重试。不要在修复前删除快照。
+维护脚本不自动回退包文件、迁移配置或运行硬件健康自检；安装成功后仍应运行上面的
+self-check，失败时根据备份恢复旧包。契约验证目前仍由安装者负责。
+
+从此前测试包 `5.2.1-2` 重新编号到 `0.0.1-2` 属于一次明确降级；自动安装时额外使用
+`apt install -y --allow-downgrades ./aiden-business_0.0.1-2_armhf.deb`。
 业务包只修改当前活动 rootfs，B 槽不会同步升级，也不更新固件 OTA 的出厂版本记录。
 `/etc/default/locale` 的 `LANG=C.UTF-8` 和平台契约文件属于基座，随下一次完整镜像提供；
 现有测试板可单独部署这两个声明文件。
