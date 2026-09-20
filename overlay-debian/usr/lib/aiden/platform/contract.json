@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "product": "aiden",
+  "platform_id": "luckfox-rv1106",
+  "platform_contract": "1.0.0",
+  "architecture": "armhf",
+  "os_release": "debian-13",
+  "libc": "glibc"
+}

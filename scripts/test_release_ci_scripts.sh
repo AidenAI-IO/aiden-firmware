@@ -46,7 +46,7 @@ fi
 # The Debian firmware ships as compressed partition images plus the signed
 # manifest. Define the allowlist once and reuse it for both the required-assets
 # gate and the upload set, and add the update.img checksum only to the upload.
-release_assets='boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
+release_assets='boot_a.img.tar.gz boot_b.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
 if ! grep -Fq "release_assets='${release_assets}'" "$WORKFLOW"; then
     echo "build workflow must define the Debian release asset allowlist" >&2
     exit 1

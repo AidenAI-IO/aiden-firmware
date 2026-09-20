@@ -15,13 +15,13 @@ export RK_KERNEL_DTS=rv1106g-luckfox-pico-zero.dts
 export RK_BOOT_MEDIUM=emmc
 export RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"
 
-# Production layout: never change this in a Debian migration maintenance
-# release without a separate data backup and factory recovery design.
-export RK_PARTITION_CMD_IN_ENV="32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)"
-export RK_PARTITION_FS_TYPE_CFG=rootfs_a@IGNORE@ext4,rootfs_b@IGNORE@ext4,userdata@/userdata@ext4,oem_a@IGNORE@ext4,oem_b@IGNORE@ext4,ota@/userdata/ota@ext4
+# Fresh-flash layout. Devices using an older partition table must be reflashed;
+# OTA only updates boot/rootfs within this layout.
+export RK_PARTITION_CMD_IN_ENV="32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)"
+export RK_PARTITION_FS_TYPE_CFG=rootfs_a@IGNORE@ext4,rootfs_b@IGNORE@ext4,userdata@/userdata@ext4,ota@/userdata/ota@ext4
 
 # The SDK builds only U-Boot, the kernel, DTBs and modules. Debian rootfs and
-# glibc OEM images are imported later by scripts/debian-system/build.sh.
+# platform files are assembled later by scripts/debian-system/build.sh.
 export LF_TARGET_ROOTFS=debian
 export RK_ARCH=arm
 export RK_TOOLCHAIN_CROSS=arm-rockchip830-linux-uclibcgnueabihf
@@ -32,7 +32,6 @@ export RK_KERNEL_DEFCONFIG=luckfox_rv1106_linux_defconfig
 export RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config aiden-rk628.config debian-system.config"
 
 export RK_CAMERA_SENSOR_IQFILES="mia1321_MIA1321_30IRC-F16.json imx415_CMK-OT2022-PX1_IR0147-36IRC-8M-F20.json"
-export RK_BUILD_APP_TO_OEM_PARTITION=y
 export RK_ENABLE_ADBD=n
 export RK_ENABLE_WIFI=y
 export RK_ENABLE_WIFI_CHIP=AIC8800DC

@@ -46,7 +46,6 @@ output/debian/image/
 ├── boot_a.img.tar.gz
 ├── boot_b.img.tar.gz
 ├── manifest.json
-├── oem.img.tar.gz
 ├── rootfs.img.tar.gz
 └── update.img.tar.gz
 ```
@@ -71,7 +70,6 @@ gh release create "$TAG" \
   --title "Custom Firmware $TAG" \
   output/debian/image/boot_a.img.tar.gz \
   output/debian/image/boot_b.img.tar.gz \
-  output/debian/image/oem.img.tar.gz \
   output/debian/image/rootfs.img.tar.gz \
   output/debian/image/update.img.tar.gz \
   output/debian/image/manifest.json
@@ -136,7 +134,7 @@ factory baseline is required for downgrade and inactive-slot verification.
 ## Manifest Rules
 
 The generated manifest is signed canonical JSON. Each `parts` entry names
-`boot`, `oem`, or `rootfs` and contains either a slot-neutral `asset` or
+`boot` or `rootfs` and contains either a slot-neutral `asset` or
 slot-specific `asset_a` and `asset_b` values.
 
 Published assets are `.img.tar.gz` files. For each asset:

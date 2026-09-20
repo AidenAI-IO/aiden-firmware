@@ -19,7 +19,6 @@ mkdir -p "$assets_dir" "$fake_bin" "$state_dir"
 
 printf 'boot a\n' > "$assets_dir/boot_a.img"
 printf 'boot b\n' > "$assets_dir/boot_b.img"
-printf 'oem\n' > "$assets_dir/oem.img"
 printf 'same rootfs payload\n' > "$assets_dir/rootfs.img"
 printf 'update\n' > "$assets_dir/update.img"
 
@@ -174,7 +173,7 @@ jq -n \
 jq -n \
   --arg sha "$current_rootfs_sha" \
   --arg url "$previous_manifest_url" \
-  '{schema_version:1,parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
+  '{schema_version:2,parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
   > "$state_dir/previous_manifest.json"
 
 outputs_file="$tmp_dir/reuse.outputs"
@@ -184,7 +183,7 @@ PATH="$fake_bin:$PATH" \
   GITHUB_REPOSITORY="owner/repo" \
   "$resolver_script" \
     --image-dir "$assets_dir" \
-    --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+    --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
 
 if [ "$(output_value rootfs_reused "$outputs_file")" != "true" ]; then
@@ -199,7 +198,7 @@ if [ "$rootfs_asset_url" != "$previous_manifest_url" ]; then
 fi
 
 upload_assets="$(output_value upload_assets "$outputs_file")"
-if [ "$upload_assets" != "boot_a.img boot_b.img oem.img update.img manifest.json" ]; then
+if [ "$upload_assets" != "boot_a.img boot_b.img update.img manifest.json" ]; then
   echo "rootfs asset resolver must remove rootfs.img from the upload list, got: $upload_assets" >&2
   exit 1
 fi
@@ -241,7 +240,7 @@ PATH="$fake_bin:$PATH" \
     --release-name "Test Release" \
     --target-commitish "$(git -C "$repo_root" rev-parse HEAD)" \
     --asset-glob "$assets_dir/*" \
-    --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+    --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
     --upload-assets "$upload_assets" \
     --retry-count 1 \
     --retry-delay-seconds 0 \
@@ -275,7 +274,7 @@ jq -n \
   --arg image_sha "$current_rootfs_sha" \
   --arg url "$previous_compressed_url" \
   --argjson size "$previous_compressed_size" \
-  '{schema_version:1,parts:[{name:"rootfs",asset:{name:"rootfs.img.tar.gz",size:$size,sha256:$archive_sha,image_sha256:$image_sha,url:$url}}]}' \
+  '{schema_version:2,parts:[{name:"rootfs",asset:{name:"rootfs.img.tar.gz",size:$size,sha256:$archive_sha,image_sha256:$image_sha,url:$url}}]}' \
   > "$state_dir/previous_manifest.json"
 
 PATH="$fake_bin:$PATH" \
@@ -284,7 +283,7 @@ PATH="$fake_bin:$PATH" \
   GITHUB_REPOSITORY="owner/repo" \
   "$resolver_script" \
     --image-dir "$assets_dir" \
-    --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+    --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
 
 if [ "$(output_value rootfs_reused "$outputs_file")" != "true" ]; then
@@ -304,7 +303,7 @@ if [ "$(printf '%s' "$compressed_metadata" | jq -r '.name')" != "rootfs.img.tar.
 fi
 
 compressed_upload_assets="$(output_value upload_assets "$outputs_file")"
-if [ "$compressed_upload_assets" != "boot_a.img boot_b.img oem.img update.img manifest.json" ]; then
+if [ "$compressed_upload_assets" != "boot_a.img boot_b.img update.img manifest.json" ]; then
   echo "rootfs asset resolver must remove rootfs.img from the upload list when reusing a compressed asset, got: $compressed_upload_assets" >&2
   exit 1
 fi
@@ -340,7 +339,7 @@ jq -n \
   --arg archive_sha "$previous_compressed_sha" \
   --arg url "$previous_compressed_url" \
   --argjson size "$previous_compressed_size" \
-  '{schema_version:1,parts:[{name:"rootfs",asset:{name:"rootfs.img.tar.gz",size:$size,sha256:$archive_sha,image_sha256:"2222222222222222222222222222222222222222222222222222222222222222",url:$url}}]}' \
+  '{schema_version:2,parts:[{name:"rootfs",asset:{name:"rootfs.img.tar.gz",size:$size,sha256:$archive_sha,image_sha256:"2222222222222222222222222222222222222222222222222222222222222222",url:$url}}]}' \
   > "$state_dir/previous_manifest.json"
 
 PATH="$fake_bin:$PATH" \
@@ -349,7 +348,7 @@ PATH="$fake_bin:$PATH" \
   GITHUB_REPOSITORY="owner/repo" \
   "$resolver_script" \
     --image-dir "$assets_dir" \
-    --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+    --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
 
 if [ "$(output_value rootfs_reused "$outputs_file")" != "false" ]; then
@@ -360,7 +359,7 @@ fi
 rm -f "$outputs_file" "$state_dir/events"
 jq -n \
   --arg url "$previous_manifest_url" \
-  '{schema_version:1,parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:"0000000000000000000000000000000000000000000000000000000000000000",url:$url}}]}' \
+  '{schema_version:2,parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:"0000000000000000000000000000000000000000000000000000000000000000",url:$url}}]}' \
   > "$state_dir/previous_manifest.json"
 
 PATH="$fake_bin:$PATH" \
@@ -369,7 +368,7 @@ PATH="$fake_bin:$PATH" \
   GITHUB_REPOSITORY="owner/repo" \
   "$resolver_script" \
     --image-dir "$assets_dir" \
-    --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+    --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
 
 if [ "$(output_value rootfs_reused "$outputs_file")" != "false" ]; then
@@ -382,7 +381,7 @@ if [ "$(output_value rootfs_asset_url "$outputs_file")" != "" ]; then
   exit 1
 fi
 
-if [ "$(output_value upload_assets "$outputs_file")" != "boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json" ]; then
+if [ "$(output_value upload_assets "$outputs_file")" != "boot_a.img boot_b.img rootfs.img update.img manifest.json" ]; then
   echo "rootfs asset resolver must keep rootfs.img in the upload list when sha256 differs" >&2
   exit 1
 fi
@@ -404,13 +403,13 @@ jq -n \
 jq -n \
   --arg sha "$current_rootfs_sha" \
   --arg url "$dev_rootfs_url" \
-  '{schema_version:1,channel:"dev-feature",parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
+  '{schema_version:2,channel:"dev-feature",parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
   > "$state_dir/previous_manifest_dev.json"
 
 jq -n \
   --arg sha "$current_rootfs_sha" \
   --arg url "$stable_rootfs_url" \
-  '{schema_version:1,channel:"stable",parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
+  '{schema_version:2,channel:"stable",parts:[{name:"rootfs",asset:{name:"rootfs.img",size:20,sha256:$sha,url:$url}}]}' \
   > "$state_dir/previous_manifest_stable.json"
 
 PATH="$fake_bin:$PATH" \
@@ -420,7 +419,7 @@ PATH="$fake_bin:$PATH" \
   "$resolver_script" \
     --image-dir "$assets_dir" \
     --channel stable \
-    --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+    --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
     --output "$outputs_file"
 
 if [ "$(output_value rootfs_reused "$outputs_file")" != "true" ]; then
