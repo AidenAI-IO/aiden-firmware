@@ -119,6 +119,8 @@ class TaskSpec:
     expected_recalled_memory_tool: str = "recall_memory"
     expected_recall_from_consolidation: bool = False
     app_ids: list[str] = dc.field(default_factory=list)
+    foreground_app_id: str | None = None
+    environment_assertions: dict[str, Any] = dc.field(default_factory=dict)
     consolidation_expectation: ConsolidationExpectation | None = None
 
 @dc.dataclass
@@ -267,6 +269,16 @@ def load_suite(path: Path) -> Suite:
         ):
             raise SuiteValidationError(f"task {tid}: app_ids must be a list of non-empty strings")
         app_ids = list(dict.fromkeys(item.strip() for item in raw_app_ids))
+        foreground_app_id = raw.get("foreground_app_id")
+        if foreground_app_id is not None and (
+            not isinstance(foreground_app_id, str)
+            or not foreground_app_id.strip()
+            or foreground_app_id != foreground_app_id.strip()
+        ):
+            raise SuiteValidationError(f"task {tid}: foreground_app_id must be a non-empty app ID")
+        environment_assertions = _parse_environment_assertions(
+            raw.get("environment_assertions"), tid
+        )
         platforms = _platform_list(raw.get("platforms", []), tid)
         task_mock_environment = _parse_mock_environment(
             raw.get("mock_environment"),
@@ -347,6 +359,8 @@ def load_suite(path: Path) -> Suite:
             expected_recalled_memory_tool=expected_recalled_memory_tool,
             expected_recall_from_consolidation=expected_recall_from_consolidation,
             app_ids=app_ids,
+            foreground_app_id=foreground_app_id,
+            environment_assertions=environment_assertions,
             consolidation_expectation=consolidation_expectation,
         ))
     prompt_prefix = data.get("prompt_prefix", "")
@@ -511,6 +525,74 @@ def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+RANGE_ASSERTION_KEYS = frozenset({"min", "max"})
+
+
+def is_range_assertion(value: Any) -> bool:
+    """True when ``value`` is a numeric-range spec.
+
+    A range spec is a non-empty object whose keys are a subset of ``{"min", "max"}``,
+    evaluated as an inclusive numeric band (``min <= actual <= max``). Any other
+    value keeps the exact-equality semantics.
+    """
+    return (
+        isinstance(value, dict)
+        and bool(value)
+        and set(value.keys()) <= RANGE_ASSERTION_KEYS
+    )
+
+
+def _validate_range_assertion(task_id: str, path: str, spec: dict[str, Any]) -> None:
+    for key in RANGE_ASSERTION_KEYS:
+        if key not in spec:
+            continue
+        value = spec[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise SuiteValidationError(
+                f"task {task_id}: environment_assertions[{path!r}].{key} must be a number"
+            )
+    lo = spec.get("min")
+    hi = spec.get("max")
+    if lo is not None and hi is not None and lo > hi:
+        raise SuiteValidationError(
+            f"task {task_id}: environment_assertions[{path!r}] min must be <= max"
+        )
+
+
+def _parse_environment_assertions(raw: Any, task_id: str) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise SuiteValidationError(
+            f"task {task_id}: environment_assertions must be a non-empty object"
+        )
+    assertions: dict[str, Any] = {}
+    for path, expected in raw.items():
+        if not isinstance(path, str) or not path.strip():
+            raise SuiteValidationError(
+                f"task {task_id}: environment_assertions paths must be non-empty strings"
+            )
+        normalized = path.strip()
+        if normalized in assertions:
+            raise SuiteValidationError(
+                f"task {task_id}: duplicate environment_assertions path {normalized!r}"
+            )
+        if any(not part for part in normalized.split(".")):
+            raise SuiteValidationError(
+                f"task {task_id}: invalid environment_assertions path {path!r}"
+            )
+        try:
+            json.dumps(expected, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise SuiteValidationError(
+                f"task {task_id}: environment_assertions[{normalized!r}] must be JSON-serializable"
+            ) from exc
+        if is_range_assertion(expected):
+            _validate_range_assertion(task_id, normalized, expected)
+        assertions[normalized] = expected
+    return assertions
 
 
 def _parse_consolidation_expectation(

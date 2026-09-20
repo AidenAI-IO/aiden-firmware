@@ -11,6 +11,8 @@ def test_environment_endpoint_builds_all_urls_from_one_base_url():
     assert endpoint.setup == "http://127.0.0.1:19090/bridge/api/setup"
     assert endpoint.release == "http://127.0.0.1:19090/bridge/api/release"
     assert endpoint.screen == "http://127.0.0.1:19090/bridge/api/providers/screenshot"
+    assert endpoint.state == "http://127.0.0.1:19090/bridge/state"
+    assert endpoint.route == "http://127.0.0.1:19090/bridge/route"
     assert endpoint.concurrent == "http://127.0.0.1:19090/bridge/api/concurrent"
 
 
