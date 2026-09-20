@@ -61,6 +61,10 @@ func TestUpdateConfigFileRepairsInvalidInputMode(t *testing.T) {
 	source := `[voice_settings.mode]
 input_mode = "realtime"
 
+[voice_settings.providers.voice_model]
+provider = "gemini"
+api_key = "key"
+
 [model_settings.model]
 provider = "fake"
 `
@@ -68,18 +72,18 @@ provider = "fake"
 		t.Fatal(err)
 	}
 
-	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"input_mode":"text"}}}`))
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"input_mode":"stt"},"stt":{"provider":"openai-whisper"},"tts":{"provider":"minimax-cn"},"stt_providers":{"openai-whisper":{"type":"openai-whisper","api_key":"key"}},"tts_providers":{"minimax-cn":{"type":"minimax-cn","api_key":"key"}}}}`))
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if !result.OK || strings.Join(result.ChangedPaths, ",") != "voice_settings.mode.input_mode" {
+	if !result.OK || !strings.Contains(strings.Join(result.ChangedPaths, ","), "voice_settings.mode.input_mode") {
 		t.Fatalf("result = %+v", result)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), `input_mode = "text"`) {
+	if !strings.Contains(string(got), `input_mode = "stt"`) {
 		t.Fatalf("input_mode was not repaired:\n%s", got)
 	}
 }
