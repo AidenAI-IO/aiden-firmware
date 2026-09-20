@@ -5,7 +5,7 @@ import re
 from typing import Any
 from runner.models import HardAssertionFailure, HardAssertionResults, Trace
 from runner.matching import dict_contains
-from runner.suite import HardAssertions, TraceObservationSpec
+from runner.suite import HardAssertions, TraceObservationSpec, is_range_assertion
 from runner.trace import trace_has_skill_read
 
 
@@ -51,6 +51,58 @@ class TraceObservationResult:
     description: str
     passed: bool
     reason: str
+
+
+@dc.dataclass
+class EnvironmentStateAssertionResult:
+    path: str
+    expected: Any
+    actual: Any
+    passed: bool
+
+
+_MISSING_STATE_PATH = object()
+
+
+def _range_assertion_matches(actual: Any, spec: dict[str, Any]) -> bool:
+    if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+        return False
+    lo = spec.get("min")
+    hi = spec.get("max")
+    if lo is not None and actual < lo:
+        return False
+    if hi is not None and actual > hi:
+        return False
+    return True
+
+
+def evaluate_environment_state_assertions(
+    state: dict[str, Any],
+    assertions: dict[str, Any],
+) -> list[EnvironmentStateAssertionResult]:
+    results: list[EnvironmentStateAssertionResult] = []
+    for path, expected in assertions.items():
+        actual: Any = state
+        for part in path.split("."):
+            if not isinstance(actual, dict) or part not in actual:
+                actual = _MISSING_STATE_PATH
+                break
+            actual = actual[part]
+        if actual is _MISSING_STATE_PATH:
+            passed = False
+        elif is_range_assertion(expected):
+            passed = _range_assertion_matches(actual, expected)
+        else:
+            passed = actual == expected
+        results.append(
+            EnvironmentStateAssertionResult(
+                path=path,
+                expected=expected,
+                actual="<missing>" if actual is _MISSING_STATE_PATH else actual,
+                passed=passed,
+            )
+        )
+    return results
 
 
 def evaluate_trace_observations(
