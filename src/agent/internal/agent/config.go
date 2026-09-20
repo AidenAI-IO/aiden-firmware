@@ -310,7 +310,7 @@ type Config struct {
 	Timezone                   string                        `toml:"timezone,omitempty"`
 	Instruction                string                        `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                        `toml:"additional_prompt,omitempty"`
-	InputMode                  string                        `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
+	InputMode                  string                        `toml:"input_mode,omitempty"`  // "stt" or "realtime"
 	VADBackend                 string                        `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                        `toml:"vad_model_path,omitempty"`
 	VADHelperPath              string                        `toml:"vad_helper_path,omitempty"`
@@ -1840,7 +1840,6 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.InputMode) != "" {
 		mode := strings.ToLower(strings.TrimSpace(c.InputMode))
 		switch mode {
-		case "text":
 		case "stt":
 			if strings.TrimSpace(c.STT.Provider) == "" {
 				return errors.New("stt.provider is required when input_mode=stt")
@@ -1849,10 +1848,10 @@ func (c Config) Validate() error {
 			if !c.VoiceModel.Enabled() {
 				return errors.New("voice_model.api_key is required when input_mode=realtime")
 			}
-		case "audio":
-			return fmt.Errorf("invalid input_mode: %s (audio mode has been removed; use stt instead)", c.InputMode)
+		case "text", "audio":
+			return fmt.Errorf("invalid input_mode: %s (text and audio modes have been removed; use stt or realtime)", c.InputMode)
 		default:
-			return fmt.Errorf("invalid input_mode: %s (expected text, stt, or realtime)", c.InputMode)
+			return fmt.Errorf("invalid input_mode: %s (expected stt or realtime)", c.InputMode)
 		}
 
 		// Validate TTS/STT config only for the legacy STT audio path.
@@ -2191,13 +2190,25 @@ func (t TelemetryConfig) EnvironmentOrDefault() string {
 	return "default"
 }
 
-// InputModeOrDefault returns the input mode or "text" as default
+// InputModeOrDefault returns the effective input mode. An unset mode is
+// inferred from the configured providers rather than defaulting to a fixed
+// value: speech providers are opt-in (see
+// applyRuntimeOptionalProviderDefaults), so a device that never configured
+// voice has no mode to fall back to. Returns "stt" when the classic pair is
+// configured, "realtime" when a realtime credential is present, and "" when
+// voice is unavailable and only the Web UI can reach the agent.
 func (c Config) InputModeOrDefault() string {
 	mode := strings.TrimSpace(c.InputMode)
-	if mode == "" {
-		return defaultInputMode
+	if mode != "" {
+		return strings.ToLower(mode)
 	}
-	return strings.ToLower(mode)
+	if strings.TrimSpace(c.STT.Provider) != "" && strings.TrimSpace(c.TTS.Provider) != "" {
+		return "stt"
+	}
+	if c.VoiceModel.Enabled() {
+		return "realtime"
+	}
+	return ""
 }
 
 func (c Config) VADBackendOrDefault() string {

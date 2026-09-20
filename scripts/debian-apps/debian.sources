@@ -1,13 +1,11 @@
 Types: deb
-URIs: http://snapshot.debian.org/archive/debian/20260803T000000Z
+URIs: http://mirrors.ustc.edu.cn/debian
 Suites: trixie trixie-updates
 Components: main
 Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp
-Check-Valid-Until: no
 
 Types: deb
-URIs: http://snapshot.debian.org/archive/debian-security/20260803T000000Z
+URIs: http://mirrors.ustc.edu.cn/debian-security
 Suites: trixie-security
 Components: main
 Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp
-Check-Valid-Until: no

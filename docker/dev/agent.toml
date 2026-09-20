@@ -12,8 +12,9 @@ responses = ["Aiden Docker sandbox is running. Configure an LLM provider in Conf
 [conversation_settings.search]
 provider = "duckduckgo"
 
-[voice_settings.mode]
-input_mode = "text"
+# input_mode is intentionally unset: this sandbox configures no STT/TTS
+# provider, and stt/realtime both require their own. An unset mode is valid
+# and means the agent is reachable through the Web UI and HTTP API only.
 
 [advanced_settings.runtime.telemetry]
 enabled = false
