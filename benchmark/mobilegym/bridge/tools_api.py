@@ -867,6 +867,8 @@ def _resolve_swipe(
             raise ValueError(
                 f"speed is too low for this swipe; calculated duration_ms={duration_ms} exceeds {MAX_SWIPE_DURATION_MS}"
             )
+    if tool_input.get("profile") == "decelerate" and duration_value is None and tool_input.get("speed") is None:
+        duration_ms = 600
     return start, end, duration_ms
 
 
@@ -958,7 +960,7 @@ def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str
         "touch_gesture": {
             "type", "point", "start", "end", "x", "y", "start_x", "start_y",
             "end_x", "end_y", "direction", "speed", "duration_ms", "hold_before_ms", "hold_after_ms",
-            "hold_ms", "pause_ms", "steps", "button",
+            "hold_ms", "pause_ms", "steps", "button", "profile",
         },
         "mouse_move": {"x", "y"},
         "quick_action": {"action", "list", "alternative", "alternative_index"},
@@ -966,8 +968,15 @@ def _unknown_tool_fields(tool_name: str, tool_input: dict[str, Any]) -> list[str
     return [] if allowed is None else sorted(set(tool_input) - allowed)
 
 
-def _swipe_timing_options(tool_input: dict[str, Any]) -> dict[str, int]:
-    options: dict[str, int] = {}
+def _swipe_timing_options(tool_input: dict[str, Any]) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    profile = tool_input.get("profile", "linear")
+    if profile not in ("linear", "decelerate"):
+        raise ValueError("profile must be linear or decelerate")
+    if profile == "decelerate" and tool_input.get("type") != "swipe":
+        raise ValueError("profile decelerate requires type swipe")
+    if "profile" in tool_input:
+        options["profile"] = profile
     for name in ("hold_before_ms", "hold_after_ms"):
         value = tool_input.get(name)
         if value is None:

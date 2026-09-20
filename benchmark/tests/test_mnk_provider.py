@@ -152,3 +152,21 @@ def test_execute_mnk_request_stops_on_tool_error():
     assert status == 500
     assert response == {"error": "device unavailable"}
     assert calls == [("mouse_move", {"x": 250.0, "y": 750.0})]
+
+
+def test_decelerating_profile_requires_backend_support():
+    payload = {"operation": "swipe", "swipe": {"path": [[500, 880], [500, 180]], "profile": "decelerate"}}
+    status, body = execute_mnk_request(payload, lambda *_: pytest.fail("unsupported profile must not execute"))
+    assert status == 400
+    assert "does not support" in body["error"]
+    calls = []
+    status, _ = execute_mnk_request(payload, lambda name, args: calls.append((name, args)) or {}, supports_decelerating_swipe=True)
+    assert status == 200
+    assert calls[0][1]["profile"] == "decelerate"
+
+
+@pytest.mark.parametrize("profile", [None, "ease", 1, {}, []])
+def test_invalid_swipe_profile_is_rejected(profile):
+    payload = {"operation": "swipe", "swipe": {"path": [[500, 880], [500, 180]], "profile": profile}}
+    status, _ = execute_mnk_request(payload, lambda *_: pytest.fail("invalid profile must not execute"))
+    assert status == 400

@@ -207,6 +207,12 @@ func (p *ADBProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, 
 // input primitive has no interpolation-step control; Steps is accepted for
 // protocol compatibility and is used by the HID provider.
 func (p *ADBProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
+	if err := validateSwipeProfile(options.Profile); err != nil {
+		return err
+	}
+	if options.Profile == SwipeProfileDecelerate {
+		return ModuleUnavailable("ADB input swipe does not support profile decelerate; use HID or MobileGym, or explicitly choose linear")
+	}
 	if err := p.rejectActiveDrag("swipe"); err != nil {
 		return err
 	}

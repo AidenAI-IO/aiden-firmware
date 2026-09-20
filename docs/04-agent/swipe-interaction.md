@@ -19,6 +19,50 @@ JPEG noise, animation frames, and repeated content make exact pixel displacement
 
 ## Tools
 
+
+### Controlled list scrolling
+
+Use `profile:"decelerate"` with explicit start/end coordinates near the opposite
+inner edges of the visible scrollable region. Derive those edges from the latest
+screenshot, excluding fixed headers, bottom navigation and OS gesture borders.
+Keep some overlap, and shorten the distance near the target. Coordinates below
+are illustrative, not universal screen edges:
+
+```json
+{"type":"swipe","start":{"x":500,"y":880},"end":{"x":500,"y":180},"profile":"decelerate"}
+```
+
+The profile defaults to **600ms** only when both `speed` and `duration_ms` are
+omitted. An explicit duration still overrides speed; speed means average path
+speed. Existing direction/duration geometry is unchanged. Omitted profile (or
+`linear`) retains the old default speed and constant-speed behavior.
+
+For normalized time `t`, path progress is `5t/3` until `t=0.4`, then
+`1 - ((1-t)/0.6)^3/3`. Velocity is continuous at the join, and velocity and
+acceleration approach zero at the endpoint. The HID provider samples the whole
+path by arc length at intervals no greater than 16ms when scheduling permits,
+with at least the requested number of steps. Missed deadlines are skipped.
+Release follows the final sample immediately: no endpoint dwell is added, and
+no pressure/contact-area fields are synthesized. Coordinate quantization can
+produce repeated final coordinates. Cancellation releases at the last
+successfully emitted coordinate.
+
+The quantity relevant to inertial scrolling is **release velocity**, not zero
+acceleration alone. Apps/OSes estimate velocity over a recent time window, so an
+extremely short gesture can still fling even with a zero mathematical endpoint
+derivative. Start with 600–900ms and verify every returned screenshot; neither
+this curve nor a full-region path guarantees an exact screen of displacement.
+
+Supported by HID and updated MobileGym. ADB's `input swipe` and other benchmark
+backends reject this profile rather than silently performing a linear swipe.
+MobileGym uses the same curve and estimates release velocity from the last
+100ms of executed samples (interpolating the window boundary), then feeds that
+velocity to the existing Android fling model. Inertia remains enabled. This is
+an approximation, not a calibrated model of iOS or Android VelocityTracker.
+Compare equal paths and durations with `linear`/`decelerate`; keep the ScrollLab
+high-water target scorer unchanged. Simulator results require real-phone
+validation before claiming precise scroll control.
+
 ### `touch_gesture`
 
 Use the standard `type` form for normal touch interaction, including taps, long

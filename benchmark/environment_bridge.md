@@ -186,6 +186,14 @@ keeps the backend's default timing. The Go agent also uses this field to carry
 the duration calculated from its `speed` argument, so the bridge preserves the
 agent's selected timing instead of replacing it with a backend default.
 
+For `swipe`, `profile` accepts `linear` (default) or `decelerate`. MobileGym
+forwards the selected profile and `steps` all the way to the simulator. Other
+Python benchmark backends explicitly reject `decelerate`. An omitted/zero
+provider duration selects MobileGym's 600ms default for `decelerate`; explicit
+positive durations, including short ones that still cause a fling, are honored.
+The simulator must advertise `swipeProfiles` containing `decelerate`; an older
+simulator fails the request instead of silently running a linear gesture.
+
 Success is `{"success": true}`. Invalid requests return HTTP 400 and device
 execution failures return HTTP 500 with a top-level `error` string.
 

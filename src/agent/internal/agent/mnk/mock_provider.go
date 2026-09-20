@@ -34,6 +34,7 @@ type MockSwipe struct {
 	HoldBeforeMs int
 	HoldAfterMs  int
 	Steps        int
+	Profile      string
 }
 
 type MockKeypress struct {
@@ -75,7 +76,7 @@ func (m *MockProvider) SwipeWithDuration(ctx context.Context, path [][2]float64,
 func (m *MockProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
 	_ = ctx
 	if options.DurationMs <= 0 {
-		options.DurationMs = defaultSwipeGestureDurationMs
+		options.DurationMs = defaultSwipeDuration(options.Profile)
 	}
 	if options.Steps <= 0 {
 		options.Steps = defaultSwipeSteps
@@ -87,6 +88,7 @@ func (m *MockProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, 
 		HoldBeforeMs: options.HoldBeforeMs,
 		HoldAfterMs:  options.HoldAfterMs,
 		Steps:        options.Steps,
+		Profile:      options.Profile,
 	})
 	return nil
 }

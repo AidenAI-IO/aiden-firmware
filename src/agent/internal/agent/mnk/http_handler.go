@@ -131,6 +131,7 @@ func (h *HTTPHandler) handleSwipe(ctx context.Context, params *SwipeParams) erro
 		HoldBeforeMs: params.HoldBeforeMs,
 		HoldAfterMs:  params.HoldAfterMs,
 		Steps:        params.Steps,
+		Profile:      params.Profile,
 	}
 	if err := validateSwipeOptions(options); err != nil {
 		return err
@@ -139,6 +140,9 @@ func (h *HTTPHandler) handleSwipe(ctx context.Context, params *SwipeParams) erro
 }
 
 func validateSwipeOptions(options SwipeOptions) error {
+	if err := validateSwipeProfile(options.Profile); err != nil {
+		return err
+	}
 	if options.DurationMs < 0 || options.DurationMs > MaxSwipeDurationMs {
 		return InvalidArgumentsf("duration_ms must be in range [0, %d]", MaxSwipeDurationMs)
 	}

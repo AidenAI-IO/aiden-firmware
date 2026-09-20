@@ -15,10 +15,12 @@ MAX_MOTION_DURATION_MS = 10_000
 
 
 def execute_mnk_request(
-    payload: dict[str, Any], invoke: ToolInvoker
+    payload: dict[str, Any], invoke: ToolInvoker, *, supports_decelerating_swipe: bool = False
 ) -> tuple[int, dict[str, Any]]:
     try:
         calls = mnk_tool_calls(payload)
+        if not supports_decelerating_swipe and any(args.get("profile") == "decelerate" for _, args in calls):
+            raise MNKRequestError("this environment does not support profile decelerate")
     except MNKRequestError as exc:
         return 400, {"error": str(exc)}
 
@@ -77,6 +79,17 @@ def mnk_tool_calls(payload: dict[str, Any]) -> list[ToolCall]:
         # The Go provider uses zero/omitted duration for backend defaults.
         if duration_ms > 0:
             gesture["duration_ms"] = duration_ms
+        if operation == "swipe":
+            profile = params.get("profile", "linear")
+            if profile not in ("linear", "decelerate"):
+                raise MNKRequestError("profile must be linear or decelerate")
+            if "profile" in params:
+                gesture["profile"] = profile
+            steps = _non_negative_int(params.get("steps", 0), "steps")
+            if steps > 1000:
+                raise MNKRequestError("steps must be in range [0, 1000]")
+            if steps:
+                gesture["steps"] = steps
         return [("touch_gesture", gesture)]
 
     if operation == "keypress":

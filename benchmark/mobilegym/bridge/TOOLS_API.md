@@ -86,6 +86,17 @@ curl -X POST http://localhost:8888/api/providers/mnk \
   -d '{"operation":"click","click":{"x":500,"y":800,"button":"left","hold_ms":0}}'
 ```
 
+For controlled scrolling, add `"profile":"decelerate"` to `swipe`, with an
+explicit duration (usually 600–900ms) or omit it for the 600ms profile default.
+Both `profile` and `steps` reach the simulator; the same Android fling model
+uses the last 100ms of executed motion to estimate release velocity. No hold
+is appended and inertia is not disabled. `linear` remains the default.
+
+Run `python scripts/measure_scroll_profiles.py --env-url http://localhost:4173
+--output /tmp/scroll-profiles.json` from `benchmark/` to compare equal paths and
+durations through this HTTP endpoint. Set `MOBILEGYM_ROOT` when testing a worktree.
+The output includes positions at release and after inertia, plus pointer traces.
+
 ## Setup And Release
 
 ```bash

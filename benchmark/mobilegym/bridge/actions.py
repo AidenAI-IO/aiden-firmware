@@ -121,7 +121,15 @@ def _motion_payload(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         point1 = _point(payload["start"])
         point2 = _point(payload["end"])
-    return {"point1": point1, "point2": point2, "duration": _duration_milliseconds(payload)}
+    result = {"point1": point1, "point2": point2, "duration": _duration_milliseconds(payload)}
+    profile = payload.get("profile", "linear")
+    if profile not in ("linear", "decelerate"):
+        raise ValueError("profile must be linear or decelerate")
+    if "profile" in payload:
+        result["profile"] = profile
+    if "steps" in payload:
+        result["steps"] = payload["steps"]
+    return result
 
 
 def _duration_seconds(payload: dict[str, Any], ms_keys: tuple[str, ...] = ("duration_ms",)) -> float:

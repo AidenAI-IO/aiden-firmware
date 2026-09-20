@@ -1081,3 +1081,18 @@ def test_env_work_is_serialized_and_bridge_serves_screenshot_while_chat_is_block
         release_chat.set()
         chat_thread.join(timeout=1)
         assert not chat_thread.is_alive()
+
+
+@pytest.mark.parametrize("duration_ms, expected", [(None, 600), (120, 120), (900, 900)])
+def test_provider_mnk_preserves_decelerating_profile_and_steps(duration_ms, expected):
+    with RunningBridge() as bridge:
+        assert start_episode(bridge)[0] == 200
+        params = {"path": [[500, 880], [500, 180]], "profile": "decelerate", "steps": 48}
+        if duration_ms is not None:
+            params["duration_ms"] = duration_ms
+        status, body = request_json(bridge.base_url, "POST", "/api/providers/mnk", {"operation": "swipe", "swipe": params})
+        assert status == 200, body
+        assert action_to_dict(bridge.env.actions[0])["data"] == {
+            "point1": [500.0, 880.0], "point2": [500.0, 180.0],
+            "duration": expected, "profile": "decelerate", "steps": 48,
+        }

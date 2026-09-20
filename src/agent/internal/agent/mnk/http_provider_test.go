@@ -122,6 +122,7 @@ func TestHTTPProvider(t *testing.T) {
 			HoldBeforeMs: 120,
 			HoldAfterMs:  80,
 			Steps:        12,
+			Profile:      SwipeProfileDecelerate,
 		}); err != nil {
 			t.Fatalf("SwipeWithOptions failed: %v", err)
 		}
@@ -129,7 +130,7 @@ func TestHTTPProvider(t *testing.T) {
 			t.Fatalf("swipes = %#v, want one swipe", mockProvider.swipes)
 		}
 		swipe := mockProvider.swipes[0]
-		if swipe.DurationMs != 240 || swipe.HoldBeforeMs != 120 || swipe.HoldAfterMs != 80 || swipe.Steps != 12 {
+		if swipe.DurationMs != 240 || swipe.HoldBeforeMs != 120 || swipe.HoldAfterMs != 80 || swipe.Steps != 12 || swipe.Profile != SwipeProfileDecelerate {
 			t.Fatalf("swipe options = %+v, want duration=240 before=120 after=80 steps=12", swipe)
 		}
 	})

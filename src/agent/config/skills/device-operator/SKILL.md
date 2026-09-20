@@ -150,17 +150,17 @@ Swipe `direction` describes finger movement, not content direction:
 
 Scrollable region discipline:
 
-- Start and end points must be inside the intended scrollable region.
+- Choose start/end from the latest screenshot, near opposite **inner edges** of the intended scrollable region. Leave a small content overlap between views. Do not assume arbitrary middle-screen coordinates (for example y=800→300) equal one screen. Near the target, shorten this path.
 - Avoid fixed headers, bottom navigation bars, modal edges, and screen borders.
 - If nothing moves, adjust the start point inward before increasing distance.
 
 Calibration loop:
 
-1. Start with an explicit start/end path and the default `speed:2500` from the latest screenshot.
+1. On HID or MobileGym, use an explicit start/end path with `profile:"decelerate"`. Omit `speed` and `duration_ms` for the 600ms default, or set `duration_ms:600`–`900` when calibrating. This continuously slows before immediate release; leave `hold_before_ms` and `hold_after_ms` at zero. If the provider explicitly reports that this profile is unsupported, use `profile:"linear"` with a longer duration and re-observe. Reserve fast linear swipes for intentional flings, paging, or system gestures.
 2. Read the gesture result's automatic post-action screenshot.
 3. Use the returned screenshot and its `screen_changed` field to confirm movement.
    An omitted `screen_changed` means the baseline comparison was unavailable; judge the returned screenshot directly.
-4. If far from target, increase the start/end distance; if close, shorten it.
+4. If far from target, use most of the region height/width; if close, shorten it. Reduced release velocity does not guarantee an exact screen of content movement.
 5. If overshot, reverse the path and reduce its distance.
 6. Do not repeat the same path and speed after a failed attempt.
 

@@ -92,6 +92,7 @@ func (p *HTTPProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, 
 			HoldBeforeMs: options.HoldBeforeMs,
 			HoldAfterMs:  options.HoldAfterMs,
 			Steps:        options.Steps,
+			Profile:      options.Profile,
 		},
 	}
 	return p.sendRequest(ctx, req)
@@ -262,6 +263,7 @@ type SwipeParams struct {
 	HoldBeforeMs int          `json:"hold_before_ms,omitempty"`
 	HoldAfterMs  int          `json:"hold_after_ms,omitempty"`
 	Steps        int          `json:"steps,omitempty"`
+	Profile      string       `json:"profile,omitempty"`
 }
 
 // DragPointParams contains one endpoint for a persistent drag session.

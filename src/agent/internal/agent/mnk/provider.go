@@ -20,6 +20,7 @@ type SwipeOptions struct {
 	HoldBeforeMs int
 	HoldAfterMs  int
 	Steps        int
+	Profile      string // empty or linear preserves constant-speed motion; decelerate slows before release
 }
 
 // Provider defines a minimal set of mouse/keyboard primitives for device input.

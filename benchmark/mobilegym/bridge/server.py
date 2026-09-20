@@ -350,6 +350,7 @@ def _handler_for(bridge: BridgeServer):
                 lambda tool_name, tool_input: bridge.tools_api._submit_tool_call(
                     state, tool_name, tool_input
                 ),
+                supports_decelerating_swipe=True,
             )
             self._send_json(status, response)
 

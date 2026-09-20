@@ -74,6 +74,7 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		HoldBeforeMs *int          `json:"hold_before_ms"`
 		HoldAfterMs  *int          `json:"hold_after_ms"`
 		Steps        *int          `json:"steps"`
+		Profile      string        `json:"profile"`
 	}
 
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
@@ -127,6 +128,9 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		return t.handleDoubleTap(ctx, args.Point, button)
 
 	case "swipe":
+		if err := validateSwipeProfile(args.Profile); err != nil {
+			return "", err
+		}
 		start, end, options, err := resolveSwipeArgsWithOptions(
 			args.Start,
 			args.End,
@@ -142,6 +146,10 @@ func (t *TouchGestureToolAdapter) Call(ctx context.Context, input string) (strin
 		}
 		if err := t.requireProvider(); err != nil {
 			return "", err
+		}
+		options.Profile = args.Profile
+		if options.Profile == SwipeProfileDecelerate && args.Speed == nil && args.DurationMs == nil {
+			options.DurationMs = DefaultDecelerateDurationMs
 		}
 		return t.handleSwipe(ctx, start, end, button, options)
 
@@ -357,6 +365,9 @@ func swipeWithDuration(ctx context.Context, provider Provider, path [][2]float64
 func swipeWithOptions(ctx context.Context, provider Provider, path [][2]float64, button string, options SwipeOptions) error {
 	if configured, ok := provider.(swipeOptionsProvider); ok {
 		return configured.SwipeWithOptions(ctx, path, button, options)
+	}
+	if options.Profile == SwipeProfileDecelerate {
+		return ModuleUnavailable("decelerating swipe is not supported by this input provider")
 	}
 	if options.DurationMs > 0 {
 		if timed, ok := provider.(timedSwipeProvider); ok {

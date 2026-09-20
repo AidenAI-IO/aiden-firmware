@@ -174,7 +174,7 @@ func (p *HIDProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, b
 		return err
 	}
 	return runPointerGate(p.gate, ctx, func() error {
-		return p.swipeLockedWithOptions(path, button, options)
+		return p.swipeLockedWithOptions(ctx, path, button, options)
 	})
 }
 
@@ -493,12 +493,15 @@ func waitForContext(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-func (p *HIDProvider) swipeLockedWithOptions(path [][2]float64, button string, options SwipeOptions) error {
+func (p *HIDProvider) swipeLockedWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
+	if err := validateSwipeOptions(options); err != nil {
+		return err
+	}
 	if len(path) < 2 {
 		return InvalidArgumentsf("swipe path must contain at least 2 points, got %d", len(path))
 	}
 	if options.DurationMs <= 0 {
-		options.DurationMs = defaultSwipeGestureDurationMs
+		options.DurationMs = defaultSwipeDuration(options.Profile)
 	}
 	if options.HoldBeforeMs == 0 {
 		options.HoldBeforeMs = defaultSwipeGestureHoldBeforeMs
@@ -543,6 +546,10 @@ func (p *HIDProvider) swipeLockedWithOptions(path [][2]float64, button string, o
 		if err := p.settlePointer(absPath[0][0], absPath[0][1]); err != nil {
 			return err
 		}
+	}
+
+	if options.Profile == SwipeProfileDecelerate {
+		return p.deceleratingSwipe(ctx, absPath, buttonByte, options)
 	}
 
 	// Press at start
