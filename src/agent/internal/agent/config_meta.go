@@ -502,6 +502,9 @@ func ConfigMeta() ConfigMetadata {
 						Help:        "Optional provider WebSocket endpoint override. Leave empty to use the provider default.",
 						Advanced:    true,
 						VisibleWhen: all(in("voice_model_providers.type", "qwen", "openai", "gemini", "xai"))},
+					{Key: "use_backend_agent", Label: "Use Backend Agent", Widget: WidgetBoolean,
+						Help:        "Realtime mode switch. Unset: follow the model (extended-thinking uses direct tools, others use the backend agent). True: use the legacy backend agent for any model. False: expose tools directly to the session and omit task/flow-control tools (create_agent_task etc.).",
+						Advanced:    true},
 					{Key: "thinking_level", Label: "Thinking Level", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "", Label: "LOW (default)"},

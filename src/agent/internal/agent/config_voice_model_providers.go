@@ -27,6 +27,7 @@ type VoiceModelProvider struct {
 	BaseURL          string `toml:"base_url,omitempty"`
 	RealtimeProtocol string `toml:"realtime_protocol,omitempty"`
 	ThinkingLevel    string `toml:"thinking_level,omitempty"`
+	UseBackendAgent    *bool    `toml:"use_backend_agent,omitempty"`
 	Voice            string `toml:"voice,omitempty"`
 }
 
@@ -195,6 +196,9 @@ func fillVoiceModelProviderFields(config *VoiceModelConfig, record VoiceModelPro
 	}
 	if config.ThinkingLevel == "" {
 		config.ThinkingLevel = record.ThinkingLevel
+	}
+	if config.UseBackendAgent == nil {
+		config.UseBackendAgent = record.UseBackendAgent
 	}
 	if config.Voice == "" {
 		config.Voice = record.Voice

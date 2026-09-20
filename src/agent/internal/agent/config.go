@@ -444,6 +444,7 @@ type VoiceModelConfig struct {
 	TurnDetection          string   `toml:"turn_detection,omitempty"`
 	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
 	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
+	UseBackendAgent        *bool    `toml:"use_backend_agent,omitempty"`
 	ActiveProviderRecord   string   `toml:"-"`
 }
 
@@ -461,6 +462,13 @@ func (c Config) UsesNativeRealtimeReasoning() bool {
 		if strings.TrimSpace(record.Model) != "" {
 			model = record.Model
 		}
+	}
+	if c.VoiceModel.UseBackendAgent != nil {
+		// Explicit realtime-mode switch: false forces direct tools without the
+		// backend agent (task/flow-control tools are omitted), true forces the
+		// legacy backend-agent integration for any model. Unset inherits the
+		// model's native capability below.
+		return !*c.VoiceModel.UseBackendAgent
 	}
 	return realtimevoice.DefaultProviderRegistry().NativeRealtimeReasoning(provider, model)
 }
