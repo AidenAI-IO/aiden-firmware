@@ -280,7 +280,7 @@ type VoiceModel struct {
 	TurnDetection          string   `json:"turn_detection"`
 	TurnDetectionThreshold *float64 `json:"turn_detection_threshold,omitempty"`
 	TurnDetectionSilenceMs int      `json:"turn_detection_silence_ms"`
-	UseBackendAgent        *bool    `json:"use_backend_agent,omitempty"`
+	UseBackendAgent        bool     `json:"use_backend_agent"`
 }
 
 func (d STT) TranscriptionTestRequest(wavData []byte) agent.STTTranscriptionTestRequest {
@@ -1084,4 +1084,3 @@ func customInstructionValue(instruction string) string {
 	}
 	return instruction
 }
-

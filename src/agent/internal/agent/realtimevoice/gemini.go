@@ -34,9 +34,9 @@ func geminiModelID(model string) string {
 	return model
 }
 
-// geminiExtendedThinkingModelIDs lists Gemini Live models whose native
-// reasoning replaces the legacy backend agent. Add new thinking models here;
-// unknown models keep the legacy integration.
+// geminiExtendedThinkingModelIDs lists Gemini Live models that use the
+// extended-thinking wire protocol. Backend-agent routing is configured
+// independently.
 var geminiExtendedThinkingModelIDs = map[string]struct{}{
 	Gemini38ThinkingModel: {},
 }
@@ -311,9 +311,7 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 		InputAudioTranscription:  map[string]any{},
 		OutputAudioTranscription: map[string]any{},
 	}
-	// Extended Thinking models require a thinking level
-	// Valid values: LOW, MEDIUM, HIGH (uppercase per Live API docs)
-	// Always set thinking config for extended-thinking models
+	// Thinking is a model capability and is independent of backend-agent routing.
 	if IsGemini38ExtendedThinkingModel(model) {
 		level := strings.ToUpper(strings.TrimSpace(cfg.ThinkingLevel))
 		if level == "" {
@@ -697,8 +695,7 @@ func (s *geminiSession) translate(body []byte) []Event {
 				usageEmitted = true
 			}
 			s.responseMu.Lock()
-			// Auto-detect protocol version: interaction_status presence indicates Extended Thinking support
-			if content.InteractionStatus != "" {
+			if s.extendedThinking {
 				// IDLE completes the interaction; REQUIRES_ACTION is a deprecated alias.
 				if content.InteractionStatus == "IDLE" || content.InteractionStatus == "REQUIRES_ACTION" {
 					if s.responseInterrupted {
@@ -709,9 +706,9 @@ func (s *geminiSession) translate(body []byte) []Event {
 					s.responseActive = false
 					s.responseInterrupted = false
 				}
-				// IN_PROGRESS: keep waiting, don't mark as done
+				// IN_PROGRESS or an absent status keeps the interaction open.
 			} else {
-				// Legacy protocol: turnComplete directly means done
+				// Regular Gemini Live models complete directly on turnComplete.
 				if s.responseInterrupted {
 					events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
 				} else {

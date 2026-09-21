@@ -595,7 +595,7 @@ func realtimeProviderSessionConfig(cfg agent.Config, runtime *agent.Runtime) rea
 }
 
 func realtimeProviderSessionConfigWithTools(cfg agent.Config, runtime *agent.Runtime, runtimeTools []langtools.Tool) realtimevoice.SessionConfig {
-	nativeReasoning := cfg.RealtimeDirectTools()
+	usesBackendAgent := cfg.VoiceModel.UseBackendAgent
 	voice := cfg.VoiceModel.Voice
 	inputFormat := cfg.VoiceModel.InputAudioFormat
 	if inputFormat == "" {
@@ -610,10 +610,12 @@ func realtimeProviderSessionConfigWithTools(cfg agent.Config, runtime *agent.Run
 		turnType = "server_vad"
 	}
 	instructions := strings.TrimSpace(cfg.VoiceModel.Instructions)
-	if nativeReasoning && (instructions == "" || instructions == agent.DefaultRealtimeVoiceInstructions) {
-		instructions = agent.DefaultNativeRealtimeVoiceInstructions
-	} else if instructions == "" {
-		instructions = agent.DefaultRealtimeVoiceInstructions
+	if instructions == "" || instructions == agent.DefaultRealtimeVoiceInstructions {
+		if usesBackendAgent {
+			instructions = agent.DefaultRealtimeVoiceInstructions
+		} else {
+			instructions = agent.DefaultRealtimeToolExecutionInstructions
+		}
 	}
 	instructions = strings.TrimSpace(strings.Join([]string{instructions, agent.ResponseLanguageGuidance(cfg.LocaleOrDefault())}, "\n\n"))
 	enableEmotion := cfg.VoiceModel.EnableSpeechEmotion
@@ -713,8 +715,8 @@ const (
 	realtimeQueryTaskTool          = "query_agent_task"
 	realtimeResponseUserActionTool = "response_user_action"
 	realtimeEndConversationTool    = "end_conversation"
-	realtimeWaitForWakeupTool     = "wait_for_wakeup"
-	realtimeRequestUserActionTool = "request_user_action"
+	realtimeWaitForWakeupTool      = "wait_for_wakeup"
+	realtimeRequestUserActionTool  = "request_user_action"
 )
 
 var realtimeDelegatedTools = []string{
@@ -725,13 +727,9 @@ var realtimeDelegatedTools = []string{
 	realtimeAudioVolumeTool,
 }
 
-var realtimeNativeExcludedTools = map[string]struct{}{
-	realtimeRequestUserActionTool:  {},
+var realtimeBackendCommunicationRuntimeTools = map[string]struct{}{
+	realtimeRequestUserActionTool: {},
 	realtimeWaitForWakeupTool:     {},
-	realtimeCreateTaskTool:         {},
-	realtimeCancelTaskTool:         {},
-	realtimeQueryTaskTool:          {},
-	realtimeResponseUserActionTool: {},
 }
 
 func realtimeVoiceToolDefinitions(cfg agent.Config, runtime *agent.Runtime) []realtimevoice.Tool {
@@ -771,7 +769,8 @@ func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runt
 			map[string]any{"type": "object", "properties": map[string]any{}},
 		),
 	}
-	if cfg.RealtimeDirectTools() {
+	usesBackendAgent := cfg.VoiceModel.UseBackendAgent
+	if !usesBackendAgent {
 		if runtime != nil {
 			if runtimeTools == nil {
 				runtimeTools = runtime.AvailableTools()
@@ -780,7 +779,7 @@ func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runt
 				if tool == nil {
 					continue
 				}
-				if _, excluded := realtimeNativeExcludedTools[tool.Name()]; excluded {
+				if _, excluded := realtimeBackendCommunicationRuntimeTools[tool.Name()]; excluded {
 					continue
 				}
 				if containsRealtimeVoiceTool(tools, tool.Name()) {
@@ -790,49 +789,49 @@ func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runt
 				tools = append(tools, realtimeVoiceToolDefinition(spec.Name, spec.Description, spec.LLMSchema()))
 			}
 		}
-		return tools
 	}
 
-
-	tools = append(tools,
-		realtimeVoiceToolDefinition(
-			realtimeCreateTaskTool,
-			"Handle any request you cannot directly and reliably answer or complete with the realtime conversation tools, including device state, visual inspection, external actions, lookups, or longer multi-step work. Call query_agent_task with no task_id first and continue the task that already covers the request instead of creating a duplicate. Present the work to the user as your own responsibility.",
-			map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"task": map[string]any{"type": "string", "description": "A self-contained description of the work you will handle."},
+	if usesBackendAgent {
+		tools = append(tools,
+			realtimeVoiceToolDefinition(
+				realtimeCreateTaskTool,
+				"Handle any request you cannot directly and reliably answer or complete with the realtime conversation tools, including device state, visual inspection, external actions, lookups, or longer multi-step work. Call query_agent_task with no task_id first and continue the task that already covers the request instead of creating a duplicate. Present the work to the user as your own responsibility.",
+				map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"task": map[string]any{"type": "string", "description": "A self-contained description of the work you will handle."},
+					},
+					"required": []string{"task"},
 				},
-				"required": []string{"task"},
-			},
-		),
-		realtimeVoiceToolDefinition(
-			realtimeCancelTaskTool,
-			"Cancel work that you previously started when the user asks you to stop it.",
-			map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"task_id": map[string]any{"type": "string"},
+			),
+			realtimeVoiceToolDefinition(
+				realtimeCancelTaskTool,
+				"Cancel work that you previously started when the user asks you to stop it.",
+				map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"task_id": map[string]any{"type": "string"},
+					},
+					"required": []string{"task_id"},
 				},
-				"required": []string{"task_id"},
-			},
-		),
-		realtimeVoiceToolDefinition(
-			realtimeQueryTaskTool,
-			"Check the status and result of work you are handling. Pass the task_id you were given, or omit it to list every outstanding task: work still in flight, and finished work whose result you have not been told about yet.",
-			map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"task_id": map[string]any{"type": "string", "description": "Task to report. Omit to list every outstanding task."},
+			),
+			realtimeVoiceToolDefinition(
+				realtimeQueryTaskTool,
+				"Check the status and result of work you are handling. Pass the task_id you were given, or omit it to list every outstanding task: work still in flight, and finished work whose result you have not been told about yet.",
+				map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"task_id": map[string]any{"type": "string", "description": "Task to report. Omit to list every outstanding task."},
+					},
 				},
-			},
-		),
-		realtimeVoiceToolDefinition(
-			realtimeResponseUserActionTool,
-			"Continue work after the user completed a requested device action. Use the internal task reference and pass a concise description of what the user did; never expose the internal reference to the user.",
-			map[string]any{"type": "object", "properties": map[string]any{"task_id": map[string]any{"type": "string"}, "user_message": map[string]any{"type": "string"}}, "required": []string{"task_id", "user_message"}},
-		),
-	)
+			),
+			realtimeVoiceToolDefinition(
+				realtimeResponseUserActionTool,
+				"Continue work after the user completed a requested device action. Use the internal task reference and pass a concise description of what the user did; never expose the internal reference to the user.",
+				map[string]any{"type": "object", "properties": map[string]any{"task_id": map[string]any{"type": "string"}, "user_message": map[string]any{"type": "string"}}, "required": []string{"task_id", "user_message"}},
+			),
+		)
+	}
 
 	return tools
 }
@@ -886,7 +885,7 @@ func newRealtimeVoiceToolExecutor(runtime *agent.Runtime, tasks *agenttask.Manag
 		if tool == nil {
 			continue
 		}
-		if _, excluded := realtimeNativeExcludedTools[tool.Name()]; excluded {
+		if _, excluded := realtimeBackendCommunicationRuntimeTools[tool.Name()]; excluded {
 			continue
 		}
 		executor.delegated[tool.Name()] = tool
@@ -1157,7 +1156,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var runtimeTools []langtools.Tool
-	if cfg.RealtimeDirectTools() && runtime != nil {
+	if !cfg.VoiceModel.UseBackendAgent && runtime != nil {
 		runtimeTools = runtime.AvailableTools()
 	}
 	sessionConfig := realtimeProviderSessionConfigWithTools(cfg, runtime, runtimeTools)

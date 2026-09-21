@@ -48,33 +48,18 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 }
 
-func TestRuntimeBypassesBackendAgentInDirectToolkitMode(t *testing.T) {
-	runtime := &Runtime{}
-	direct := false
-	for _, cfg := range []Config{
-		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &direct}},
-		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: &direct}},
-	} {
-		if !runtime.shouldBypassBackendAgent(cfg) {
-			t.Fatalf("direct-toolkit mode did not bypass the backend agent: %+v", cfg.VoiceModel)
-		}
-	}
-	enabled := true
-	for _, cfg := range []Config{
-		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
-		{InputMode: "realtime", VoiceModel: VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &enabled}},
-	} {
-		if runtime.shouldBypassBackendAgent(cfg) {
-			t.Fatal("backend-agent mode unexpectedly bypassed the backend agent")
-		}
-	}
-	if runtime.shouldBypassBackendAgent(Config{InputMode: "text", VoiceModel: VoiceModelConfig{
-		Provider: "gemini",
-		Model:    "gemini-3.8-live-extended-thinking",
-	}}) {
-		t.Fatal("text mode unexpectedly bypassed the backend agent")
+func TestRuntimeRejectsBackendRunWhenBackendAgentDisabled(t *testing.T) {
+	runtime := &Runtime{config: Config{
+		InputMode:  "realtime",
+		VoiceModel: VoiceModelConfig{},
+	}}
+
+	_, err := runtime.Run(context.Background(), RunRequest{Input: "handled by realtime session"})
+	if err == nil || !strings.Contains(err.Error(), "backend agent is disabled for this realtime session") {
+		t.Fatalf("Run() error = %v, want backend-disabled realtime guard", err)
 	}
 }
+
 func TestRuntimeDoesNotRegisterArtifactReadTool(t *testing.T) {
 	toolSet := &ToolSet{tools: map[string]langtools.Tool{}}
 	runtime := NewRuntimeWithDeps(

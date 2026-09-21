@@ -897,15 +897,6 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 	}
 }
 
-// shouldBypassBackendAgent reports whether the realtime session runs in
-// direct-toolkit mode, executing tools without the legacy backend agent.
-func (r *Runtime) shouldBypassBackendAgent(cfg Config) bool {
-	if cfg.InputModeOrDefault() != "realtime" {
-		return false
-	}
-	return cfg.RealtimeDirectTools()
-}
-
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
 
 	defer func() {
@@ -932,11 +923,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	r.configOperations.RLock()
 	defer r.configOperations.RUnlock()
 
-	// Native-reasoning realtime models handle the turn themselves. Take the
-	// decision under the same config snapshot the rest of the run reads, so a
-	// reload that lands between snapshot and lock cannot flip it mid-run.
-	if r.shouldBypassBackendAgent(r.ConfigSnapshot()) {
-		return RunResult{}, fmt.Errorf("backend agent is disabled for this native-reasoning realtime model; all processing should be handled by the realtime voice session")
+	// A realtime session configured without a backend agent must execute the
+	// transferred tools itself. Take the decision under the same config snapshot
+	// the rest of the run reads, so a reload cannot flip it mid-run.
+	cfg := r.ConfigSnapshot()
+	if cfg.InputModeOrDefault() == "realtime" && !cfg.VoiceModel.UseBackendAgent {
+		return RunResult{}, fmt.Errorf("backend agent is disabled for this realtime session; all processing should be handled by the realtime voice session")
 	}
 
 	// Register this run's cancel so future callers can preempt us.
@@ -2916,4 +2908,3 @@ func (r *Runtime) Close() error {
 	}
 	return nil
 }
-

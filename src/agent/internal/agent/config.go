@@ -444,18 +444,15 @@ type VoiceModelConfig struct {
 	TurnDetection          string   `toml:"turn_detection,omitempty"`
 	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
 	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
-	UseBackendAgent        *bool    `toml:"use_backend_agent,omitempty"`
-	ActiveProviderRecord   string   `toml:"-"`
+	// UseBackendAgent controls whether the realtime model can delegate work to
+	// the backend agent. When disabled, the runtime tools that the backend agent
+	// would otherwise use are exposed directly to the realtime model. Provider
+	// reasoning is determined independently by the provider/model.
+	UseBackendAgent      bool   `toml:"use_backend_agent,omitempty"`
+	ActiveProviderRecord string `toml:"-"`
 }
 
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
-
-func (c Config) RealtimeDirectTools() bool {
-	if c.VoiceModel.UseBackendAgent == nil {
-		return false
-	}
-	return !*c.VoiceModel.UseBackendAgent
-}
 
 func (c VoiceModelConfig) Validate() error {
 	provider := strings.ToLower(strings.TrimSpace(c.Provider))

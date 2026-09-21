@@ -63,8 +63,7 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	}
 	wantTools := []string{
 		"get_current_time", "recall_memory", "save_memory", "forget_memory",
-		"recall_session_chunks", "audio_volume", "end_conversation", "create_agent_task",
-		"cancel_agent_task", "query_agent_task", "response_user_action",
+		"recall_session_chunks", "audio_volume", "end_conversation",
 	}
 	if len(got.Tools) != len(wantTools) {
 		t.Fatalf("realtime tools = %#v, want %v", got.Tools, wantTools)
@@ -76,42 +75,39 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	}
 }
 
-func TestRealtimeSessionConfigUsesBackendAgentToolsUnlessDirectMode(t *testing.T) {
+func TestRealtimeSessionConfigSwitchesBackendCommunicationTools(t *testing.T) {
 	backendTools := map[string]bool{
 		realtimeCreateTaskTool:         true,
 		realtimeCancelTaskTool:         true,
 		realtimeQueryTaskTool:          true,
 		realtimeResponseUserActionTool: true,
 	}
-	direct := false
-	directConfigs := []agent.Config{
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &direct}},
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: &direct}},
+	backendDisabledConfigs := []agent.Config{
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
 	}
-	for _, cfg := range directConfigs {
+	for _, cfg := range backendDisabledConfigs {
 		got := realtimeProviderSessionConfig(cfg, nil)
 		for _, tool := range got.Tools {
 			if backendTools[tool.Name] {
-				t.Fatalf("direct-mode setup exposed backend-agent tool %q", tool.Name)
+				t.Fatalf("backend-disabled setup exposed communication tool %q", tool.Name)
 			}
 		}
 		if strings.Contains(got.Instructions, "query_agent_task") {
-			t.Fatalf("direct-mode instructions still reference backend-agent tools: %s", got.Instructions)
+			t.Fatalf("backend-disabled instructions still reference communication tools: %s", got.Instructions)
 		}
 	}
 
-	enabled := true
 	retainedConfigs := []struct {
 		name string
 		cfg  agent.Config
 	}{
-		{name: "unset thinking model", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}}},
-		{name: "explicit true thinking model", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &enabled}}},
-		{name: "unset regular 3.8 live", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}},
+		{name: "thinking model", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: true}}},
+		{name: "regular 3.8 live", cfg: agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: true}}},
 		{
-			name: "named provider unset",
+			name: "named provider",
 			cfg: agent.Config{
-				VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main"},
+				VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main", UseBackendAgent: true},
 				VoiceModelProviders: map[string]agent.VoiceModelProvider{"gemini-main": {Type: "gemini", Model: "models/gemini-3.8-live-extended-thinking"}},
 			},
 		},
@@ -135,7 +131,7 @@ func TestRealtimeSessionConfigUsesBackendAgentToolsUnlessDirectMode(t *testing.T
 	}
 }
 
-func TestRealtimeSessionConfigExposesRuntimeToolsInDirectMode(t *testing.T) {
+func TestRealtimeSessionConfigTransfersRuntimeToolsWhenBackendDisabled(t *testing.T) {
 	toolSet := agent.NewBuiltinToolSet(
 		agent.HIDConfig{},
 		agent.AudioConfig{},
@@ -146,83 +142,83 @@ func TestRealtimeSessionConfigExposesRuntimeToolsInDirectMode(t *testing.T) {
 	runtime := agent.NewRuntimeWithDeps(agent.Config{}, nil, nil, toolSet, agent.NewSkillIndex())
 	defer runtime.Close()
 
-	direct := false
-	directConfigs := []agent.Config{
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &direct}},
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: &direct}},
+	backendDisabledConfigs := []agent.Config{
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
 	}
-	for _, cfg := range directConfigs {
-		got := realtimeProviderSessionConfig(cfg, runtime)
-		definitions := make(map[string]realtimevoice.Tool, len(got.Tools))
-		counts := make(map[string]int, len(got.Tools))
-		for _, definition := range got.Tools {
-			definitions[definition.Name] = definition
-			counts[definition.Name]++
-		}
-		for _, name := range []string{"weather", "web_search", "screenshot"} {
-			if _, ok := definitions[name]; !ok {
-				t.Fatalf("direct-mode setup missing runtime tool %q", name)
+	for _, cfg := range backendDisabledConfigs {
+		t.Run(cfg.VoiceModel.Model, func(t *testing.T) {
+			got := realtimeProviderSessionConfig(cfg, runtime)
+			definitions := make(map[string]realtimevoice.Tool, len(got.Tools))
+			counts := make(map[string]int, len(got.Tools))
+			for _, definition := range got.Tools {
+				definitions[definition.Name] = definition
+				counts[definition.Name]++
 			}
-		}
-		for _, name := range []string{realtimeCreateTaskTool, realtimeCancelTaskTool, realtimeQueryTaskTool, realtimeResponseUserActionTool, "request_user_action", "wait_for_wakeup"} {
-			if _, ok := definitions[name]; ok {
-				t.Fatalf("direct-mode setup exposed control tool %q", name)
+			for _, name := range []string{"weather", "web_search", "screenshot"} {
+				if _, ok := definitions[name]; !ok {
+					t.Fatalf("backend-disabled setup missing transferred runtime tool %q", name)
+				}
 			}
-		}
-		if counts[realtimeAudioVolumeTool] != 1 {
-			t.Fatalf("audio_volume declaration count = %d, want 1", counts[realtimeAudioVolumeTool])
-		}
-		if cfg.VoiceModel.Model == "gemini-3.8-live-extended-thinking" {
-			weather, ok := runtime.Tool("weather")
-			if !ok {
-				t.Fatal("runtime is missing weather tool")
+			for _, name := range []string{realtimeCreateTaskTool, realtimeCancelTaskTool, realtimeQueryTaskTool, realtimeResponseUserActionTool, "request_user_action", "wait_for_wakeup"} {
+				if _, ok := definitions[name]; ok {
+					t.Fatalf("backend-disabled setup exposed control tool %q", name)
+				}
 			}
-			wantSchema, err := json.Marshal(agent.NewToolSpec(weather).LLMSchema())
-			if err != nil {
-				t.Fatal(err)
+			if counts[realtimeAudioVolumeTool] != 1 {
+				t.Fatalf("audio_volume declaration count = %d, want 1", counts[realtimeAudioVolumeTool])
 			}
-			if !bytes.Equal(definitions["weather"].Parameters, wantSchema) {
-				t.Fatalf("weather schema = %s, want %s", definitions["weather"].Parameters, wantSchema)
+			if cfg.VoiceModel.Model == "gemini-3.8-live-extended-thinking" {
+				weather, ok := runtime.Tool("weather")
+				if !ok {
+					t.Fatal("runtime is missing weather tool")
+				}
+				wantSchema, err := json.Marshal(agent.NewToolSpec(weather).LLMSchema())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(definitions["weather"].Parameters, wantSchema) {
+					t.Fatalf("weather schema = %s, want %s", definitions["weather"].Parameters, wantSchema)
+				}
 			}
-		}
+		})
 	}
 
-	enabled := true
-	retained := realtimeProviderSessionConfig(agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: &enabled}}, runtime)
-	retainedNames := make(map[string]bool, len(retained.Tools))
-	for _, definition := range retained.Tools {
-		retainedNames[definition.Name] = true
-	}
-	for _, name := range []string{"weather", "web_search", "screenshot"} {
-		if retainedNames[name] {
-			t.Fatalf("backend-agent mode unexpectedly gained direct runtime tool %q", name)
+	for _, model := range []string{"gemini-3.8-live-extended-thinking", "gemini-3.8-live"} {
+		retained := realtimeProviderSessionConfig(agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: model, UseBackendAgent: true}}, runtime)
+		retainedNames := make(map[string]bool, len(retained.Tools))
+		for _, definition := range retained.Tools {
+			retainedNames[definition.Name] = true
 		}
-	}
-	for _, name := range []string{realtimeCreateTaskTool, realtimeCancelTaskTool, realtimeQueryTaskTool, realtimeResponseUserActionTool} {
-		if !retainedNames[name] {
-			t.Fatalf("backend-agent mode lost backend-agent tool %q", name)
+		for _, name := range []string{"weather", "web_search", "screenshot"} {
+			if retainedNames[name] {
+				t.Fatalf("backend-agent mode unexpectedly exposed runtime tool %q for model %q", name, model)
+			}
+		}
+		for _, name := range []string{realtimeCreateTaskTool, realtimeCancelTaskTool, realtimeQueryTaskTool, realtimeResponseUserActionTool} {
+			if !retainedNames[name] {
+				t.Fatalf("backend-agent mode lost communication tool %q for model %q", name, model)
+			}
 		}
 	}
 }
 
-func TestRealtimeAgentTaskManagerDisabledInDirectMode(t *testing.T) {
-	direct := false
+func TestRealtimeAgentTaskManagerFollowsUseBackendAgent(t *testing.T) {
 	for _, cfg := range []agent.Config{
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &direct}},
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: &direct}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
 	} {
 		if manager := newRealtimeAgentTaskManager(cfg, nil); manager != nil {
 			manager.Close()
-			t.Fatal("direct-mode configuration unexpectedly created a backend-agent task manager")
+			t.Fatal("backend-disabled configuration unexpectedly created a backend-agent task manager")
 		}
 	}
 
-	enabled := true
 	for _, cfg := range []agent.Config{
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
-		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: &enabled}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live", UseBackendAgent: true}},
+		{VoiceModel: agent.VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: true}},
 		{
-			VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main"},
+			VoiceModel:          agent.VoiceModelConfig{Provider: "gemini-main", UseBackendAgent: true},
 			VoiceModelProviders: map[string]agent.VoiceModelProvider{"gemini-main": {Type: "gemini", Model: "gemini-3.8-live-extended-thinking"}},
 		},
 	} {
@@ -266,8 +262,8 @@ func TestRealtimeDelegatedToolSchemasMatchRuntimeTools(t *testing.T) {
 func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
 	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
 	got := realtimeProviderSessionConfig(cfg, nil)
-	if !strings.HasPrefix(got.Instructions, agent.DefaultRealtimeVoiceInstructions) {
-		t.Fatalf("instructions = %q, want realtime default followed by shared guidance", got.Instructions)
+	if !strings.HasPrefix(got.Instructions, agent.DefaultRealtimeToolExecutionInstructions) {
+		t.Fatalf("instructions = %q, want direct-tool default followed by shared guidance", got.Instructions)
 	}
 	if got.Instructions == cfg.Instruction {
 		t.Fatal("realtime session reused the legacy agent instruction")
@@ -580,7 +576,7 @@ func TestRealtimeTaskCreationRequiresOutstandingWorkCheck(t *testing.T) {
 		t.Fatalf("realtime instructions missing the outstanding-work check: %s", agent.DefaultRealtimeVoiceInstructions)
 	}
 	definitions := make(map[string]realtimevoice.Tool)
-	for _, definition := range realtimeVoiceToolDefinitions(agent.Config{}, nil) {
+	for _, definition := range realtimeVoiceToolDefinitions(agent.Config{VoiceModel: agent.VoiceModelConfig{UseBackendAgent: true}}, nil) {
 		definitions[definition.Name] = definition
 	}
 	create, ok := definitions[realtimeCreateTaskTool]

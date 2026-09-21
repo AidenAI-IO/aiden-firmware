@@ -611,8 +611,8 @@ func TestGeminiInterruptSendsClientContentWithoutStartingNewTurn(t *testing.T) {
 		}
 	}
 }
-func TestGeminiRequiresActionClosesResponse(t *testing.T) {
-	s := &geminiSession{toolNames: map[string]string{}}
+func TestGeminiExtendedThinkingLifecycleUsesModelCapability(t *testing.T) {
+	s := &geminiSession{toolNames: map[string]string{}, extendedThinking: true}
 	started := s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"checking"}]}}}`))
 	if len(started) == 0 || started[0].Kind != EventResponseStarted {
 		t.Fatalf("filler events = %+v, want started", started)
@@ -620,6 +620,10 @@ func TestGeminiRequiresActionClosesResponse(t *testing.T) {
 	inProgress := s.translate([]byte(`{"serverContent":{"turnComplete":true,"interactionStatus":"IN_PROGRESS"}}`))
 	if len(inProgress) != 0 {
 		t.Fatalf("IN_PROGRESS emitted terminal events: %+v", inProgress)
+	}
+	missingStatus := s.translate([]byte(`{"serverContent":{"turnComplete":true}}`))
+	if len(missingStatus) != 0 {
+		t.Fatalf("missing interactionStatus emitted terminal events: %+v", missingStatus)
 	}
 	requiresAction := s.translate([]byte(`{"serverContent":{"turnComplete":true,"interactionStatus":"REQUIRES_ACTION"}}`))
 	if requiresAction[len(requiresAction)-1].Kind != EventResponseDone {
@@ -630,7 +634,22 @@ func TestGeminiRequiresActionClosesResponse(t *testing.T) {
 	}
 }
 
-func TestGeminiThinkingLevelComesFromSessionConfig(t *testing.T) {
+func TestGeminiRegularModelIgnoresExtendedThinkingStatus(t *testing.T) {
+	s := &geminiSession{toolNames: map[string]string{}}
+	started := s.translate([]byte(`{"serverContent":{"modelTurn":{"parts":[{"text":"answering"}]}}}`))
+	if len(started) == 0 || started[0].Kind != EventResponseStarted {
+		t.Fatalf("response events = %+v, want started", started)
+	}
+	done := s.translate([]byte(`{"serverContent":{"turnComplete":true,"interactionStatus":"IN_PROGRESS"}}`))
+	if done[len(done)-1].Kind != EventResponseDone {
+		t.Fatalf("regular model terminal = %+v, want done", done)
+	}
+	if s.responseActive || s.responseInterrupted {
+		t.Fatal("regular model left the response open")
+	}
+}
+
+func TestGeminiThinkingConfigDependsOnModelCapability(t *testing.T) {
 	for _, level := range []string{"", "MEDIUM", "low", "High"} {
 		setup := buildGeminiSetup(SessionConfig{ThinkingLevel: level, Tools: []Tool{}}, "gemini-3.8-live-extended-thinking")
 		want := strings.ToUpper(level)
