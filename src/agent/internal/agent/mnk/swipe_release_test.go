@@ -1,0 +1,213 @@
+package mnk
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"math"
+	"testing"
+	"time"
+)
+
+type releaseSample struct {
+	at   time.Time
+	data []byte
+}
+
+type releaseCaptureDevice struct{ samples []releaseSample }
+
+func (d *releaseCaptureDevice) Write(b []byte) error {
+	d.samples = append(d.samples, releaseSample{time.Now(), append([]byte(nil), b...)})
+	return nil
+}
+func (d *releaseCaptureDevice) Close() {}
+
+func TestSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path [][2]float64
+	}{
+		{"up", [][2]float64{{500, 800}, {500, 200}}},
+		{"down", [][2]float64{{500, 200}, {500, 800}}},
+		{"horizontal", [][2]float64{{800, 500}, {200, 500}}},
+		{"diagonal", [][2]float64{{800, 800}, {200, 200}}},
+		{"short", [][2]float64{{500, 500}, {500, 496}}},
+		{"duplicate endpoint", [][2]float64{{500, 800}, {500, 200}, {500, 200}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &releaseCaptureDevice{}
+			p := NewHIDProvider(d, nil, nil, nil, false, "qwerty", nil)
+			err := p.SwipeWithOptions(context.Background(), tc.path, ButtonLeft, SwipeOptions{DurationMs: 40, Steps: 24})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var held, releases []releaseSample
+			for _, r := range d.samples {
+				if r.data[0]&1 != 0 {
+					held = append(held, r)
+				} else if len(held) > 0 {
+					releases = append(releases, r)
+				}
+			}
+			if len(held) < 10 || len(releases) != p.releaseRepeatCount {
+				t.Fatal("missing release tail")
+			}
+			position := func(r releaseSample) (int, int) {
+				return int(binary.LittleEndian.Uint16(r.data[1:3])), int(binary.LittleEndian.Uint16(r.data[3:5]))
+			}
+			end := tc.path[len(tc.path)-1]
+			wantX, wantY, _ := p.normalizedToAbsolute(end[0], end[1])
+			x, y := position(held[len(held)-1])
+			if x != wantX || y != wantY {
+				t.Fatal("did not reach requested endpoint")
+			}
+			for _, r := range releases {
+				x, y := position(r)
+				if x != wantX || y != wantY {
+					t.Fatal("release moved endpoint")
+				}
+			}
+			// Require real low-speed moves: unchanged-coordinate holds did not
+			// clear fling velocity in the measured iOS AssistiveTouch trials.
+
+			// The main movement builds speed and brakes, instead of entering or
+			// leaving the fast section with a large constant-speed step.
+			stepDistance := func(index int) float64 {
+				a, b := position(held[index-1])
+				c, d := position(held[index])
+				return math.Hypot(float64(c-a), float64(d-b))
+			}
+			if stepDistance(12) <= stepDistance(2) || stepDistance(12) <= stepDistance(23) {
+				t.Fatal("main movement lacks acceleration/braking")
+			}
+			tailStart := held[24]
+			x, y = position(tailStart)
+			distance := math.Hypot(float64(wantX-x), float64(wantY-y)) * 1000 / absMouseMaxPos
+			if distance <= 0 || distance > 2.1 {
+				t.Fatalf("tail distance %v", distance)
+			}
+			if duration := held[len(held)-1].at.Sub(tailStart.at); duration < 95*time.Millisecond || duration > 250*time.Millisecond {
+				t.Fatalf("tail duration %v", duration)
+			}
+			if gap := releases[0].at.Sub(held[len(held)-1].at); gap > 50*time.Millisecond {
+				t.Fatalf("unexpected final hold %v", gap)
+			}
+			previousX, previousY := position(held[0])
+			for _, r := range held[1:] {
+				x, y := position(r)
+				if (x-previousX)*(wantX-previousX) < 0 || (y-previousY)*(wantY-previousY) < 0 || math.Abs(float64(wantX-x)) > math.Abs(float64(wantX-previousX)) || math.Abs(float64(wantY-y)) > math.Abs(float64(wantY-previousY)) {
+					t.Fatal("swipe reversed or overshot")
+				}
+				previousX, previousY = x, y
+			}
+		})
+	}
+}
+
+func TestSwipeEdgeAndExplicitHoldRemainUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		start [2]float64
+		hold  int
+		touch bool
+	}{
+		{"home", [2]float64{500, 999}, 0, false},
+		{"back", [2]float64{1, 500}, 0, false},
+		{"explicit", [2]float64{500, 800}, 20, false},
+		{"touchscreen", [2]float64{500, 800}, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &releaseCaptureDevice{}
+			p := NewHIDProvider(d, nil, nil, nil, tc.touch, "qwerty", nil)
+			err := p.SwipeWithOptions(context.Background(), [][2]float64{tc.start, {500, 200}}, ButtonLeft, SwipeOptions{DurationMs: 40, Steps: 4, HoldAfterMs: tc.hold})
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstRelease := len(d.samples) - p.releaseRepeatCount
+			delay := d.samples[firstRelease].at.Sub(d.samples[firstRelease-1].at)
+			if delay > 80*time.Millisecond {
+				t.Fatalf("unexpected internal settle: %v", delay)
+			}
+			if tc.hold > 0 && delay < time.Duration(tc.hold)*time.Millisecond {
+				t.Fatal("explicit hold was shortened")
+			}
+		})
+	}
+}
+
+type failOnceSwipeDevice struct {
+	releaseCaptureDevice
+	failAt int
+	writes int
+}
+
+func (d *failOnceSwipeDevice) Write(data []byte) error {
+	d.writes++
+	if d.writes == d.failAt {
+		return errors.New("injected write failure")
+	}
+	return d.releaseCaptureDevice.Write(data)
+}
+
+func TestSwipeWriteFailureReleasesLastSuccessfulPosition(t *testing.T) {
+	for _, failAt := range []int{3, 8} { // during movement; during the slow tail
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			d := &failOnceSwipeDevice{failAt: failAt}
+			p := NewHIDProvider(d, nil, nil, nil, false, "qwerty", nil)
+			err := p.SwipeWithOptions(context.Background(), [][2]float64{{500, 800}, {500, 200}}, ButtonLeft, SwipeOptions{DurationMs: 40, Steps: 4})
+			if err == nil {
+				t.Fatal("missing write error")
+			}
+			firstRelease := len(d.samples) - p.releaseRepeatCount
+			lastHeld := d.samples[firstRelease-1].data
+			for _, sample := range d.samples[firstRelease:] {
+				if sample.data[0]&3 != 0 || string(sample.data[1:]) != string(lastHeld[1:]) {
+					t.Fatal("cleanup jumped or failed to release")
+				}
+			}
+		})
+	}
+}
+
+func TestSwipeCanceledDuringSlowTailStillReleases(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := &cancelAfterWritesDevice{cancel: cancel, cancelAt: 7}
+	p := NewHIDProvider(d, nil, nil, nil, false, "qwerty", nil)
+	err := p.SwipeWithOptions(ctx, [][2]float64{{500, 800}, {500, 200}}, ButtonLeft, SwipeOptions{DurationMs: 40, Steps: 4})
+	if err != context.Canceled {
+		t.Fatalf("error=%v", err)
+	}
+	data := d.bytes()
+	if len(data) != (7+p.releaseRepeatCount)*6 {
+		t.Fatal("contact reports continued after cancellation")
+	}
+	for offset := 7 * 6; offset < len(data); offset += 6 {
+		if data[offset]&3 != 0 || string(data[offset+1:offset+6]) != string(data[6*6+1:7*6]) {
+			t.Fatal("missing endpoint cleanup")
+		}
+	}
+}
+
+func TestSwipeCanceledDuringMainMotionStillReleases(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := &cancelAfterWritesDevice{cancel: cancel, cancelAt: 5}
+	p := NewHIDProvider(d, nil, nil, nil, false, "qwerty", nil)
+	err := p.SwipeWithOptions(ctx, [][2]float64{{500, 800}, {500, 200}}, ButtonLeft, SwipeOptions{DurationMs: 40, Steps: 4})
+	if err != context.Canceled {
+		t.Fatalf("error=%v", err)
+	}
+	data := d.bytes()
+	last := data[4*6 : 5*6]
+	if len(data) != (5+p.releaseRepeatCount)*6 {
+		t.Fatal("missing cleanup releases")
+	}
+	for offset := 5 * 6; offset < len(data); offset += 6 {
+		r := data[offset : offset+6]
+		if r[0]&3 != 0 || string(r[1:]) != string(last[1:]) {
+			t.Fatal("contact not released at last position")
+		}
+	}
+}

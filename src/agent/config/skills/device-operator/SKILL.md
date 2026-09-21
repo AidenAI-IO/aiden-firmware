@@ -70,8 +70,8 @@ Before using coordinates:
 - Inspect the screenshot and identify the intended target visually.
 - Use normalized 0-1000 coordinates: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
 - Never pass screenshot pixels directly to a coordinate tool. Convert point measurements from the latest returned image first: `x_normalized = pixel_x / max(screenshot_width - 1, 1) * 1000` and `y_normalized = pixel_y / max(screenshot_height - 1, 1) * 1000`.
-- Choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward.
-- Avoid edges unless performing an edge gesture. For phone edge gestures, do not use conservative insets like 50-100: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
+- For taps and long presses, choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward. For scrolling, use the scrollable-region bounds described below.
+- For ordinary scrolling, choose endpoints near the visible scrollable region's inner edges, with a small margin based on the current UI. Physical screen-edge coordinates are reserved for system gestures: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
 - Do not guess a coordinate if the target is not visible or the screen is stale.
 - If a tap misses, observe again before adjusting. Do not repeat the exact same coordinate blindly.
 
@@ -150,17 +150,17 @@ Swipe `direction` describes finger movement, not content direction:
 
 Scrollable region discipline:
 
-- Start and end points must be inside the intended scrollable region.
-- Avoid fixed headers, bottom navigation bars, modal edges, and screen borders.
-- If nothing moves, adjust the start point inward before increasing distance.
+- For ordinary browsing and searching, identify the visible scrollable region from the latest screenshot. Use `type:"swipe"` with explicit `start` and `end` near opposite inner edges along the scroll direction, using most of its visible extent. Choose small margins from the current UI and keep the full path inside the region.
+- Derive coordinates from those boundaries on the current screen. Use shorter travel when the target is close or the task needs a fine adjustment. The region's inner edges are distinct from physical screen borders used for system gestures.
+- Leave timing at defaults; the tool handles acceleration, braking, and release. If nothing moves, recheck the region and current screenshot before adjusting.
 
 Calibration loop:
 
-1. Start with an explicit start/end path and the default `speed:2500` from the latest screenshot.
+1. Derive the scrollable region and its inner endpoints from the latest screenshot; send an explicit start/end path with default timing.
 2. Read the gesture result's automatic post-action screenshot.
 3. Use the returned screenshot and its `screen_changed` field to confirm movement.
    An omitted `screen_changed` means the baseline comparison was unavailable; judge the returned screenshot directly.
-4. If far from target, increase the start/end distance; if close, shorten it.
+4. Adapt the travel to the task and current region; use most of its extent for browsing and shorter travel for fine adjustments. Recompute the bounds if the layout changes.
 5. If overshot, reverse the path and reduce its distance.
 6. Do not repeat the same path and speed after a failed attempt.
 
