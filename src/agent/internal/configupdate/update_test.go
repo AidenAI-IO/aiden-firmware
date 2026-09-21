@@ -1443,6 +1443,7 @@ func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *test
 		TurnDetection:          "smart_turn",
 		TurnDetectionThreshold: &threshold,
 		TurnDetectionSilenceMs: 900,
+		UseBackendAgent:        true,
 	}}
 	dto := FromAgentConfig(want)
 	if dto.VoiceModel.APIKey != "" || !dto.VoiceModel.HasAPIKey {
