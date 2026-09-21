@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -178,6 +179,9 @@ def cli(argv: list[str] | None = None) -> int:
     )
     p_compare = sub.add_parser("compare")
     p_compare.add_argument("--runs", nargs=2, required=True)
+    p_publish = sub.add_parser("publish-langfuse")
+    p_publish.add_argument("--run-dir", required=True)
+    p_publish.add_argument("--dataset-prefix", default="aiden-benchmark")
     p_webui = sub.add_parser("webui")
     p_webui.add_argument("--host", default="127.0.0.1")
     p_webui.add_argument("--port", type=int, default=8765)
@@ -200,6 +204,25 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "compare":
         from runner.compare import compare_runs
         return compare_runs(Path(args.runs[0]), Path(args.runs[1]))
+    if args.cmd == "publish-langfuse":
+        from runner.langfuse_reporter import LangfusePublishError, publish_run
+        try:
+            published = publish_run(
+                Path(args.run_dir),
+                dataset_prefix=args.dataset_prefix,
+            )
+        except LangfusePublishError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        state = "already published" if published.already_exists else "published"
+        print(
+            f"Langfuse experiment {state}: dataset={published.dataset_name} "
+            f"run={published.run_name} items={published.item_count}",
+            flush=True,
+        )
+        if published.dataset_run_url:
+            print(f"View experiment: {published.dataset_run_url}", flush=True)
+        return 0
     if args.cmd == "webui":
         from runner.webui import cli as webui_cli
         forwarded = [
@@ -477,6 +500,16 @@ def _planned_metrics_k(units: list[TaskRunUnit]) -> int:
     return min(repeats, default=1)
 
 
+def _write_suite_snapshot(run_dir: Path, suite: Suite) -> str:
+    snapshot_name = "suite.json"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    source_bytes = suite.source_bytes or suite.source_path.read_bytes()
+    if hashlib.sha256(source_bytes).hexdigest() != suite.sha256:
+        raise ValueError("suite source no longer matches its loaded SHA-256")
+    (run_dir / snapshot_name).write_bytes(source_bytes)
+    return snapshot_name
+
+
 def _cmd_run_auto_agent_setup(
     args: argparse.Namespace,
     suite: Suite,
@@ -514,7 +547,13 @@ def _cmd_run_auto_agent_setup(
         print(f"mock environment started: {mock_server.redacted_url}", flush=True)
     try:
         return _cmd_run_auto_agent_setup_inner(
-            args, suite, selected_task_ids, target_platform, run_id, run_dir, mock_server=mock_server
+            args,
+            suite,
+            selected_task_ids,
+            target_platform,
+            run_id,
+            run_dir,
+            mock_server=mock_server,
         )
     finally:
         if mock_server is not None:
@@ -799,9 +838,11 @@ def _cmd_run_auto_agent_setup_inner(
             })
 
     totals = _result_totals(results, total_runs)
+    suite_snapshot_path = _write_suite_snapshot(run_dir, suite)
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
+        "suite_snapshot_path": suite_snapshot_path,
         "selected_task_ids": selected_task_ids,
         "agent_url": None,
         "environment_url": display_environment_url or None,
@@ -895,6 +936,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.auto_agent_setup and _suite_has_mock_environment(suite):
         requested_platform = str(args.target_platform or "").strip().lower()
         target_platform = "" if requested_platform == "auto" else requested_platform
+    if args.repeats is not None and args.repeats <= 0:
+        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
+        return 2
     if (
         args.environment_url
         and os.environ.get(MOBILEGYM_PREFLIGHT_COMPLETE_ENV) != "1"
@@ -907,6 +951,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         except Exception as exc:
             print(f"Error: environment preflight failed: {exc}", file=sys.stderr)
             return 2
+    if run_dir.exists() and (
+        not run_dir.is_dir() or any(run_dir.iterdir())
+    ):
+        print(f"Error: benchmark run directory already exists: {run_dir}", file=sys.stderr)
+        return 2
     if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(
             args,
@@ -916,9 +965,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             run_id,
             run_dir,
         )
-    if args.repeats is not None and args.repeats <= 0:
-        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
-        return 2
     units = _build_task_units(args, suite, target_platform)
     has_runnable_units = any(not unit.skip_reason for unit in units)
     if args.environment_url:
@@ -1076,9 +1122,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if client is not None:
             client.close()
     totals = _result_totals(results, total_runs)
+    suite_snapshot_path = _write_suite_snapshot(run_dir, suite)
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
+        "suite_snapshot_path": suite_snapshot_path,
         "selected_task_ids": selected_task_ids,
         "agent_url": args.agent_url,
         "environment_url": args.environment_url or None,

@@ -56,6 +56,7 @@ func TestInputLifecycleModelReloadKeepsActiveVoiceSession(t *testing.T) {
 			cfg := agent.DefaultConfig()
 			cfg.ConfigDir = t.TempDir()
 			cfg.InputMode, cfg.STT.Provider, cfg.TTS.Provider = mode, "", ""
+			cfg.VoiceModel.UseBackendAgent = mode == "realtime"
 			cfg.QuickCapture.Enabled = new(bool)
 			cfg.Model = agent.ModelConfig{
 				Provider: "openai", Model: "first", APIKey: "old-key",

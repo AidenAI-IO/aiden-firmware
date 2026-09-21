@@ -489,26 +489,42 @@ func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
 		t.Fatal("test endpoint did not detect its loud frame")
 	}
 	endpoint.Reset()
-	if shouldTrackRealtimeAdmissionSpeech(&state, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
 		endpoint.Observe(loudPCMFrame(), time.Now())
 	}
 	if endpoint.speechActive {
 		t.Fatal("test endpoint should not be consulted while a text response is pending")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, true) {
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, true, false) {
 		t.Fatal("local admission gate tracked microphone audio while a chat command was queued")
 	}
-	if !shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, false) {
+	if !shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, false, false) {
 		t.Fatal("local admission gate did not track audio for an idle realtime session")
 	}
 
 	state = realtimeTurnState{}
 	state.responseRequested()
-	if shouldTrackRealtimeAdmissionSpeech(&state, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
 		t.Fatal("local admission gate tracked microphone audio after startChat requested a response")
 	}
 	if !state.responseStarted("") {
 		t.Fatal("explicit text response was incorrectly treated as stale")
+	}
+}
+
+func TestRealtimeAdmissionSpeechDefersToAuthoritativeInterruptionDuringResponse(t *testing.T) {
+	state := realtimeTurnState{}
+	if !state.responseStarted("") {
+		t.Fatal("anonymous Gemini response did not start")
+	}
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, true) {
+		t.Fatal("local admission VAD tracked speaker echo during an authoritative provider response")
+	}
+	if !state.acceptsResponseEvent("") {
+		t.Fatalf("active anonymous response was marked stale: %+v", state)
+	}
+	if !shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
+		t.Fatal("legacy provider behavior changed without the authoritative capability")
 	}
 }
 
@@ -533,7 +549,7 @@ func TestRealtimeChatPendingCoversQueuedCommand(t *testing.T) {
 	if !realtimeChatPending(bridge, &command) {
 		t.Fatal("queued chat command was not reported as pending")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, realtimeChatPending(bridge, &command)) {
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, realtimeChatPending(bridge, &command), false) {
 		t.Fatal("local admission gate tracked microphone audio while a chat command was parked in queuedChat")
 	}
 }
