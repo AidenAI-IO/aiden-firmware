@@ -506,7 +506,7 @@ func (c VoiceModelConfig) Validate() error {
 		}
 	}
 	if provider == realtimevoice.ProviderQwen {
-		if err := validateQwenTurnDetection(c.TurnDetection, c.TurnDetectionSilenceMs, "voice_model"); err != nil {
+		if err := validateQwenTurnDetection(c.TurnDetection, c.TurnDetectionThreshold, c.TurnDetectionSilenceMs, "voice_model"); err != nil {
 			return err
 		}
 	}

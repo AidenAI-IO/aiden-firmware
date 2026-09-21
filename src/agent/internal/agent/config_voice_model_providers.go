@@ -3,6 +3,7 @@ package agent
 import (
 	"aiden-agent/internal/agent/realtimevoice"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -279,7 +280,7 @@ func validateVoiceModelProviderRecords(cfg Config) error {
 		}
 		providerFieldPrefix := fmt.Sprintf("voice_model_providers.%s", ref)
 		if providerType == realtimevoice.ProviderQwen {
-			if err := validateQwenTurnDetection(record.TurnDetection, record.TurnDetectionSilenceMs, providerFieldPrefix); err != nil {
+			if err := validateQwenTurnDetection(record.TurnDetection, record.TurnDetectionThreshold, record.TurnDetectionSilenceMs, providerFieldPrefix); err != nil {
 				return err
 			}
 		} else if record.TurnDetection != "" || record.TurnDetectionThreshold != nil || record.TurnDetectionSilenceMs != 0 {
@@ -293,12 +294,21 @@ func validateVoiceModelProviderRecords(cfg Config) error {
 	return nil
 }
 
-func validateQwenTurnDetection(turnType string, silenceMs int, fieldPrefix string) error {
+func validateQwenTurnDetection(turnType string, threshold *float64, silenceMs int, fieldPrefix string) error {
 	if turnType != "" && turnType != "server_vad" && turnType != "smart_turn" {
 		return fmt.Errorf("%s.turn_detection: unsupported type %q", fieldPrefix, turnType)
 	}
 	if silenceMs < 0 {
 		return fmt.Errorf("%s.turn_detection_silence_ms must be >= 0", fieldPrefix)
+	}
+	if turnType == "smart_turn" {
+		return nil
+	}
+	if threshold != nil && (math.IsNaN(*threshold) || math.IsInf(*threshold, 0) || *threshold < -1 || *threshold > 1) {
+		return fmt.Errorf("%s.turn_detection_threshold must be a finite value between -1 and 1", fieldPrefix)
+	}
+	if silenceMs != 0 && (silenceMs < 200 || silenceMs > 6000) {
+		return fmt.Errorf("%s.turn_detection_silence_ms must be 0 or between 200 and 6000", fieldPrefix)
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,18 +128,32 @@ func TestVoiceModelProviderRealtimeProtocolValidation(t *testing.T) {
 }
 
 func TestVoiceModelProviderTurnDetectionValidation(t *testing.T) {
-	threshold := 0.5
-	valid := Config{
-		VoiceModelProviders: map[string]VoiceModelProvider{
-			"qwen-main": {
-				Type: "qwen", TurnDetection: "smart_turn",
-				TurnDetectionThreshold: &threshold, TurnDetectionSilenceMs: 800,
-			},
-		},
-		VoiceModel: VoiceModelConfig{Provider: "qwen-main"},
-	}
-	if err := valid.ValidateVoiceProviders(); err != nil {
-		t.Fatalf("valid Qwen turn detection rejected: %v", err)
+	floatPtr := func(value float64) *float64 { return &value }
+	for _, tc := range []struct {
+		name      string
+		turnType  string
+		threshold *float64
+		silenceMs int
+	}{
+		{name: "omitted server VAD values"},
+		{name: "server VAD lower bounds", turnType: "server_vad", threshold: floatPtr(-1), silenceMs: 200},
+		{name: "server VAD upper bounds", turnType: "server_vad", threshold: floatPtr(1), silenceMs: 6000},
+		{name: "smart turn ignores server VAD ranges", turnType: "smart_turn", threshold: floatPtr(2), silenceMs: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				VoiceModelProviders: map[string]VoiceModelProvider{
+					"qwen-main": {
+						Type: "qwen", TurnDetection: tc.turnType,
+						TurnDetectionThreshold: tc.threshold, TurnDetectionSilenceMs: tc.silenceMs,
+					},
+				},
+				VoiceModel: VoiceModelConfig{Provider: "qwen-main"},
+			}
+			if err := cfg.ValidateVoiceProviders(); err != nil {
+				t.Fatalf("valid Qwen turn detection rejected: %v", err)
+			}
+		})
 	}
 
 	for _, tc := range []struct {
@@ -148,6 +163,12 @@ func TestVoiceModelProviderTurnDetectionValidation(t *testing.T) {
 	}{
 		{name: "unknown mode", record: VoiceModelProvider{Type: "qwen", TurnDetection: "semantic_vad"}, want: "unsupported type"},
 		{name: "negative silence", record: VoiceModelProvider{Type: "qwen", TurnDetectionSilenceMs: -1}, want: "must be >= 0"},
+		{name: "threshold below minimum", record: VoiceModelProvider{Type: "qwen", TurnDetection: "server_vad", TurnDetectionThreshold: floatPtr(-1.01)}, want: "between -1 and 1"},
+		{name: "default server VAD threshold above maximum", record: VoiceModelProvider{Type: "qwen", TurnDetectionThreshold: floatPtr(1.01)}, want: "between -1 and 1"},
+		{name: "threshold is NaN", record: VoiceModelProvider{Type: "qwen", TurnDetection: "server_vad", TurnDetectionThreshold: floatPtr(math.NaN())}, want: "finite value"},
+		{name: "threshold is infinite", record: VoiceModelProvider{Type: "qwen", TurnDetection: "server_vad", TurnDetectionThreshold: floatPtr(math.Inf(1))}, want: "finite value"},
+		{name: "silence below minimum", record: VoiceModelProvider{Type: "qwen", TurnDetection: "server_vad", TurnDetectionSilenceMs: 199}, want: "between 200 and 6000"},
+		{name: "silence above maximum", record: VoiceModelProvider{Type: "qwen", TurnDetection: "server_vad", TurnDetectionSilenceMs: 6001}, want: "between 200 and 6000"},
 		{name: "non-Qwen provider", record: VoiceModelProvider{Type: "openai", TurnDetection: "server_vad"}, want: "only supported for provider=qwen"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,6 +181,17 @@ func TestVoiceModelProviderTurnDetectionValidation(t *testing.T) {
 				t.Fatalf("ValidateVoiceProviders() error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestLegacyQwenTurnDetectionValidationUsesServerVADRanges(t *testing.T) {
+	threshold := 1.01
+	err := (VoiceModelConfig{
+		Provider: "qwen", TurnDetection: "server_vad",
+		TurnDetectionThreshold: &threshold, TurnDetectionSilenceMs: 800,
+	}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice_model.turn_detection_threshold") {
+		t.Fatalf("VoiceModelConfig.Validate() error = %v, want threshold range error", err)
 	}
 }
 
