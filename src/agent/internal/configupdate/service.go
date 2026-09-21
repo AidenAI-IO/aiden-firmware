@@ -384,7 +384,7 @@ func persistLegacyProviderFields(
 			providerType = record.Type
 		}
 		if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
-			"model_providers", provider, providerType, map[string]string{"api_key": current.Model.APIKey},
+			"model_providers", provider, providerType, map[string]any{"api_key": current.Model.APIKey},
 			map[string]bool{"api_key": true}); err != nil {
 			return err
 		}
@@ -395,7 +395,7 @@ func persistLegacyProviderFields(
 
 	if provider := current.TTS.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.TTSProviders[provider]; ok {
-			values := definedLegacyValues(metadata, map[string]string{
+			values := definedLegacyValues(metadata, map[string]any{
 				"api_key": record.APIKey, "model": record.Model, "voice_id": record.VoiceID,
 				"emotion": record.Emotion, "reference_id": record.ReferenceID,
 			}, []string{"tts"}, []string{"voice_settings", "classic", "tts"})
@@ -413,7 +413,7 @@ func persistLegacyProviderFields(
 
 	if provider := current.STT.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.STTProviders[provider]; ok {
-			values := definedLegacyValues(metadata, map[string]string{
+			values := definedLegacyValues(metadata, map[string]any{
 				"api_key": record.APIKey, "model": record.Model, "base_url": record.BaseURL,
 				"app_id": record.AppID, "secret_id": record.SecretID, "secret_key": record.SecretKey,
 				"region": record.Region, "engine_model_type": record.EngineModelType,
@@ -433,7 +433,7 @@ func persistLegacyProviderFields(
 
 	if provider := current.VoiceModel.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.VoiceModelProviders[provider]; ok {
-			values := definedLegacyValues(metadata, map[string]string{
+			legacyValues := map[string]any{
 				"upstream_provider": record.UpstreamProvider,
 				"agent_id":          record.AgentID,
 				"api_key":           record.APIKey,
@@ -447,7 +447,13 @@ func persistLegacyProviderFields(
 				"base_url":          record.BaseURL,
 				"realtime_protocol": record.RealtimeProtocol,
 				"voice":             record.Voice,
-			}, []string{"voice_model"}, []string{"voice_settings", "realtime"})
+			}
+			if strings.EqualFold(strings.TrimSpace(record.Type), "qwen") {
+				legacyValues["turn_detection"] = record.TurnDetection
+				legacyValues["turn_detection_threshold"] = record.TurnDetectionThreshold
+				legacyValues["turn_detection_silence_ms"] = record.TurnDetectionSilenceMs
+			}
+			values := definedLegacyValues(metadata, legacyValues, []string{"voice_model"}, []string{"voice_settings", "realtime"})
 			if len(values) > 0 {
 				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
 					"voice_model_providers", provider, record.Type, values,
@@ -473,8 +479,8 @@ func metadataHasAny(metadata toml.MetaData, key string, sections ...[]string) bo
 	return false
 }
 
-func definedLegacyValues(metadata toml.MetaData, values map[string]string, sections ...[]string) map[string]string {
-	result := make(map[string]string)
+func definedLegacyValues(metadata toml.MetaData, values map[string]any, sections ...[]string) map[string]any {
+	result := make(map[string]any)
 	for key, value := range values {
 		if metadataHasAny(metadata, key, sections...) {
 			result[key] = value
@@ -489,7 +495,7 @@ func persistLegacyProviderRecord(
 	renames providerRenames,
 	explicitCredentials providerFieldEdits,
 	section, sourceName, providerType string,
-	values map[string]string,
+	values map[string]any,
 	credentialFields map[string]bool,
 ) error {
 	targetName := sourceName
@@ -577,7 +583,7 @@ func addLegacyFieldDeletes(patch map[string]json.RawMessage, section string, fie
 	return nil
 }
 
-func mapKeys(values map[string]string) []string {
+func mapKeys(values map[string]any) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

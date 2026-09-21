@@ -117,6 +117,45 @@ func TestConfigMeta_VoiceProviderRulesKeyOnRecordType(t *testing.T) {
 	}
 }
 
+func TestConfigMeta_QwenTurnDetectionFieldsAreAdvancedAndProviderScoped(t *testing.T) {
+	idx := fieldIndex(t)
+	wantVisibility := VisibleRule{All: []Condition{
+		eq("voice_model_providers.type", "qwen"),
+	}}
+	for _, path := range []string{
+		"voice_model_providers.turn_detection",
+		"voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
+	} {
+		field, ok := idx[path]
+		if !ok {
+			t.Errorf("missing metadata field %s", path)
+			continue
+		}
+		if !field.Advanced {
+			t.Errorf("%s must be under Advanced Settings", path)
+		}
+		if field.VisibleWhen == nil || !reflect.DeepEqual(*field.VisibleWhen, wantVisibility) {
+			t.Errorf("%s visibleWhen = %#v, want %#v", path, field.VisibleWhen, wantVisibility)
+		}
+	}
+
+	turn := idx["voice_model_providers.turn_detection"]
+	wantOptions := []EnumOption{
+		{Value: "server_vad", Label: "Server VAD"},
+		{Value: "smart_turn", Label: "Smart Turn"},
+	}
+	if turn.Widget != WidgetSelect || !reflect.DeepEqual(turn.Enum, wantOptions) {
+		t.Fatalf("turn detection metadata = %+v, want select options %#v", turn, wantOptions)
+	}
+	if turn.Default != DefaultConfig().VoiceModel.TurnDetection {
+		t.Errorf("turn detection default = %#v, want %#v", turn.Default, DefaultConfig().VoiceModel.TurnDetection)
+	}
+	if threshold := idx["voice_model_providers.turn_detection_threshold"]; threshold.Widget != WidgetNumber || !threshold.Nullable {
+		t.Errorf("turn detection threshold metadata = %+v, want nullable number", threshold)
+	}
+}
+
 // The flat sections keep only the reference plus the genuinely global settings.
 // Leaving the per-provider fields here too would give every credential two
 // editors that disagree.

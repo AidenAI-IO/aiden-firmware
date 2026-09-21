@@ -601,7 +601,13 @@ func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig
 		outputFormat = "pcm"
 	}
 	turnType := cfg.VoiceModel.TurnDetection
-	if turnType == "" {
+	turnThreshold := cfg.VoiceModel.TurnDetectionThreshold
+	turnSilenceMs := cfg.VoiceModel.TurnDetectionSilenceMs
+	if realtimeProviderType(cfg) != realtimevoice.ProviderQwen {
+		turnType = ""
+		turnThreshold = nil
+		turnSilenceMs = 0
+	} else if turnType == "" {
 		turnType = "server_vad"
 	}
 	instructions := strings.TrimSpace(cfg.VoiceModel.Instructions)
@@ -616,7 +622,7 @@ func realtimeProviderSessionConfig(cfg agent.Config) realtimevoice.SessionConfig
 	}
 	return realtimevoice.SessionConfig{APIKey: cfg.VoiceModel.APIKey, Model: cfg.VoiceModel.Model, Voice: voice, Instructions: instructions,
 		InputAudioFormat: inputFormat, OutputAudioFormat: outputFormat, MaxHistoryTurns: realtimeContextReplayTurns,
-		TurnDetection: turnType, TurnDetectionThresh: cfg.VoiceModel.TurnDetectionThreshold, TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
+		TurnDetection: turnType, TurnDetectionThresh: turnThreshold, TurnDetectionSilenceMs: turnSilenceMs,
 		EnableSpeechEmotion: enableEmotion, Tools: realtimeVoiceToolDefinitions()}
 }
 

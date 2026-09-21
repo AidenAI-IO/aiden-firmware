@@ -41,6 +41,7 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	cfg := agent.Config{
 		Instruction: "be concise",
 		VoiceModel: agent.VoiceModelConfig{
+			Provider:               realtimevoice.ProviderQwen,
 			Voice:                  "custom-voice",
 			Instructions:           "speak naturally",
 			EnableSpeechEmotion:    &emotion,
@@ -74,6 +75,27 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 		if got.Tools[i].Name != want {
 			t.Fatalf("realtime tool[%d] = %q, want %q", i, got.Tools[i].Name, want)
 		}
+	}
+}
+
+func TestRealtimeSessionConfigOnlyAppliesTurnDetectionToQwen(t *testing.T) {
+	threshold := 0.2
+	for _, provider := range []string{"openai", "gemini", "xai", "speko"} {
+		t.Run(provider, func(t *testing.T) {
+			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{
+				Provider: provider, TurnDetection: "smart_turn",
+				TurnDetectionThreshold: &threshold, TurnDetectionSilenceMs: 900,
+			}}
+			got := realtimeProviderSessionConfig(cfg)
+			if got.TurnDetection != "" || got.TurnDetectionThresh != nil || got.TurnDetectionSilenceMs != 0 {
+				t.Fatalf("%s received Qwen turn detection settings: %+v", provider, got)
+			}
+		})
+	}
+
+	got := realtimeProviderSessionConfig(agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: realtimevoice.ProviderQwen}})
+	if got.TurnDetection != "server_vad" {
+		t.Fatalf("Qwen default turn detection = %q, want server_vad", got.TurnDetection)
 	}
 }
 

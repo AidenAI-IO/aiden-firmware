@@ -467,6 +467,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"voice_model.provider", defaults.VoiceModel.Provider},
 		{"voice_model_providers.model", defaults.VoiceModel.Model},
 		{"voice_model_providers.region", defaults.VoiceModel.Region},
+		{"voice_model_providers.turn_detection", defaults.VoiceModel.TurnDetection},
 		{"voice_model_providers.voice", defaults.VoiceModel.Voice},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
@@ -968,6 +969,8 @@ providerVisible:
 		"voice_model_providers.region", "voice_model_providers.auth_mode",
 		"voice_model_providers.project_id", "voice_model_providers.location", "voice_model_providers.endpoint",
 		"voice_model_providers.realtime_protocol", "voice_model_providers.base_url", "voice_model_providers.voice",
+		"voice_model_providers.turn_detection", "voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
 	} {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("missing metadata field %s", path)
@@ -995,6 +998,8 @@ providerVisible:
 		"voice_model_providers.agent_id", "voice_model_providers.workspace_id",
 		"voice_model_providers.endpoint", "voice_model_providers.base_url",
 		"voice_model_providers.region", "voice_model_providers.realtime_protocol",
+		"voice_model_providers.turn_detection", "voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
 	} {
 		if !idx[path].Advanced {
 			t.Errorf("%s must be collapsed under advanced settings", path)

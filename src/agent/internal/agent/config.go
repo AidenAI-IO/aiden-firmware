@@ -492,11 +492,10 @@ func (c VoiceModelConfig) Validate() error {
 			return fmt.Errorf("voice_model.base_url: invalid HTTP URL %q", c.BaseURL)
 		}
 	}
-	if provider != "speko" && c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
-		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
-	}
-	if c.TurnDetectionSilenceMs < 0 {
-		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
+	if provider == realtimevoice.ProviderQwen {
+		if err := validateQwenTurnDetection(c.TurnDetection, c.TurnDetectionSilenceMs, "voice_model"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1210,6 +1209,12 @@ func applyVoiceModelProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	}
 	if !metadata.IsDefined("voice_model", "turn_detection") {
 		cfg.VoiceModel.TurnDetection = ""
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection_threshold") {
+		cfg.VoiceModel.TurnDetectionThreshold = nil
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection_silence_ms") {
+		cfg.VoiceModel.TurnDetectionSilenceMs = 0
 	}
 }
 

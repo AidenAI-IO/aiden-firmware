@@ -126,6 +126,43 @@ func TestVoiceModelProviderRealtimeProtocolValidation(t *testing.T) {
 	}
 }
 
+func TestVoiceModelProviderTurnDetectionValidation(t *testing.T) {
+	threshold := 0.5
+	valid := Config{
+		VoiceModelProviders: map[string]VoiceModelProvider{
+			"qwen-main": {
+				Type: "qwen", TurnDetection: "smart_turn",
+				TurnDetectionThreshold: &threshold, TurnDetectionSilenceMs: 800,
+			},
+		},
+		VoiceModel: VoiceModelConfig{Provider: "qwen-main"},
+	}
+	if err := valid.ValidateVoiceProviders(); err != nil {
+		t.Fatalf("valid Qwen turn detection rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		record VoiceModelProvider
+		want   string
+	}{
+		{name: "unknown mode", record: VoiceModelProvider{Type: "qwen", TurnDetection: "semantic_vad"}, want: "unsupported type"},
+		{name: "negative silence", record: VoiceModelProvider{Type: "qwen", TurnDetectionSilenceMs: -1}, want: "must be >= 0"},
+		{name: "non-Qwen provider", record: VoiceModelProvider{Type: "openai", TurnDetection: "server_vad"}, want: "only supported for provider=qwen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				VoiceModelProviders: map[string]VoiceModelProvider{"voice": tc.record},
+				VoiceModel:          VoiceModelConfig{Provider: "voice"},
+			}
+			err := cfg.ValidateVoiceProviders()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateVoiceProviders() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestVoiceProviderRecordRequiresType(t *testing.T) {
 	cfg := Config{
 		TTSProviders: map[string]TTSProvider{"empty": {APIKey: "sk-xxx"}},
