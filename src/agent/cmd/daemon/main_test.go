@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -64,7 +65,7 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	wantTools := []string{
 		"get_current_time", "recall_memory", "save_memory", "forget_memory",
 		"recall_session_chunks", "audio_volume", "create_agent_task",
-		"cancel_agent_task", "query_agent_task", "response_user_action",
+		"cancel_agent_task", "update_agent_task", "query_agent_task", "response_user_action",
 		"end_conversation",
 	}
 	if len(got.Tools) != len(wantTools) {
@@ -313,7 +314,7 @@ func TestRealtimeEndConversationToolDefersTeardownToSessionLoop(t *testing.T) {
 
 func TestRealtimeInstructionsCoverMemoryWritesAndStandby(t *testing.T) {
 	instructions := agent.DefaultRealtimeVoiceInstructions
-	for _, phrase := range []string{"save_memory", "forget_memory", "recall_session_chunks", "audio_volume", "end_conversation", "query_agent_task"} {
+	for _, phrase := range []string{"save_memory", "forget_memory", "recall_session_chunks", "audio_volume", "end_conversation", "query_agent_task", "update_agent_task"} {
 		if !strings.Contains(instructions, phrase) {
 			t.Fatalf("realtime instructions missing guidance for %q: %s", phrase, instructions)
 		}
@@ -350,6 +351,14 @@ func TestRealtimeAgentTaskToolsAreNonBlocking(t *testing.T) {
 	running := decodeRealtimeTaskQuery(t, executor.call(context.Background(), realtimeQueryTaskTool, fmt.Sprintf(`{"task_id":%q}`, created.ID)))
 	if len(running) != 1 || running[0].Status != agenttask.StatusRunning {
 		t.Fatalf("query output = %+v, want the running task", running)
+	}
+	updatedOutput := executor.call(context.Background(), realtimeUpdateTaskTool, fmt.Sprintf(`{"task_id":%q,"task":"open display settings"}`, created.ID))
+	var updated agenttask.Task
+	if err := json.Unmarshal([]byte(updatedOutput), &updated); err != nil {
+		t.Fatalf("decode updated task: %v", err)
+	}
+	if updated.Prompt != "open display settings" || updated.Status != agenttask.StatusRunning {
+		t.Fatalf("updated task = %+v", updated)
 	}
 	// Omitting task_id must surface the same work, so the foreground can check
 	// what it already started before creating more.
@@ -402,6 +411,45 @@ func TestRealtimeQueryTaskWithoutTaskIDListsOutstandingWork(t *testing.T) {
 	}
 }
 
+func TestRealtimeCancelCompletedTaskSuppressesAndRedactsPendingResult(t *testing.T) {
+	manager := agenttask.NewManager(staticTaskRunner{result: "stale private result"})
+	defer manager.Close()
+	executor := realtimeVoiceToolExecutor{tasks: manager, now: time.Now}
+	task, err := manager.Create("old request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if current, ok := manager.Query(task.ID); ok && current.Status == agenttask.StatusCompleted {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	claimed := manager.DrainTerminalTasks()
+	if len(claimed) != 1 {
+		t.Fatalf("claimed terminal tasks = %+v", claimed)
+	}
+	output := executor.call(context.Background(), realtimeCancelTaskTool, fmt.Sprintf(`{"task_id":%q}`, task.ID))
+	if strings.Contains(output, "stale private result") {
+		t.Fatalf("cancel exposed the suppressed result to the realtime model: %s", output)
+	}
+	var got struct {
+		Status                     agenttask.Status `json:"status"`
+		PendingNotificationCleared bool             `json:"pending_notification_cleared"`
+		Error                      string           `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("decode cancel result: %v", err)
+	}
+	if got.Status != agenttask.StatusCompleted || !got.PendingNotificationCleared || got.Error != "" {
+		t.Fatalf("cancel result = %+v", got)
+	}
+	if deliverable := manager.BeginTaskUpdateDelivery(claimed); len(deliverable) != 0 {
+		t.Fatalf("suppressed result remained deliverable: %+v", deliverable)
+	}
+}
+
 func TestRealtimeTaskCreationRequiresOutstandingWorkCheck(t *testing.T) {
 	const rule = "query_agent_task with no task_id"
 	if !strings.Contains(agent.DefaultRealtimeVoiceInstructions, rule) {
@@ -434,6 +482,32 @@ func TestRealtimeTaskCreationRequiresOutstandingWorkCheck(t *testing.T) {
 	for _, name := range schema.Required {
 		if name == "task_id" {
 			t.Fatalf("%s still requires task_id, so the outstanding-work check cannot run: %s", realtimeQueryTaskTool, query.Parameters)
+		}
+	}
+}
+
+func TestRealtimeUpdateTaskRequiresCompleteGoal(t *testing.T) {
+	definitions := make(map[string]realtimevoice.Tool)
+	for _, definition := range realtimeVoiceToolDefinitions() {
+		definitions[definition.Name] = definition
+	}
+	update, ok := definitions[realtimeUpdateTaskTool]
+	if !ok {
+		t.Fatalf("missing %s definition", realtimeUpdateTaskTool)
+	}
+	if !strings.Contains(update.Description, "complete goal") || !strings.Contains(update.Description, "instead of cancelling") {
+		t.Fatalf("update description does not explain replacement semantics: %s", update.Description)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal(update.Parameters, &schema); err != nil {
+		t.Fatalf("decode %s schema: %v", realtimeUpdateTaskTool, err)
+	}
+	for _, required := range []string{"task_id", "task"} {
+		if _, ok := schema.Properties[required]; !ok || !slices.Contains(schema.Required, required) {
+			t.Fatalf("%s schema must require %q: %s", realtimeUpdateTaskTool, required, update.Parameters)
 		}
 	}
 }
