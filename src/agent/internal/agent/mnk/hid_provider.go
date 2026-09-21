@@ -556,9 +556,10 @@ func (p *HIDProvider) swipeLockedWithOptions(ctx context.Context, path [][2]floa
 
 	// iOS AssistiveTouch retains fling velocity through an unchanged-coordinate
 	// hold. Reserve a tiny part of the path for real low-speed motion instead.
-	// Keep explicit end holds, edge gestures, and the native touchscreen unchanged.
+	// Use the same trajectory for mouse and touchscreen reports; preserve
+	// explicit end holds and edge gestures.
 	start := path[0]
-	controlledRelease := !p.touchscreen && options.HoldAfterMs == 0 && start[0] > 10 && start[0] < 990 && start[1] > 10 && start[1] < 990
+	controlledRelease := options.HoldAfterMs == 0 && start[0] > 10 && start[0] < 990 && start[1] > 10 && start[1] < 990
 	endpoint := absPath[len(absPath)-1]
 	if controlledRelease {
 		// Skip duplicate trailing points when locating the final moving segment.

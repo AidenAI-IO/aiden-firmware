@@ -1682,14 +1682,15 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	}
 
 	reports := readTouchscreenReports(t, dev, path)
-	if len(reports) != 1+defaultSwipeSteps+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
+	if len(reports) <= 1+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want additional low-speed reports", len(reports))
 	}
 	if reports[0].flags != 0x03 || reports[0].x != 6553 {
 		t.Fatalf("down report = %+v, want start touch", reports[0])
 	}
-	if reports[defaultSwipeSteps].flags != 0x03 || reports[defaultSwipeSteps].x != 26214 {
-		t.Fatalf("final move = %+v, want end while touching", reports[defaultSwipeSteps])
+	finalMove := len(reports) - touchReleaseReportCount - 1
+	if reports[finalMove].flags != 0x03 || reports[finalMove].x != 26214 {
+		t.Fatalf("final move = %+v, want end while touching", reports[finalMove])
 	}
 	last := reports[len(reports)-1]
 	if last.flags != 0x00 || last.x != 26214 {

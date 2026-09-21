@@ -24,6 +24,14 @@ func (d *releaseCaptureDevice) Write(b []byte) error {
 func (d *releaseCaptureDevice) Close() {}
 
 func TestSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T) {
+	for _, touchscreen := range []bool{false, true} {
+		t.Run(fmt.Sprintf("touchscreen=%t", touchscreen), func(t *testing.T) {
+			testSwipeReleaseHasRealSlowMotionAndExactEndpoint(t, touchscreen)
+		})
+	}
+}
+
+func testSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T, touchscreen bool) {
 	for _, tc := range []struct {
 		name string
 		path [][2]float64
@@ -37,7 +45,7 @@ func TestSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &releaseCaptureDevice{}
-			p := NewHIDProvider(d, nil, nil, nil, false, "qwerty", nil)
+			p := NewHIDProvider(d, nil, nil, nil, touchscreen, "qwerty", nil)
 			err := p.SwipeWithOptions(context.Background(), tc.path, ButtonLeft, SwipeOptions{DurationMs: 40, Steps: 24})
 			if err != nil {
 				t.Fatal(err)
@@ -45,6 +53,9 @@ func TestSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T) {
 			var held, releases []releaseSample
 			for _, r := range d.samples {
 				if r.data[0]&1 != 0 {
+					if touchscreen && (r.data[0] != 0x03 || r.data[1] != 1) {
+						t.Fatal("touchscreen contact lost tip/in-range flags or changed contact ID")
+					}
 					held = append(held, r)
 				} else if len(held) > 0 {
 					releases = append(releases, r)
@@ -54,7 +65,11 @@ func TestSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T) {
 				t.Fatal("missing release tail")
 			}
 			position := func(r releaseSample) (int, int) {
-				return int(binary.LittleEndian.Uint16(r.data[1:3])), int(binary.LittleEndian.Uint16(r.data[3:5]))
+				offset := 1
+				if touchscreen {
+					offset = 2
+				}
+				return int(binary.LittleEndian.Uint16(r.data[offset : offset+2])), int(binary.LittleEndian.Uint16(r.data[offset+2 : offset+4]))
 			}
 			end := tc.path[len(tc.path)-1]
 			wantX, wantY, _ := p.normalizedToAbsolute(end[0], end[1])
@@ -63,6 +78,9 @@ func TestSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T) {
 				t.Fatal("did not reach requested endpoint")
 			}
 			for _, r := range releases {
+				if r.data[0] != 0 {
+					t.Fatal("contact flags not cleared on release")
+				}
 				x, y := position(r)
 				if x != wantX || y != wantY {
 					t.Fatal("release moved endpoint")
@@ -115,7 +133,9 @@ func TestSwipeEdgeAndExplicitHoldRemainUnchanged(t *testing.T) {
 		{"home", [2]float64{500, 999}, 0, false},
 		{"back", [2]float64{1, 500}, 0, false},
 		{"explicit", [2]float64{500, 800}, 20, false},
-		{"touchscreen", [2]float64{500, 800}, 0, true},
+		{"touchscreen home", [2]float64{500, 999}, 0, true},
+		{"touchscreen back", [2]float64{1, 500}, 0, true},
+		{"touchscreen explicit", [2]float64{500, 800}, 20, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &releaseCaptureDevice{}
@@ -209,5 +229,30 @@ func TestSwipeCanceledDuringMainMotionStillReleases(t *testing.T) {
 		if r[0]&3 != 0 || string(r[1:]) != string(last[1:]) {
 			t.Fatal("contact not released at last position")
 		}
+	}
+}
+
+func TestTouchscreenSwipeCancellationReleasesLastSuccessfulPosition(t *testing.T) {
+	for _, cancelAt := range []int{3, 6} { // during main movement; first slow-tail report
+		t.Run(fmt.Sprint(cancelAt), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			d := &cancelAfterWritesDevice{cancel: cancel, cancelAt: cancelAt}
+			p := NewHIDProvider(d, nil, nil, nil, true, "qwerty", nil)
+			err := p.SwipeWithOptions(ctx, [][2]float64{{500, 800}, {500, 200}}, ButtonLeft, SwipeOptions{DurationMs: 40, Steps: 4})
+			if err != context.Canceled {
+				t.Fatalf("error=%v, want context.Canceled", err)
+			}
+			data := d.bytes()
+			if len(data) != (cancelAt+p.releaseRepeatCount)*6 {
+				t.Fatal("contact reports continued after cancellation")
+			}
+			last := data[(cancelAt-1)*6 : cancelAt*6]
+			for offset := cancelAt * 6; offset < len(data); offset += 6 {
+				if data[offset] != 0 || string(data[offset+1:offset+6]) != string(last[1:]) {
+					t.Fatal("touchscreen cleanup changed contact ID/position or kept contact active")
+				}
+			}
+		})
 	}
 }
