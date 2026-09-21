@@ -47,7 +47,7 @@ def stage(root):
         shutil.copyfile(ROOT / "overlay-debian" / path, destination)
         destination.chmod(int(record["mode"], 8))
     (root / "DEBIAN/conffiles").write_text("".join("/" + p + "\n" for p in files if p.startswith("etc/")))
-    document = root / "usr/share/doc/aiden-business/runtime-config.json"
+    document = root / "usr/lib/aiden/runtime-config.json"
     document.parent.mkdir(parents=True, exist_ok=True)
     document.write_text(json.dumps({"format": 1, "files": files}, indent=2) + "\n")
 

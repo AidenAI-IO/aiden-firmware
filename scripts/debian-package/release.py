@@ -51,7 +51,7 @@ def verify_runtime_config(package, enabled):
         raise ValueError("Unknown runtime configuration ownership")
     data = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-        name = "./usr/share/doc/aiden-business/runtime-config.json"
+        name = "./usr/lib/aiden/runtime-config.json"
         if not enabled:
             if name in archive.getnames():
                 raise ValueError("Undeclared runtime configuration payload")

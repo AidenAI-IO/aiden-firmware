@@ -8,7 +8,7 @@ import sys
 
 ROOT = Path(os.environ.get("DPKG_ROOT") or "/")
 NEW_FILES = {}  # Replaced by the package builder, before payload unpacking.
-DOCUMENT = ROOT / "usr/share/doc/aiden-business/runtime-config.json"
+DOCUMENT = ROOT / "usr/lib/aiden/runtime-config.json"
 
 
 def installed_files():

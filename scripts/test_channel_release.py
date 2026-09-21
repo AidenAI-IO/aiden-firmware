@@ -236,7 +236,7 @@ class ContractTests(unittest.TestCase):
         env = {**self.env, "DPKG_ROOT": str(self.root), "SYSTEMD_OFFLINE": "1"}
         script = str(self.root / "DEBIAN/preinst")
         subprocess.run([script, "install"], check=True, env=env)
-        for field, value in (("platform_contract", "6.0.0"), ("channel", "prod"),
+        for field, value in (("platform_contract", "6.0.0"), ("runtime_config", 0), ("channel", "prod"),
                              ("base_release", "dev-v0.0.8"), ("system_fingerprint", "b" * 64)):
             with self.subTest(field=field):
                 release.write_json(contract_path, {**platform, field: value})

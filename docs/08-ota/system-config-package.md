@@ -42,7 +42,7 @@ APT 源及公钥、OTA 信任根、EDID、VQE 基础配置也继续归平台。
 ## 安装、配置与生效
 
 文件作为真实 dpkg payload 安装，hook 不以 `cp` 方式覆盖系统文件。包内
-`/usr/share/doc/aiden-business/runtime-config.json` 记录路径、权限、哈希和生效方式：
+`/usr/lib/aiden/runtime-config.json` 记录路径、权限、哈希和生效方式：
 
 - 所有者为 root；普通配置 `0644`，可执行辅助脚本 `0755`，sudoers `0440`。
 - `/etc` 文件登记为 conffiles：上游和本地同时修改时，dpkg 按交互选择处理。无人值守
