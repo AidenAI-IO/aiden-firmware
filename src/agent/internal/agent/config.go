@@ -450,7 +450,7 @@ type VoiceModelConfig struct {
 
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
 
-func (c Config) UsesNativeRealtimeReasoning() bool {
+func (c Config) RealtimeDirectTools() bool {
 	if c.VoiceModel.UseBackendAgent == nil {
 		return false
 	}

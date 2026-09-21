@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestUsesNativeRealtimeReasoningSwitch(t *testing.T) {
+func TestRealtimeDirectToolsSwitch(t *testing.T) {
 	trueVal, falseVal := true, false
 	cases := []struct {
 		name string
@@ -18,7 +18,7 @@ func TestUsesNativeRealtimeReasoningSwitch(t *testing.T) {
 	for _, tc := range cases {
 		cfg := Config{}
 		cfg.VoiceModel = VoiceModelConfig{Provider: "gemini", Model: "gemini-3.8-live-extended-thinking", UseBackendAgent: tc.over}
-		if got := cfg.UsesNativeRealtimeReasoning(); got != tc.want {
+		if got := cfg.RealtimeDirectTools(); got != tc.want {
 			t.Errorf("%s: got %t want %t", tc.name, got, tc.want)
 		}
 	}

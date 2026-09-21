@@ -595,7 +595,7 @@ func realtimeProviderSessionConfig(cfg agent.Config, runtime *agent.Runtime) rea
 }
 
 func realtimeProviderSessionConfigWithTools(cfg agent.Config, runtime *agent.Runtime, runtimeTools []langtools.Tool) realtimevoice.SessionConfig {
-	nativeReasoning := cfg.UsesNativeRealtimeReasoning()
+	nativeReasoning := cfg.RealtimeDirectTools()
 	voice := cfg.VoiceModel.Voice
 	inputFormat := cfg.VoiceModel.InputAudioFormat
 	if inputFormat == "" {
@@ -771,7 +771,7 @@ func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runt
 			map[string]any{"type": "object", "properties": map[string]any{}},
 		),
 	}
-	if cfg.UsesNativeRealtimeReasoning() {
+	if cfg.RealtimeDirectTools() {
 		if runtime != nil {
 			if runtimeTools == nil {
 				runtimeTools = runtime.AvailableTools()
@@ -1157,7 +1157,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var runtimeTools []langtools.Tool
-	if cfg.UsesNativeRealtimeReasoning() && runtime != nil {
+	if cfg.RealtimeDirectTools() && runtime != nil {
 		runtimeTools = runtime.AvailableTools()
 	}
 	sessionConfig := realtimeProviderSessionConfigWithTools(cfg, runtime, runtimeTools)

@@ -897,13 +897,13 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 	}
 }
 
-// shouldBypassBackendAgent reports whether the realtime model owns reasoning
-// and tool calling without the legacy context-manager agent.
+// shouldBypassBackendAgent reports whether the realtime session runs in
+// direct-toolkit mode, executing tools without the legacy backend agent.
 func (r *Runtime) shouldBypassBackendAgent(cfg Config) bool {
 	if cfg.InputModeOrDefault() != "realtime" {
 		return false
 	}
-	return cfg.UsesNativeRealtimeReasoning()
+	return cfg.RealtimeDirectTools()
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
