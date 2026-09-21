@@ -4,7 +4,9 @@ sidebar_position: 16
 
 # Episode Telemetry and Langfuse Integration
 
-After each task completes, Aiden Agent can asynchronously report the complete task episode (metadata, event chain, screenshots) to [Langfuse](https://langfuse.com/) for trace browsing, dataset construction, and evaluation.
+After each task completes, Aiden Agent asynchronously reports the complete task episode (metadata, event chain, screenshots) to [Langfuse](https://langfuse.com/) as one trace per episode.
+
+Traces are sent over Langfuse's OpenTelemetry (OTLP) endpoint (`POST /api/public/otel/v1/traces`) with the `langfuse.*` attribute conventions. The legacy `/api/public/ingestion` event API is deprecated and stops accepting trace and observation events on 2026-11-16, so it is no longer used.
 
 ## Feature Toggle
 
@@ -37,42 +39,56 @@ tags = ["aiden-hardware"]
 
 Credentials are written directly into the `[advanced_settings.runtime.telemetry]` section of `agent.toml`.
 
+The Langfuse deployment must support OTLP ingestion: self-hosted Langfuse `>= 3.22.0`, or Langfuse Cloud. The agent sends the `x-langfuse-ingestion-version: 4` header so spans land on the observations-first data model in real time.
+
 ## Data Flow
 
 ```text
 Runtime.Run()
-  → Agent execution loop
+  → Agent execution loop (model calls captured with role, timing, usage, cost)
   → EpisodeRecorder records events
   → CommitEpisode persists to disk (episode.yaml + events.jsonl + artifacts/)
-  → exportEpisodeBestEffort async reports to Langfuse
+  → exportEpisodeBestEffort async maps episode + events + prompt calls to OTLP spans
+  → POST /api/public/otel/v1/traces (spans), POST /api/public/scores (outcome)
 ```
+
+Spans are exported once, complete: Langfuse treats ingested spans as immutable, so no observation is created and then updated. Only chunks that were not accepted are retried, and a partial-success response is reported instead of re-sent, so retries cannot duplicate observations.
 
 ### Langfuse Mapping
 
 | Aiden Episode | Langfuse |
 | --- | --- |
-| `TaskEpisode` | Trace (`aiden-episode`) |
-| Run start | Span `run` (created for all runs, covers main execution activity) |
-| `tool_call` / `tool_result` | Span `tool/{name}` + `tool_result/{name}` |
-| `Outcome.Success` | Boolean Score `success=1/0` |
-| `artifacts/*.jpeg` | Media upload + observation reference |
+| `TaskEpisode` | Trace (`aiden-episode`), one trace per episode |
+| Run | Root observation `agent-run` (`agent` type) carrying the user goal and final answer |
+| `loop_phase` | `span` `phase/{phase}` |
+| Iteration | `span` `agent-iteration` with `iteration` in metadata |
+| `tool_call` + `tool_result` | One `tool` observation named after the tool, with the call arguments as input and the result as output |
+| Model calls | `generation` observations: `agent-response`, `summarize-context` (context compaction), `llm-response` fallback |
+| Memory retrieval | `retriever` `memory/retrieve` |
+| STT / voice | `span` `stt/*`, `voice/*`, with model, provider, and latency metadata |
+| `Outcome.Success` | Boolean Score `success=1/0` via the scores API |
+| `artifacts/*.jpeg` | Media upload, referenced from the tool observation's output |
 | `Extra` metrics | Trace metadata + generation model/cost/usage fields |
 
 Typical trace structure:
 
 ```text
 aiden-episode (trace)
-├── run
-│   ├── tool/audio_volume
-│   │   └── tool_result/audio_volume
-│   ├── tool/screenshot
-│   │   └── tool_result/screenshot
-│   └── tool/touch_gesture
-│       └── tool_result/touch_gesture
-└── generation (LLM calls)
+└── agent-run (agent)
+    ├── session/begin
+    ├── memory/retrieve (retriever)
+    └── phase/default
+        └── agent-iteration
+            ├── agent-response (generation)
+            ├── screenshot (tool)
+            └── verifier
 ```
 
+Observation names are stable operations, never per-call values: every model invocation of a run produces its own generation (with its own model, tokens, and cost), and repeated steps share one name with run-specific values in metadata.
+
 ### Trace Metadata and Tags
+
+Trace-wide context — `langfuse.trace.name`, `langfuse.user.id`, `langfuse.session.id`, `langfuse.trace.tags`, `langfuse.release`, `langfuse.version`, `langfuse.environment`, and `langfuse.trace.metadata.*` — is attached to **every** observation, not only the root. Langfuse v4 filters and aggregates per observation, so context that only sits on the root is unavailable on its children.
 
 In addition to tokens, duration, and model info in `episode.Extra`, the exporter derives execution metrics from the event chain and writes them into trace `metadata`:
 
@@ -103,7 +119,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-After startup, visit `http://localhost:3000`, create an Organization / Project, and copy the Public Key and Secret Key to device environment variables.
+After startup, visit `http://localhost:3000`, create an Organization / Project, and copy the Public Key and Secret Key to device environment variables. To skip that step, set `LANGFUSE_INIT_ORG_ID`, `LANGFUSE_INIT_PROJECT_ID`, and the project key pair in `.env` before the first start; the stack then provisions the project on boot.
 
 Components: Langfuse Web + Worker, Postgres, ClickHouse, Redis, MinIO (screenshot and event blob storage).
 
@@ -113,13 +129,23 @@ Components: Langfuse Web + Worker, Postgres, ClickHouse, Redis, MinIO (screensho
 2. Set `telemetry.enabled = true` in device `agent.toml`
 3. Execute a task (Web UI or benchmark)
 4. Confirm in Langfuse UI → Traces:
-   - `aiden-episode` trace exists
-   - Contains `run` span with nested tool calls
-   - Tool calls show as `tool/*` and `tool_result/*` spans
-   - Screenshots can be previewed in tool_result observations
+   - `aiden-episode` trace exists with root observation `agent-run`
+   - Tool calls appear as `tool` observations with input and output on the same observation
+   - Model calls appear as `generation` observations with model, token usage, and cost
+   - Screenshots can be previewed in tool observations
    - Metadata contains `tool_call_count`, `iteration_count`, token stats
    - Tags contain `success` or `failure`
    - Trace contains `userId` (device ID) and `sessionId` (runtime session ID)
+
+To verify the exporter itself against a running Langfuse, run the opt-in end-to-end test. It exports a synthetic episode through the production exporter and reads the resulting trace back through the Langfuse API:
+
+```bash
+cd src/agent
+AIDEN_LANGFUSE_LIVE=1 \
+LANGFUSE_BASE_URL=http://localhost:3000 \
+LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-... \
+go test ./internal/agent/ -run TestLangfuseLiveEpisodeExport -v -count=1
+```
 
 ## Trace → Dataset → Benchmark Workflow
 
@@ -191,6 +217,7 @@ Field mapping:
 | `sessionId` | Runtime session ID, or `extra.session_id` |
 | generation `modelParameters` | Invocation parameters like `temperature`, `max_tokens`, tool count, etc. |
 | generation `usageDetails` / `costDetails` | Token usage and provider/local estimated cost |
+| generation `completionStartTime` | Start time plus the provider's time-to-first-content metric, when reported |
 | score `success` | Written for every task, `1` for success, `0` for failure |
 
 **Langfuse Dataset → Benchmark field mapping:**
@@ -216,7 +243,8 @@ After new tasks are added to the suite, use the benchmark runner for automated r
 
 | Symptom | Possible Cause |
 | --- | --- |
-| Log `[telemetry] export episode failed` | `base_url` unreachable, incorrect credentials, timeout |
+| Log `[telemetry] export episode failed` | `base_url` unreachable, incorrect credentials, timeout, or a Langfuse version without OTLP ingestion (`< 3.22.0`) |
+| Log `langfuse rejected N span(s)` | Langfuse accepted the request but dropped spans; the batch is not retried because the rest was ingested |
 | Trace has no screenshots / media not yet uploaded | Agent did not PATCH upload status (fixed); or MinIO presigned URL uses `localhost:9090`, device cannot access; check agent log `[telemetry] screenshot upload failed` |
 
 Screenshot upload complete flow:
@@ -224,7 +252,7 @@ Screenshot upload complete flow:
 1. Agent `POST {base_url}/api/public/media` gets `mediaId` + presigned `uploadUrl`
 2. Agent `PUT uploadUrl` direct upload to MinIO
 3. Agent `PATCH {base_url}/api/public/media/{mediaId}` writes `uploadHttpStatus=200` (**missing this step shows media not yet uploaded**)
-4. Agent `POST /api/public/ingestion` sends trace containing `@@@langfuseMedia:...@@@`
+4. Agent `POST {base_url}/api/public/otel/v1/traces` sends the tool observation containing `@@@langfuseMedia:...@@@`
 
 When Agent runs on a device such as Luckfox, the Langfuse `.env` must use a MinIO address reachable from that device:
 

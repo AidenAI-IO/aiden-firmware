@@ -236,6 +236,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	// Problem 4: Support interrupting LLM call during generation
 	llmCtx, llmCancel := context.WithCancelCause(ctx)
 	defer llmCancel(nil)
+	// Tag the call so the captured prompt becomes an `agent-response` generation
+	// in the episode trace.
+	llmCtx = withTelemetryRole(llmCtx, telemetryRoleAgent)
 
 	if l.SteerInterrupt != nil {
 		interruptCh := l.SteerInterrupt()

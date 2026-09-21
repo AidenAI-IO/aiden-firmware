@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -65,7 +68,8 @@ func TestConfigValidateTelemetryRequiresKeys(t *testing.T) {
 		t.Fatalf("Validate() = %v, want telemetry.secret_key error", err)
 	}
 }
-func TestBuildLangfuseBatchAddsTraceIdentityAndFailureScore(t *testing.T) {
+
+func TestBuildLangfuseSpansAddsTraceIdentityAndFailureScore(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	episode := TaskEpisode{
 		ID:          "ep_failure_001",
@@ -83,42 +87,54 @@ func TestBuildLangfuseBatchAddsTraceIdentityAndFailureScore(t *testing.T) {
 	}
 
 	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	spans, score, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir())
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
 
-	var traceBody map[string]interface{}
-	var scoreBody map[string]interface{}
-	for _, event := range batch {
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode body: %v", err)
+	root := singleLangfuseSpan(t, spans, langfuseRunSpanName)
+	if root.Type != langfuse.TypeAgent {
+		t.Fatalf("root type = %q, want agent", root.Type)
+	}
+	if root.Trace.Name != langfuseTraceName {
+		t.Fatalf("trace name = %q, want %q", root.Trace.Name, langfuseTraceName)
+	}
+	if root.Trace.UserID != "device-a" {
+		t.Fatalf("trace userId = %q, want device-a", root.Trace.UserID)
+	}
+	if root.Trace.SessionID != "runtime-a" {
+		t.Fatalf("trace sessionId = %q, want runtime-a", root.Trace.SessionID)
+	}
+	if root.Input != "打开设置" {
+		t.Fatalf("root input = %#v, want user goal", root.Input)
+	}
+	if root.TraceID != telemetryTraceID(episode.ID) {
+		t.Fatalf("root trace id = %q, want %q", root.TraceID, telemetryTraceID(episode.ID))
+	}
+	for _, span := range spans {
+		if span.TraceID != root.TraceID {
+			t.Fatalf("span %s trace id = %q, want %q", span.Name, span.TraceID, root.TraceID)
 		}
-		switch event.Type {
-		case "trace-create":
-			traceBody = body
-		case "score-create":
-			scoreBody = body
+		if span.Trace.UserID != "device-a" || span.Trace.SessionID != "runtime-a" {
+			t.Fatalf("span %s missing trace context: %#v", span.Name, span.Trace)
 		}
 	}
-	if traceBody["userId"] != "device-a" {
-		t.Fatalf("trace userId = %v, want device-a", traceBody["userId"])
+
+	if score.Value != 0 {
+		t.Fatalf("failure score value = %v, want 0", score.Value)
 	}
-	if traceBody["sessionId"] != "runtime-a" {
-		t.Fatalf("trace sessionId = %v, want runtime-a", traceBody["sessionId"])
+	if score.Comment != "verifier rejected completion" {
+		t.Fatalf("failure score comment = %q", score.Comment)
 	}
-	if traceBody["public"] != false {
-		t.Fatalf("trace public = %v, want false", traceBody["public"])
+	if score.Name != "success" || score.DataType != "BOOLEAN" {
+		t.Fatalf("score = %#v, want success BOOLEAN", score)
 	}
-	if scoreBody["value"] != float64(0) {
-		t.Fatalf("failure score value = %v, want 0", scoreBody["value"])
-	}
-	if scoreBody["comment"] != "verifier rejected completion" {
-		t.Fatalf("failure score comment = %v", scoreBody["comment"])
+	if score.TraceID != telemetryTraceID(episode.ID) {
+		t.Fatalf("score trace id = %q, want %q", score.TraceID, telemetryTraceID(episode.ID))
 	}
 }
-func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
+
+func TestBuildLangfuseSpansUsesCapturedPromptsForGenerations(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	episode := TaskEpisode{
 		ID:        "ep_prompt_capture",
@@ -163,7 +179,8 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 				"max_tokens":  128,
 			},
 			Metadata: map[string]interface{}{
-				"tools_count": 1,
+				"tools_count":                  1,
+				"llm_time_to_first_content_ms": int64(40),
 				"tool_schemas": []map[string]interface{}{
 					{
 						"type": "function",
@@ -185,85 +202,65 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	}
 
 	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir(), promptCalls)
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir(), promptCalls)
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
-	var generations []map[string]interface{}
-	for _, event := range batch {
-		if event.Type != "generation-create" {
-			continue
-		}
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode generation body: %v", err)
-		}
-		generations = append(generations, body)
+
+	generation := singleLangfuseSpan(t, spans, "agent-response")
+	if generation.Type != langfuse.TypeGeneration {
+		t.Fatalf("generation type = %q, want generation", generation.Type)
 	}
-	if len(generations) != 1 {
-		t.Fatalf("generation count = %d, want 1 captured prompt generation", len(generations))
+	if generation.Model != "openrouter/test-model" {
+		t.Fatalf("generation model = %q, want openrouter/test-model", generation.Model)
 	}
-	if generations[0]["name"] != "agent_prompt_1" {
-		t.Fatalf("generation name = %v, want agent_prompt_1", generations[0]["name"])
+	if _, ok := langfuseSpanByName(spans, "agent_prompt_1"); ok {
+		t.Fatal("generation still uses a per-call index name")
 	}
-	input, ok := generations[0]["input"].([]interface{})
+	if _, ok := langfuseSpanByName(spans, "aiden-run-usage"); ok {
+		t.Fatal("aggregate fallback generation emitted despite captured prompts")
+	}
+
+	if !generation.CompletionStartTime.Equal(start.Add(40 * time.Millisecond)) {
+		t.Fatalf("completion start = %s, want start + 40ms", generation.CompletionStartTime)
+	}
+
+	input, ok := generation.Input.([]map[string]interface{})
 	if !ok || len(input) != 2 {
-		t.Fatalf("generation input = %#v, want 2 messages", generations[0]["input"])
+		t.Fatalf("generation input = %#v, want 2 messages", generation.Input)
 	}
-	first, ok := input[0].(map[string]interface{})
-	if !ok {
-		t.Fatalf("first message = %#v", input[0])
+	parts, ok := input[0]["parts"].([]map[string]interface{})
+	if !ok || len(parts) != 1 || parts[0]["text"] != "complete planner system prompt" {
+		t.Fatalf("captured prompt part = %#v", input[0]["parts"])
 	}
-	parts, ok := first["parts"].([]interface{})
-	if !ok || len(parts) != 1 {
-		t.Fatalf("first message parts = %#v", first["parts"])
+
+	if generation.Usage["input"] != 10 || generation.Usage["output"] != 2 || generation.Usage["total"] != 12 {
+		t.Fatalf("usage details = %#v, want 10/2/12", generation.Usage)
 	}
-	part, ok := parts[0].(map[string]interface{})
-	if !ok || part["text"] != "complete planner system prompt" {
-		t.Fatalf("captured prompt part = %#v", parts[0])
+	if generation.Cost["total"] != 0.0012 {
+		t.Fatalf("cost details = %#v, want total cost", generation.Cost)
 	}
-	usageDetails, ok := generations[0]["usageDetails"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("usageDetails missing: %#v", generations[0]["usageDetails"])
+	if generation.ModelParameters["temperature"] != 0.2 || generation.ModelParameters["max_tokens"] != 128 {
+		t.Fatalf("model parameters = %#v, want temperature/max_tokens", generation.ModelParameters)
 	}
-	if usageDetails["input"] != float64(10) || usageDetails["output"] != float64(2) || usageDetails["total"] != float64(12) {
-		t.Fatalf("usageDetails = %#v, want 10/2/12", usageDetails)
+	if _, ok := generation.ModelParameters["tools_count"]; ok {
+		t.Fatalf("model parameters = %#v, did not expect tools_count", generation.ModelParameters)
 	}
-	costDetails, ok := generations[0]["costDetails"].(map[string]interface{})
-	if !ok || costDetails["total"] != 0.0012 {
-		t.Fatalf("costDetails = %#v, want total cost", generations[0]["costDetails"])
-	}
-	modelParameters, ok := generations[0]["modelParameters"].(map[string]interface{})
-	if !ok || modelParameters["temperature"] != 0.2 || modelParameters["max_tokens"] != float64(128) {
-		t.Fatalf("modelParameters = %#v, want temperature/max_tokens", generations[0]["modelParameters"])
-	}
-	if _, ok := modelParameters["tools_count"]; ok {
-		t.Fatalf("modelParameters = %#v, did not expect tools_count", modelParameters)
-	}
-	if _, ok := modelParameters["tools"]; ok {
-		t.Fatalf("modelParameters = %#v, did not expect tools", modelParameters)
-	}
-	metadata, ok := generations[0]["metadata"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("generation metadata = %#v, want map", generations[0]["metadata"])
-	}
-	if metadata["role"] != "agent" || metadata["prompt_index"] != float64(1) {
+
+	metadata := generation.Metadata
+	if metadata["role"] != "agent" || metadata["prompt_index"] != 1 {
 		t.Fatalf("generation metadata = %#v, want role/prompt_index", metadata)
 	}
-	if metadata["tools_count"] != float64(1) {
+	if metadata["tools_count"] != 1 {
 		t.Fatalf("generation metadata = %#v, want tools_count=1", metadata)
 	}
-	tools, ok := metadata["tool_schemas"].([]interface{})
+	tools, ok := metadata["tool_schemas"].([]map[string]interface{})
 	if !ok || len(tools) != 1 {
 		t.Fatalf("generation metadata.tool_schemas = %#v, want one tool definition", metadata["tool_schemas"])
 	}
-	tool, ok := tools[0].(map[string]interface{})
-	if !ok {
-		t.Fatalf("tool definition = %#v", tools[0])
-	}
-	function, ok := tool["function"].(map[string]interface{})
+	function, ok := tools[0]["function"].(map[string]interface{})
 	if !ok || function["name"] != "echo" {
-		t.Fatalf("tool function = %#v, want echo", tool["function"])
+		t.Fatalf("tool function = %#v, want echo", tools[0]["function"])
 	}
 	parameters, ok := function["parameters"].(map[string]interface{})
 	if !ok || parameters["type"] != "object" {
@@ -271,7 +268,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	}
 }
 
-func TestBuildLangfuseBatchExportsSTTTranscriptionSpans(t *testing.T) {
+func TestBuildLangfuseSpansExportsSTTTranscriptionSpans(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	durationMs := int64(9000)
 	episode := TaskEpisode{
@@ -305,54 +302,30 @@ func TestBuildLangfuseBatchExportsSTTTranscriptionSpans(t *testing.T) {
 	}
 
 	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir())
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
 
-	var sttSpan map[string]interface{}
-	for _, event := range batch {
-		if event.Type != "span-create" {
-			continue
-		}
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode span body: %v", err)
-		}
-		if body["name"] == "stt/transcription" {
-			sttSpan = body
-			break
-		}
+	sttSpan := singleLangfuseSpan(t, spans, "stt/transcription")
+	if sttSpan.Output != "打开天气" {
+		t.Fatalf("STT output = %#v, want transcript", sttSpan.Output)
 	}
-	if sttSpan == nil {
-		t.Fatalf("missing stt/transcription span in batch: %#v", batch)
-	}
-	if sttSpan["output"] != "打开天气" {
-		t.Fatalf("STT output = %#v, want transcript", sttSpan["output"])
-	}
-	metadata, ok := sttSpan["metadata"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("STT metadata = %#v", sttSpan["metadata"])
-	}
-	if metadata["event_id"] != "evt_stt" || metadata["provider"] != "qwen-asr" || metadata["fallback_one_shot"] != true {
-		t.Fatalf("STT metadata = %#v", metadata)
+	if sttSpan.Metadata["event_id"] != "evt_stt" || sttSpan.Metadata["provider"] != "qwen-asr" || sttSpan.Metadata["fallback_one_shot"] != true {
+		t.Fatalf("STT metadata = %#v", sttSpan.Metadata)
 	}
 	for _, spanName := range []string{"stt/listening_overhead", "stt/audio_capture", "stt/streaming_setup", "stt/streaming_finalize", "stt/one_shot"} {
-		detailSpan := langfuseSpanBodyByName(t, batch, spanName)
-		if detailSpan == nil {
-			t.Fatalf("missing %s child span", spanName)
+		detail := singleLangfuseSpan(t, spans, spanName)
+		if detail.ParentSpanID != sttSpan.SpanID {
+			t.Fatalf("%s parent = %q, want %q", spanName, detail.ParentSpanID, sttSpan.SpanID)
 		}
-		if detailSpan["parentObservationId"] != sttSpan["id"] {
-			t.Fatalf("%s parentObservationId = %#v, want %#v", spanName, detailSpan["parentObservationId"], sttSpan["id"])
-		}
-		detailMetadata, ok := detailSpan["metadata"].(map[string]interface{})
-		if !ok || detailMetadata["event_id"] != "evt_stt" {
-			t.Fatalf("%s metadata = %#v", spanName, detailSpan["metadata"])
+		if detail.Metadata["event_id"] != "evt_stt" {
+			t.Fatalf("%s metadata = %#v", spanName, detail.Metadata)
 		}
 	}
 }
 
-func TestBuildLangfuseBatchExportsVoicePreRunSpans(t *testing.T) {
+func TestBuildLangfuseSpansExportsVoicePreRunSpans(t *testing.T) {
 	start := time.Date(2026, 7, 8, 6, 18, 19, 0, time.UTC)
 	promptDurationMs := promptSoundDurationMS(promptSoundAgentSend)
 	preopenDurationMs := int64(120)
@@ -395,54 +368,29 @@ func TestBuildLangfuseBatchExportsVoicePreRunSpans(t *testing.T) {
 	}
 
 	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir())
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
 
-	promptSpan := langfuseSpanBodyByName(t, batch, "voice/prompt_sound_agent_send")
-	if promptSpan == nil {
-		t.Fatalf("missing voice/prompt_sound_agent_send span")
+	promptSpan := singleLangfuseSpan(t, spans, "voice/prompt_sound_agent_send")
+	if promptSpan.Output != "agent send" {
+		t.Fatalf("prompt span output = %#v", promptSpan.Output)
 	}
-	if promptSpan["output"] != "agent send" {
-		t.Fatalf("prompt span output = %#v", promptSpan["output"])
+	if promptSpan.Metadata["prompt"] != "agent_send" || promptSpan.Metadata["success"] != true || promptSpan.Metadata["async"] != true {
+		t.Fatalf("prompt metadata = %#v", promptSpan.Metadata)
 	}
-	promptMetadata, ok := promptSpan["metadata"].(map[string]interface{})
-	if !ok || promptMetadata["prompt"] != "agent_send" || promptMetadata["success"] != true || promptMetadata["async"] != true {
-		t.Fatalf("prompt metadata = %#v", promptSpan["metadata"])
-	}
-	if promptSpan["startTime"] == promptSpan["endTime"] {
+	if promptSpan.StartTime.Equal(promptSpan.EndTime) {
 		t.Fatalf("prompt span has zero duration: %#v", promptSpan)
 	}
 
-	preopenSpan := langfuseSpanBodyByName(t, batch, "voice/preopen_tts_stream")
-	if preopenSpan == nil {
-		t.Fatalf("missing voice/preopen_tts_stream span")
-	}
-	preopenMetadata, ok := preopenSpan["metadata"].(map[string]interface{})
-	if !ok || preopenMetadata["provider"] != "alicloud" || preopenMetadata["success"] != true {
-		t.Fatalf("preopen metadata = %#v", preopenSpan["metadata"])
+	preopenSpan := singleLangfuseSpan(t, spans, "voice/preopen_tts_stream")
+	if preopenSpan.Metadata["provider"] != "alicloud" || preopenSpan.Metadata["success"] != true {
+		t.Fatalf("preopen metadata = %#v", preopenSpan.Metadata)
 	}
 }
 
-func langfuseSpanBodyByName(t *testing.T, batch []langfuseIngestionEvent, name string) map[string]interface{} {
-	t.Helper()
-	for _, event := range batch {
-		if event.Type != "span-create" {
-			continue
-		}
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode span body: %v", err)
-		}
-		if body["name"] == name {
-			return body
-		}
-	}
-	return nil
-}
-
-func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
+func TestBuildLangfuseSpansUploadsCapturedPromptMedia(t *testing.T) {
 	var mediaRequest langfuse.MediaCreateRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/public/media" {
@@ -491,9 +439,9 @@ func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 		SecretKey: "sk-test",
 	}, nil)
 
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir(), promptCalls)
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir(), promptCalls)
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
 	if len(promptCalls[0].Media) != 0 {
 		t.Fatalf("prompt media retained after upload: %d item(s)", len(promptCalls[0].Media))
@@ -505,27 +453,20 @@ func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 		t.Fatalf("media field = %q, want input", mediaRequest.Field)
 	}
 
-	for _, event := range batch {
-		if event.Type != "generation-create" {
-			continue
-		}
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode generation body: %v", err)
-		}
-		encoded := string(event.Body)
-		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(image)) {
-			t.Fatalf("generation body contains inline base64: %s", encoded)
-		}
-		if !strings.Contains(encoded, "id=prompt-media-1") {
-			t.Fatalf("generation body missing media token: %s", encoded)
-		}
-		return
+	generation := singleLangfuseSpan(t, spans, "agent-response")
+	encoded, err := json.Marshal(generation.Input)
+	if err != nil {
+		t.Fatalf("marshal generation input: %v", err)
 	}
-	t.Fatal("missing generation-create event")
+	if strings.Contains(string(encoded), base64.StdEncoding.EncodeToString(image)) {
+		t.Fatalf("generation input contains inline base64: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "id=prompt-media-1") {
+		t.Fatalf("generation input missing media token: %s", encoded)
+	}
 }
 
-func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *testing.T) {
+func TestBuildLangfuseSpansOmitsPromptImagesWhenScreenshotUploadDisabled(t *testing.T) {
 	var mediaRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mediaRequests++
@@ -575,9 +516,9 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
 	}
 
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir(), promptCalls)
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir(), promptCalls)
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
 	if len(promptCalls[0].Media) != 0 {
 		t.Fatalf("prompt media retained when upload is disabled: %d item(s)", len(promptCalls[0].Media))
@@ -585,74 +526,51 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	if mediaRequests != 0 {
 		t.Fatalf("media API requests = %d, want 0", mediaRequests)
 	}
-	for _, event := range batch {
-		if event.Type != "generation-create" {
-			continue
-		}
-		encoded := string(event.Body)
-		if strings.Contains(encoded, promptMedia.Placeholder) {
-			t.Fatalf("generation body retained media placeholder: %s", encoded)
-		}
-		if strings.Contains(encoded, pdfMedia.Placeholder) {
-			t.Fatalf("generation body retained non-image media placeholder: %s", encoded)
-		}
-		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(image)) {
-			t.Fatalf("generation body contains inline base64: %s", encoded)
-		}
-		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(pdf)) {
-			t.Fatalf("generation body contains inline non-image base64: %s", encoded)
-		}
-		if !strings.Contains(encoded, "[media omitted: upload disabled]") {
-			t.Fatalf("generation body missing disabled placeholder: %s", encoded)
-		}
-		return
+	generation := singleLangfuseSpan(t, spans, "agent-response")
+	encoded, err := json.Marshal(generation.Input)
+	if err != nil {
+		t.Fatalf("marshal generation input: %v", err)
 	}
-	t.Fatal("missing generation-create event")
+	body := string(encoded)
+	if strings.Contains(body, promptMedia.Placeholder) {
+		t.Fatalf("generation input retained media placeholder: %s", body)
+	}
+	if strings.Contains(body, pdfMedia.Placeholder) {
+		t.Fatalf("generation input retained non-image media placeholder: %s", body)
+	}
+	if strings.Contains(body, base64.StdEncoding.EncodeToString(image)) {
+		t.Fatalf("generation input contains inline base64: %s", body)
+	}
+	if strings.Contains(body, base64.StdEncoding.EncodeToString(pdf)) {
+		t.Fatalf("generation input contains inline non-image base64: %s", body)
+	}
+	if !strings.Contains(body, "[media omitted: upload disabled]") {
+		t.Fatalf("generation input missing disabled placeholder: %s", body)
+	}
 }
 
 func TestExportEpisodeDirUploadsToLangfuse(t *testing.T) {
-	var ingestionCalls int
+	var otlpCalls int
+	var scoreCalls int
 	var mediaObservationID string
-	var toolResultID string
+	var otlpBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/public/ingestion":
-			ingestionCalls++
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/otel/v1/traces":
+			otlpCalls++
+			if got := r.Header.Get("x-langfuse-ingestion-version"); got != "4" {
+				t.Errorf("ingestion version header = %q, want 4", got)
+			}
 			user, pass, ok := r.BasicAuth()
 			if !ok || user != "pk-test" || pass != "sk-test" {
 				t.Errorf("unexpected auth: ok=%v user=%q pass=%q", ok, user, pass)
 			}
-			body, _ := io.ReadAll(r.Body)
-			var req langfuse.IngestionRequest
-			if err := json.Unmarshal(body, &req); err != nil {
-				t.Fatalf("decode ingestion request: %v", err)
-			}
-			if len(req.Batch) == 0 {
-				t.Fatal("expected non-empty ingestion batch")
-			}
-			for _, event := range req.Batch {
-				if event.Type != "span-create" {
-					continue
-				}
-				var body map[string]interface{}
-				if err := json.Unmarshal(event.Body, &body); err != nil {
-					t.Fatalf("decode span body: %v", err)
-				}
-				if body["name"] != "tool_result/screenshot" {
-					continue
-				}
-				toolResultID, _ = body["id"].(string)
-				output, ok := body["output"].(map[string]interface{})
-				if !ok {
-					t.Fatalf("tool result output = %#v, want object with screenshot", body["output"])
-				}
-				screenshot, _ := output["screenshot"].(string)
-				if !strings.Contains(screenshot, "id=media-123") {
-					t.Fatalf("tool result screenshot = %q, want media token", screenshot)
-				}
-			}
-			w.WriteHeader(http.StatusMultiStatus)
-			_, _ = w.Write([]byte(`{"successes":[{"id":"ok","status":201}],"errors":[]}`))
+			otlpBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/scores":
+			scoreCalls++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/public/media":
 			body, _ := io.ReadAll(r.Body)
 			var req langfuse.MediaCreateRequest
@@ -680,19 +598,7 @@ func TestExportEpisodeDirUploadsToLangfuse(t *testing.T) {
 			FinalAnswer: "done",
 		},
 	}
-	if err := os.WriteFile(filepath.Join(episodeDir, "episode.yaml"), []byte(`
-id: ep_export_test
-started_at: "`+episode.StartedAt+`"
-ended_at: "`+episode.EndedAt+`"
-user_goal: 打开时钟
-outcome:
-  success: true
-  final_answer: done
-`), 0o644); err != nil {
-		t.Fatalf("write episode.yaml: %v", err)
-	}
-	eventsPath := filepath.Join(episodeDir, "events.jsonl")
-	if err := writeEpisodeEventsJSONL(eventsPath, []TaskEpisodeEvent{
+	writeEpisodeFixture(t, episodeDir, episode, []TaskEpisodeEvent{
 		{
 			EventID:  "evt1",
 			Ts:       start.Format(time.RFC3339Nano),
@@ -701,16 +607,22 @@ outcome:
 			Plan:     []string{"打开时钟应用"},
 		},
 		{
-			EventID:       "evt2",
-			Ts:            start.Add(time.Second).Format(time.RFC3339Nano),
+			EventID:   "evt2",
+			Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
+			Type:      runEventToolCall,
+			ToolName:  "screenshot",
+			ToolInput: `{}`,
+			Content:   "截图",
+		},
+		{
+			EventID:       "evt3",
+			Ts:            start.Add(2 * time.Second).Format(time.RFC3339Nano),
 			Type:          "tool_result",
 			ToolName:      "screenshot",
 			Content:       `{"action_output":"ok"}`,
 			ScreenshotRef: "artifacts/step_002.jpeg",
 		},
-	}); err != nil {
-		t.Fatalf("write events.jsonl: %v", err)
-	}
+	})
 	artifactsDir := filepath.Join(episodeDir, "artifacts")
 	if err := os.MkdirAll(artifactsDir, 0o755); err != nil {
 		t.Fatalf("mkdir artifacts: %v", err)
@@ -730,26 +642,42 @@ outcome:
 	if err := exporter.ExportEpisodeDir(context.Background(), episodeDir, episode); err != nil {
 		t.Fatalf("ExportEpisodeDir() error = %v", err)
 	}
-	if ingestionCalls == 0 {
-		t.Fatal("expected ingestion request")
+	if otlpCalls != 1 {
+		t.Fatalf("otlp calls = %d, want 1", otlpCalls)
+	}
+	if scoreCalls != 1 {
+		t.Fatalf("score calls = %d, want 1", scoreCalls)
 	}
 	if strings.TrimSpace(mediaObservationID) == "" {
 		t.Fatal("expected media create request to include observationId")
 	}
-	if mediaObservationID != toolResultID {
-		t.Fatalf("media observationId = %q, want tool result id %q", mediaObservationID, toolResultID)
+
+	spans := decodeOTLPSpans(t, otlpBody)
+	tool := otlpSpanByName(t, spans, "screenshot")
+	if mediaObservationID != tool.SpanID {
+		t.Fatalf("media observationId = %q, want tool span id %q", mediaObservationID, tool.SpanID)
+	}
+	if got := tool.attributeString(t, "langfuse.observation.type"); got != langfuse.TypeTool {
+		t.Fatalf("tool observation type = %q, want tool", got)
+	}
+	output := tool.jsonObjectAttribute(t, "langfuse.observation.output")
+	screenshot, _ := output["screenshot"].(string)
+	if !strings.Contains(screenshot, "id=media-123") {
+		t.Fatalf("tool output screenshot = %q, want media token", screenshot)
 	}
 }
 
-func TestExportEpisodeDirIngestsTraceWhenScreenshotUploadWouldExhaustDeadline(t *testing.T) {
-	var ingestionCalls int
+func TestExportEpisodeDirExportsTraceWhenScreenshotUploadWouldExhaustDeadline(t *testing.T) {
+	var otlpCalls int
 	var mediaCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/public/ingestion":
-			ingestionCalls++
-			w.WriteHeader(http.StatusMultiStatus)
-			_, _ = w.Write([]byte(`{"successes":[{"id":"ok","status":201}],"errors":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/otel/v1/traces":
+			otlpCalls++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/scores":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/public/media":
 			mediaCalls++
 			time.Sleep(200 * time.Millisecond)
@@ -772,19 +700,7 @@ func TestExportEpisodeDirIngestsTraceWhenScreenshotUploadWouldExhaustDeadline(t 
 			FailureReason: "agent restarted before the task episode completed",
 		},
 	}
-	if err := os.WriteFile(filepath.Join(episodeDir, "episode.yaml"), []byte(`
-id: ep_export_deadline_test
-status: interrupted
-started_at: "`+episode.StartedAt+`"
-ended_at: "`+episode.EndedAt+`"
-user_goal: 失败也要上传 trace
-outcome:
-  success: false
-  failure_reason: agent restarted before the task episode completed
-`), 0o644); err != nil {
-		t.Fatalf("write episode.yaml: %v", err)
-	}
-	if err := writeEpisodeEventsJSONL(filepath.Join(episodeDir, "events.jsonl"), []TaskEpisodeEvent{
+	writeEpisodeFixture(t, episodeDir, episode, []TaskEpisodeEvent{
 		{
 			EventID:   "evt1",
 			Ts:        start.Format(time.RFC3339Nano),
@@ -801,9 +717,7 @@ outcome:
 			Content:       `{"format":"jpeg","size":100}`,
 			ScreenshotRef: "artifacts/step_002.jpeg",
 		},
-	}); err != nil {
-		t.Fatalf("write events.jsonl: %v", err)
-	}
+	})
 	artifactsDir := filepath.Join(episodeDir, "artifacts")
 	if err := os.MkdirAll(artifactsDir, 0o755); err != nil {
 		t.Fatalf("mkdir artifacts: %v", err)
@@ -826,8 +740,8 @@ outcome:
 	if err := exporter.ExportEpisodeDir(ctx, episodeDir, episode); err != nil {
 		t.Fatalf("ExportEpisodeDir() error = %v", err)
 	}
-	if ingestionCalls == 0 {
-		t.Fatal("expected ingestion request even when screenshot upload cannot fit within export deadline")
+	if otlpCalls == 0 {
+		t.Fatal("expected otlp request even when screenshot upload cannot fit within export deadline")
 	}
 	if mediaCalls != 0 {
 		t.Fatalf("mediaCalls = %d, want screenshot upload skipped to preserve trace ingestion budget", mediaCalls)
@@ -893,43 +807,33 @@ func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 		NextStep:  "点击设置",
 	})
 
-	done := make(chan map[string]interface{}, 1)
+	scoreCh := make(chan map[string]interface{}, 1)
+	var otlpBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/public/ingestion" {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/otel/v1/traces":
+			user, pass, ok := r.BasicAuth()
+			if !ok || user != "pk-test" || pass != "sk-test" {
+				t.Errorf("unexpected auth: ok=%v user=%q pass=%q", ok, user, pass)
+			}
+			otlpBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/scores":
+			body, _ := io.ReadAll(r.Body)
+			var scoreBody map[string]interface{}
+			if err := json.Unmarshal(body, &scoreBody); err != nil {
+				t.Errorf("decode score body: %v", err)
+			}
+			select {
+			case scoreCh <- scoreBody:
+			default:
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
-			return
 		}
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != "pk-test" || pass != "sk-test" {
-			t.Errorf("unexpected auth: ok=%v user=%q pass=%q", ok, user, pass)
-		}
-		body, _ := io.ReadAll(r.Body)
-		var req langfuse.IngestionRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Errorf("decode ingestion request: %v", err)
-		}
-		var traceBody map[string]interface{}
-		var scoreBody map[string]interface{}
-		for _, event := range req.Batch {
-			var eventBody map[string]interface{}
-			if err := json.Unmarshal(event.Body, &eventBody); err != nil {
-				t.Errorf("decode event body: %v", err)
-				continue
-			}
-			switch event.Type {
-			case "trace-create":
-				traceBody = eventBody
-			case "score-create":
-				scoreBody = eventBody
-			}
-		}
-		select {
-		case done <- map[string]interface{}{"trace": traceBody, "score": scoreBody}:
-		default:
-		}
-		w.WriteHeader(http.StatusMultiStatus)
-		_, _ = w.Write([]byte(`{"successes":[{"id":"ok","status":201}],"errors":[]}`))
 	}))
 	defer server.Close()
 
@@ -954,55 +858,46 @@ func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 		NewSkillIndex(),
 	)
 
-	var payload map[string]interface{}
+	var scoreBody map[string]interface{}
 	select {
-	case payload = <-done:
+	case scoreBody = <-scoreCh:
 	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for langfuse ingestion")
+		t.Fatal("timed out waiting for langfuse export")
 	}
 
-	traceBody, ok := payload["trace"].(map[string]interface{})
-	if !ok || traceBody == nil {
-		t.Fatalf("missing trace-create body: %#v", payload)
+	spans := decodeOTLPSpans(t, otlpBody)
+	root := otlpSpanByName(t, spans, langfuseRunSpanName)
+	if got := root.attributeString(t, "langfuse.trace.metadata.episode_id"); got != "ep_langfuse_interrupted" {
+		t.Fatalf("metadata.episode_id = %q", got)
 	}
-	scoreBody, ok := payload["score"].(map[string]interface{})
-	if !ok || scoreBody == nil {
-		t.Fatalf("missing score-create body: %#v", payload)
+	if got := root.attributeString(t, "langfuse.trace.metadata.status"); got != "interrupted" {
+		t.Fatalf("metadata.status = %q", got)
 	}
-	meta, ok := traceBody["metadata"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("trace metadata = %#v", traceBody["metadata"])
+	if got := root.attributeString(t, "langfuse.trace.metadata.failure_reason"); got != "agent restarted before the task episode completed" {
+		t.Fatalf("metadata.failure_reason = %q", got)
 	}
-	if meta["episode_id"] != "ep_langfuse_interrupted" {
-		t.Fatalf("metadata.episode_id = %v", meta["episode_id"])
+	if got := root.attributeString(t, "langfuse.trace.metadata.model"); got != "fake/test-model" {
+		t.Fatalf("metadata.model = %q", got)
 	}
-	if meta["status"] != "interrupted" {
-		t.Fatalf("metadata.status = %v", meta["status"])
-	}
-	if meta["failure_reason"] != "agent restarted before the task episode completed" {
-		t.Fatalf("metadata.failure_reason = %v", meta["failure_reason"])
-	}
-	if meta["model"] != "fake/test-model" {
-		t.Fatalf("metadata.model = %v", meta["model"])
-	}
-	if meta["interruption_source"] != "agent_restart" {
-		t.Fatalf("metadata.interruption_source = %v", meta["interruption_source"])
+	if got := root.attributeString(t, "langfuse.trace.metadata.interruption_source"); got != "agent_restart" {
+		t.Fatalf("metadata.interruption_source = %q", got)
 	}
 	if scoreBody["value"] != float64(0) {
 		t.Fatalf("score value = %v, want 0", scoreBody["value"])
 	}
-	tags, ok := traceBody["tags"].([]interface{})
-	if !ok {
-		t.Fatalf("trace tags = %#v", traceBody["tags"])
+
+	tags, ok := root.attribute("langfuse.trace.tags")
+	if !ok || tags.ArrayValue == nil {
+		t.Fatalf("trace tags = %#v, want array", tags)
 	}
 	for _, want := range []string{"interrupted", "status:interrupted", "failure"} {
-		if !jsonListContains(tags, want) {
-			t.Fatalf("trace tags missing %q: %#v", want, tags)
+		if !otlpArrayContains(tags.ArrayValue, want) {
+			t.Fatalf("trace tags missing %q: %#v", want, tags.ArrayValue.Values)
 		}
 	}
 }
 
-func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
+func TestBuildLangfuseSpansMapsDefaultModePlannerTools(t *testing.T) {
 	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
 	episode := TaskEpisode{
 		ID:        "ep_default_001",
@@ -1041,53 +936,40 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 	}
 
 	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir())
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
 
-	names := map[string]int{}
-	var traceMeta map[string]interface{}
-	var toolResultOutput interface{}
-	for _, event := range batch {
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if event.Type == "trace-create" {
-			traceMeta, _ = body["metadata"].(map[string]interface{})
-		}
-		if name, _ := body["name"].(string); name != "" {
-			names[name]++
-			if name == "tool_result/echo" {
-				toolResultOutput = body["output"]
-			}
-		}
+	names := langfuseSpansByName(spans)
+	if len(names["phase/default"]) != 1 {
+		t.Fatalf("phase/default count = %d, want 1; names=%v", len(names["phase/default"]), langfuseSpanNames(spans))
 	}
-	if names["phase/default"] != 1 {
-		t.Fatalf("phase/default count = %d, want 1; names=%#v", names["phase/default"], names)
+	if len(names["echo"]) != 1 {
+		t.Fatalf("echo count = %d, want 1; names=%v", len(names["echo"]), langfuseSpanNames(spans))
 	}
-	if names["tool/echo"] != 1 {
-		t.Fatalf("tool/echo count = %d, want 1; names=%#v", names["tool/echo"], names)
+	if len(names["tool_result/echo"]) != 0 {
+		t.Fatalf("tool result emitted its own observation: names=%v", langfuseSpanNames(spans))
 	}
-	if names["tool_result/echo"] != 1 {
-		t.Fatalf("tool_result/echo count = %d, want 1; names=%#v", names["tool_result/echo"], names)
+	if len(names["agent/default_finish"]) != 1 {
+		t.Fatalf("agent/default_finish count = %d, want 1; names=%v", len(names["agent/default_finish"]), langfuseSpanNames(spans))
 	}
-	if toolResultOutput != "ok" {
-		t.Fatalf("tool_result/echo output = %#v, want ok", toolResultOutput)
+
+	tool := names["echo"][0]
+	if tool.Type != langfuse.TypeTool || tool.Input == nil || tool.Output != "ok" {
+		t.Fatalf("tool span = %#v, want paired tool observation with input and output", tool)
 	}
-	if names["agent/default_finish"] != 1 {
-		t.Fatalf("agent/default_finish count = %d, want 1; names=%#v", names["agent/default_finish"], names)
+
+	root := singleLangfuseSpan(t, spans, langfuseRunSpanName)
+	if root.Trace.Metadata["default_finish"] != true {
+		t.Fatalf("trace metadata default_finish = %#v, want true", root.Trace.Metadata["default_finish"])
 	}
-	if traceMeta["default_finish"] != true {
-		t.Fatalf("trace metadata default_finish = %#v, want true", traceMeta["default_finish"])
-	}
-	if traceMeta["loop_mode"] != "default" {
-		t.Fatalf("trace metadata loop_mode = %#v, want default", traceMeta["loop_mode"])
+	if root.Trace.Metadata["loop_mode"] != "default" {
+		t.Fatalf("trace metadata loop_mode = %#v, want default", root.Trace.Metadata["loop_mode"])
 	}
 }
 
-func TestBuildLangfuseBatchUsesIterationTimingSpanAsToolParent(t *testing.T) {
+func TestBuildLangfuseSpansUsesIterationTimingSpanAsToolParent(t *testing.T) {
 	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
 	toolDuration := int64(100)
 	episode := TaskEpisode{
@@ -1106,69 +988,622 @@ func TestBuildLangfuseBatchUsesIterationTimingSpanAsToolParent(t *testing.T) {
 	}
 
 	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir())
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
-	bodies := langfuseBodiesByName(t, batch)
-	iteration := singleLangfuseBody(t, bodies, "iteration_1")
-	tool := singleLangfuseBody(t, bodies, "tool/echo")
-	finish := singleLangfuseBody(t, bodies, "agent/default_finish")
-	if tool["parentObservationId"] != iteration["id"] {
-		t.Fatalf("tool parentObservationId = %#v, want iteration id %#v", tool["parentObservationId"], iteration["id"])
+	iteration := singleLangfuseSpan(t, spans, langfuseIterationSpanName)
+	if iteration.Metadata["iteration"] != 1 {
+		t.Fatalf("iteration metadata = %#v, want iteration 1", iteration.Metadata)
 	}
-	if finish["parentObservationId"] != iteration["id"] {
-		t.Fatalf("finish parentObservationId = %#v, want iteration id %#v", finish["parentObservationId"], iteration["id"])
+	tool := singleLangfuseSpan(t, spans, "echo")
+	finish := singleLangfuseSpan(t, spans, "agent/default_finish")
+	if tool.ParentSpanID != iteration.SpanID {
+		t.Fatalf("tool parent = %q, want iteration id %q", tool.ParentSpanID, iteration.SpanID)
+	}
+	if finish.ParentSpanID != iteration.SpanID {
+		t.Fatalf("finish parent = %q, want iteration id %q", finish.ParentSpanID, iteration.SpanID)
 	}
 }
 
-func langfuseBodiesByName(t *testing.T, batch []langfuseIngestionEvent) map[string][]map[string]interface{} {
-	t.Helper()
-	bodies := map[string][]map[string]interface{}{}
-	for _, event := range batch {
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if name, _ := body["name"].(string); name != "" {
-			bodies[name] = append(bodies[name], body)
-		}
+func TestBuildLangfuseSpansMarksFailedToolResult(t *testing.T) {
+	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:        "ep_tool_error",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "echo test",
+		Outcome:   TaskEpisodeOutcome{Success: false, FailureReason: "tool failed"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "evt_tool", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventToolCall, Role: "agent", ToolName: "echo", ToolInput: `{"__arg1":"hi"}`},
+			{EventID: "evt_result", Ts: start.Add(200 * time.Millisecond).Format(time.RFC3339Nano), Type: "tool_result", Role: "agent", ToolName: "echo", Content: "boom", IsError: true},
+		},
 	}
-	return bodies
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
+	}
+	if len(langfuseSpansByName(spans)["echo"]) != 1 {
+		t.Fatalf("echo span count = %d, want 1; names=%v", len(langfuseSpansByName(spans)["echo"]), langfuseSpanNames(spans))
+	}
+	tool := singleLangfuseSpan(t, spans, "echo")
+	if tool.Type != langfuse.TypeTool {
+		t.Fatalf("tool type = %q, want tool", tool.Type)
+	}
+	if tool.Input == nil {
+		t.Fatal("tool observation missing input")
+	}
+	if tool.Output != "boom" {
+		t.Fatalf("tool output = %#v, want failure content", tool.Output)
+	}
+	if tool.Level != langfuse.LevelError {
+		t.Fatalf("tool level = %q, want ERROR", tool.Level)
+	}
+	if tool.StatusMsg != "boom" {
+		t.Fatalf("tool status message = %q, want boom", tool.StatusMsg)
+	}
 }
 
-func singleLangfuseBody(t *testing.T, bodies map[string][]map[string]interface{}, name string) map[string]interface{} {
-	t.Helper()
-	items := bodies[name]
-	if len(items) != 1 {
-		t.Fatalf("%s body count = %d, want 1; bodies=%#v", name, len(items), bodies[name])
+func TestExportEpisodeDirOTLPPayloadCarriesTraceContext(t *testing.T) {
+	var otlpBody []byte
+	var scoreCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/otel/v1/traces":
+			if got := r.Header.Get("x-langfuse-ingestion-version"); got != "4" {
+				t.Errorf("ingestion version header = %q, want 4", got)
+			}
+			if user, pass, ok := r.BasicAuth(); !ok || user != "pk-test" || pass != "sk-test" {
+				t.Errorf("unexpected auth: ok=%v user=%q pass=%q", ok, user, pass)
+			}
+			otlpBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/scores":
+			scoreCalls++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	start := time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:          "ep_otlp_wire",
+		StartedAt:   start.Format(time.RFC3339Nano),
+		EndedAt:     start.Add(10 * time.Second).Format(time.RFC3339Nano),
+		UserGoal:    "wire the exporter",
+		Tags:        []string{"episode-tag"},
+		DeviceScope: map[string]string{"device_id": "device-wire"},
+		Outcome:     TaskEpisodeOutcome{Success: true, FinalAnswer: "wired"},
+		Extra: map[string]interface{}{
+			"runtime_id":        "runtime-wire",
+			"agent_commit":      "abc1234",
+			"agent_build":       "20260701-build",
+			"model":             "openrouter/wire-model",
+			"prompt_tokens":     3,
+			"completion_tokens": 1,
+			"total_tokens":      4,
+			"model_parameters":  map[string]interface{}{"temperature": 0.1},
+			"cost_details":      map[string]float64{"total": 0.0003},
+		},
 	}
-	return items[0]
+	episodeDir := t.TempDir()
+	writeEpisodeFixture(t, episodeDir, episode, []TaskEpisodeEvent{
+		{EventID: "evt_mem", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventMemoryRetrieve, DurationMs: int64Ptr(30), Metadata: map[string]interface{}{"query": "wire"}},
+		{EventID: "evt_plan", Ts: start.Add(200 * time.Millisecond).Format(time.RFC3339Nano), Type: "planner_decision", Role: "agent", Objective: "wire", Plan: []string{"wire"}, NextStep: "wire"},
+		{EventID: "evt_tool_call", Ts: start.Add(300 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventToolCall, Role: "agent", ToolName: "echo", ToolInput: `{"__arg1":"hi"}`},
+		{EventID: "evt_candidate", Ts: start.Add(350 * time.Millisecond).Format(time.RFC3339Nano), Type: "candidate_answer", Role: "agent", Content: "candidate"},
+		{EventID: "evt_tool_result", Ts: start.Add(400 * time.Millisecond).Format(time.RFC3339Nano), Type: "tool_result", Role: "agent", ToolName: "echo", Content: "hi"},
+		{EventID: "evt_finish", Ts: start.Add(500 * time.Millisecond).Format(time.RFC3339Nano), Type: "default_finish", Role: "agent", Content: "wired"},
+	})
+	exporter := NewEpisodeExporter(TelemetryConfig{
+		Enabled:     boolPtr(true),
+		BaseURL:     server.URL,
+		PublicKey:   "pk-test",
+		SecretKey:   "sk-test",
+		Environment: "wire-env",
+		Tags:        []string{"cfg-tag"},
+		MaxRetry:    0,
+	}, nil)
+	if err := exporter.ExportEpisodeDir(context.Background(), episodeDir, episode); err != nil {
+		t.Fatalf("ExportEpisodeDir() error = %v", err)
+	}
+	if scoreCalls != 1 {
+		t.Fatalf("score calls = %d, want 1", scoreCalls)
+	}
+
+	spans := decodeOTLPSpans(t, otlpBody)
+	ids := map[string]bool{}
+	for _, span := range spans {
+		if len(span.TraceID) != 32 || !isDashlessHex(span.TraceID) {
+			t.Fatalf("span %s trace id = %q, want 32 dashless hex chars", span.Name, span.TraceID)
+		}
+		if len(span.SpanID) != 32 || !isDashlessHex(span.SpanID) {
+			t.Fatalf("span %s span id = %q, want 32 dashless hex chars", span.Name, span.SpanID)
+		}
+		ids[span.SpanID] = true
+	}
+	for _, span := range spans {
+		for _, key := range []string{
+			"langfuse.trace.name",
+			"langfuse.user.id",
+			"langfuse.session.id",
+			"langfuse.release",
+			"langfuse.version",
+			"langfuse.environment",
+			"langfuse.trace.tags",
+			"langfuse.trace.metadata.episode_id",
+		} {
+			if _, ok := span.attribute(key); !ok {
+				t.Fatalf("span %s missing trace context attribute %s", span.Name, key)
+			}
+		}
+		if span.Name == langfuseRunSpanName {
+			if span.ParentSpanID != "" {
+				t.Fatalf("root span parent = %q, want none", span.ParentSpanID)
+			}
+			continue
+		}
+		if span.ParentSpanID == "" {
+			t.Fatalf("child span %s missing parentSpanId", span.Name)
+		}
+		if !ids[span.ParentSpanID] {
+			t.Fatalf("span %s parent %q is not an exported span", span.Name, span.ParentSpanID)
+		}
+	}
+
+	first := spans[0]
+	if got := first.attributeString(t, "langfuse.trace.name"); got != langfuseTraceName {
+		t.Fatalf("trace name = %q, want %q", got, langfuseTraceName)
+	}
+	if got := first.attributeString(t, "langfuse.user.id"); got != "device-wire" {
+		t.Fatalf("user id = %q, want device-wire", got)
+	}
+	if got := first.attributeString(t, "langfuse.session.id"); got != "runtime-wire" {
+		t.Fatalf("session id = %q, want runtime-wire", got)
+	}
+	if got := first.attributeString(t, "langfuse.release"); got != "abc1234" {
+		t.Fatalf("release = %q, want abc1234", got)
+	}
+	if got := first.attributeString(t, "langfuse.version"); got != "20260701-build" {
+		t.Fatalf("version = %q, want 20260701-build", got)
+	}
+	if got := first.attributeString(t, "langfuse.environment"); got != "wire-env" {
+		t.Fatalf("environment = %q, want wire-env", got)
+	}
+	tags, ok := first.attribute("langfuse.trace.tags")
+	if !ok || tags.ArrayValue == nil {
+		t.Fatalf("trace tags = %#v, want array", tags)
+	}
+	for _, want := range []string{"cfg-tag", "episode-tag"} {
+		if !otlpArrayContains(tags.ArrayValue, want) {
+			t.Fatalf("trace tags missing %q: %#v", want, tags.ArrayValue.Values)
+		}
+	}
+
+	typeOf := func(name string) string {
+		return otlpSpanByName(t, spans, name).attributeString(t, "langfuse.observation.type")
+	}
+	for name, want := range map[string]string{
+		langfuseRunSpanName: "agent",
+		"phase/default":     "span",
+		"memory/retrieve":   "retriever",
+		"echo":              "tool",
+		"candidate_answer":  "event",
+		"aiden-run-usage":   "generation",
+	} {
+		if got := typeOf(name); got != want {
+			t.Fatalf("%s observation type = %q, want %q", name, got, want)
+		}
+	}
+
+	// The aggregate usage generation stands in for the model calls when none
+	// were captured; its structured attributes are JSON-encoded strings.
+	generation := otlpSpanByName(t, spans, "aiden-run-usage")
+	if got := generation.attributeString(t, "langfuse.observation.model.name"); got != "openrouter/wire-model" {
+		t.Fatalf("generation model name = %q, want openrouter/wire-model", got)
+	}
+	parameters := generation.jsonObjectAttribute(t, "langfuse.observation.model.parameters")
+	if parameters["temperature"] != 0.1 {
+		t.Fatalf("generation model parameters = %#v", parameters)
+	}
+	usage := generation.jsonObjectAttribute(t, "langfuse.observation.usage_details")
+	if usage["input"] != float64(3) || usage["output"] != float64(1) || usage["total"] != float64(4) {
+		t.Fatalf("generation usage details = %#v, want 3/1/4", usage)
+	}
+	cost := generation.jsonObjectAttribute(t, "langfuse.observation.cost_details")
+	if cost["total"] != 0.0003 {
+		t.Fatalf("generation cost details = %#v", cost)
+	}
+}
+
+// TestExportEpisodeDirOTLPPayloadCarriesGenerationAttributes checks the wire
+// attributes of a captured model call: a stable name plus the model, usage,
+// cost, and completion-start attributes Langfuse reads.
+func TestExportEpisodeDirOTLPPayloadCarriesGenerationAttributes(t *testing.T) {
+	var otlpBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/otel/v1/traces":
+			otlpBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/scores":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	start := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:        "ep_otlp_generation",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(2 * time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "capture a generation",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+		Extra:     map[string]interface{}{"model": "openrouter/wire-model"},
+	}
+	episodeDir := t.TempDir()
+	writeEpisodeFixture(t, episodeDir, episode, []TaskEpisodeEvent{
+		{EventID: "evt_plan", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: "planner_decision", Role: "agent", Objective: "capture", Plan: []string{"capture"}, NextStep: "capture"},
+	})
+	promptCalls := []telemetryPromptCall{{
+		ID:              "22222222-2222-2222-2222-222222222222",
+		Role:            "agent",
+		StartedAt:       start.Add(150 * time.Millisecond),
+		EndedAt:         start.Add(190 * time.Millisecond),
+		Input:           []map[string]interface{}{{"role": "human", "parts": []map[string]interface{}{{"type": "text", "text": "hi"}}}},
+		Output:          map[string]interface{}{"choices": []map[string]interface{}{{"content": "hi"}}},
+		UsageDetails:    map[string]int{"input": 3, "output": 1, "total": 4},
+		CostDetails:     map[string]float64{"total": 0.0003},
+		ModelParameters: map[string]interface{}{"temperature": 0.1},
+		Metadata:        map[string]interface{}{"llm_time_to_first_content_ms": int64(10)},
+	}}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{
+		Enabled:   boolPtr(true),
+		BaseURL:   server.URL,
+		PublicKey: "pk-test",
+		SecretKey: "sk-test",
+		MaxRetry:  0,
+	}, nil)
+	if err := exporter.ExportEpisodeDir(context.Background(), episodeDir, episode, promptCalls); err != nil {
+		t.Fatalf("ExportEpisodeDir() error = %v", err)
+	}
+
+	generation := otlpSpanByName(t, decodeOTLPSpans(t, otlpBody), "agent-response")
+	if got := generation.attributeString(t, "langfuse.observation.type"); got != "generation" {
+		t.Fatalf("generation type = %q, want generation", got)
+	}
+	if got := generation.attributeString(t, "langfuse.observation.model.name"); got != "openrouter/wire-model" {
+		t.Fatalf("generation model name = %q, want openrouter/wire-model", got)
+	}
+	parameters := generation.jsonObjectAttribute(t, "langfuse.observation.model.parameters")
+	if parameters["temperature"] != 0.1 {
+		t.Fatalf("generation model parameters = %#v", parameters)
+	}
+	usage := generation.jsonObjectAttribute(t, "langfuse.observation.usage_details")
+	if usage["input"] != float64(3) || usage["output"] != float64(1) || usage["total"] != float64(4) {
+		t.Fatalf("generation usage details = %#v, want 3/1/4", usage)
+	}
+	cost := generation.jsonObjectAttribute(t, "langfuse.observation.cost_details")
+	if cost["total"] != 0.0003 {
+		t.Fatalf("generation cost details = %#v", cost)
+	}
+	wantCompletionStart := langfuse.RFC3339(start.Add(150 * time.Millisecond).Add(10 * time.Millisecond))
+	if got := generation.attributeString(t, "langfuse.observation.completion_start_time"); got != wantCompletionStart {
+		t.Fatalf("completion start time = %q, want %q", got, wantCompletionStart)
+	}
+}
+
+// TestExportSpansWithRetryResendsOnlyFailedChunk drives more spans than fit in
+// one batch and fails the second chunk once. The first chunk is accepted and
+// must not be re-sent; only the failed chunk is retried.
+func TestExportSpansWithRetryResendsOnlyFailedChunk(t *testing.T) {
+	spans := make([]langfuse.Span, 0, langfuseBatchSize+5)
+	for i := 0; i < langfuseBatchSize+5; i++ {
+		spans = append(spans, langfuse.Span{
+			TraceID: strings.Repeat("a", 32),
+			SpanID:  fmt.Sprintf("%032x", i),
+			Name:    fmt.Sprintf("span-%d", i),
+		})
+	}
+
+	var mu sync.Mutex
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		request := len(bodies)
+		mu.Unlock()
+		// The first chunk is accepted; the second chunk fails on its first send
+		// and is retried by the exporter.
+		if request == 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	exporter := NewEpisodeExporter(TelemetryConfig{
+		Enabled:   boolPtr(true),
+		BaseURL:   server.URL,
+		PublicKey: "pk-test",
+		SecretKey: "sk-test",
+	}, nil)
+	if err := exporter.exportSpansWithRetry(context.Background(), spans); err != nil {
+		t.Fatalf("exportSpansWithRetry() error = %v", err)
+	}
+
+	mu.Lock()
+	captured := append([][]byte(nil), bodies...)
+	mu.Unlock()
+	if len(captured) != 3 {
+		t.Fatalf("otlp request count = %d, want 3", len(captured))
+	}
+
+	seen := map[string]int{}
+	for _, body := range captured {
+		for _, span := range decodeOTLPSpans(t, body) {
+			seen[span.SpanID]++
+		}
+	}
+	for i, span := range spans {
+		want := 1
+		if i >= langfuseBatchSize {
+			// The failing chunk is retried, so its spans are sent twice.
+			want = 2
+		}
+		if seen[span.SpanID] != want {
+			t.Fatalf("span %s sent %d time(s), want %d", span.Name, seen[span.SpanID], want)
+		}
+	}
+}
+
+// TestExportSpansWithRetryDoesNotRetryRejectedSpans checks that a partial
+// success response surfaces an error without re-sending the batch: Langfuse
+// already ingested the accepted spans, so a retry would duplicate them.
+func TestExportSpansWithRetryDoesNotRetryRejectedSpans(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"partialSuccess":{"rejectedSpans":1,"errorMessage":"bad span"}}`))
+	}))
+	defer server.Close()
+
+	exporter := NewEpisodeExporter(TelemetryConfig{
+		Enabled:   boolPtr(true),
+		BaseURL:   server.URL,
+		PublicKey: "pk-test",
+		SecretKey: "sk-test",
+	}, nil)
+	err := exporter.exportSpansWithRetry(context.Background(), []langfuse.Span{{
+		TraceID: strings.Repeat("a", 32),
+		SpanID:  strings.Repeat("b", 32),
+		Name:    "agent-run",
+	}})
+	var rejected *langfuse.RejectedSpansError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("exportSpansWithRetry() error = %v, want RejectedSpansError", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 1 {
+		t.Fatalf("otlp request count = %d, want 1 (rejected spans must not be retried)", requests)
+	}
+}
+
+// writeEpisodeFixture writes the on-disk episode metadata and events an
+// ExportEpisodeDir call reads before exporting.
+func writeEpisodeFixture(t *testing.T, dir string, episode TaskEpisode, events []TaskEpisodeEvent) {
+	t.Helper()
+	metadata := "id: " + episode.ID + "\n" +
+		"status: " + episode.Status + "\n" +
+		"started_at: \"" + episode.StartedAt + "\"\n" +
+		"ended_at: \"" + episode.EndedAt + "\"\n" +
+		"user_goal: " + episode.UserGoal + "\n" +
+		"outcome:\n" +
+		"  success: " + boolString(episode.Outcome.Success) + "\n" +
+		"  final_answer: " + episode.Outcome.FinalAnswer + "\n" +
+		"  failure_reason: " + episode.Outcome.FailureReason + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "episode.yaml"), []byte(metadata), 0o644); err != nil {
+		t.Fatalf("write episode.yaml: %v", err)
+	}
+	if err := writeEpisodeEventsJSONL(filepath.Join(dir, "events.jsonl"), events); err != nil {
+		t.Fatalf("write events.jsonl: %v", err)
+	}
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
+func langfuseSpansByName(spans []langfuse.Span) map[string][]langfuse.Span {
+	byName := map[string][]langfuse.Span{}
+	for _, span := range spans {
+		if span.Name == "" {
+			continue
+		}
+		byName[span.Name] = append(byName[span.Name], span)
+	}
+	return byName
+}
+
+func langfuseSpanNames(spans []langfuse.Span) []string {
+	names := make([]string, 0, len(spans))
+	for _, span := range spans {
+		names = append(names, span.Name)
+	}
+	return names
+}
+
+func langfuseSpanByName(spans []langfuse.Span, name string) (langfuse.Span, bool) {
+	matches := langfuseSpansByName(spans)[name]
+	if len(matches) == 0 {
+		return langfuse.Span{}, false
+	}
+	return matches[0], true
+}
+
+func singleLangfuseSpan(t *testing.T, spans []langfuse.Span, name string) langfuse.Span {
+	t.Helper()
+	matches := langfuseSpansByName(spans)[name]
+	if len(matches) != 1 {
+		t.Fatalf("%s span count = %d, want 1; spans=%v", name, len(matches), langfuseSpanNames(spans))
+	}
+	return matches[0]
 }
 
 func int64Ptr(value int64) *int64 {
 	return &value
 }
 
-func intMetricFromMeta(meta map[string]interface{}, key string) int {
-	if meta == nil {
-		return 0
-	}
-	switch v := meta[key].(type) {
-	case int:
-		return v
-	case float64:
-		return int(v)
-	default:
-		return 0
-	}
+// otlpSpanPayload and friends decode the OTLP/HTTP JSON body the exporter posts
+// so tests can assert on the exact wire representation rather than on the Go
+// values that produced it.
+type otlpSpanPayload struct {
+	TraceID           string                 `json:"traceId"`
+	SpanID            string                 `json:"spanId"`
+	ParentSpanID      string                 `json:"parentSpanId"`
+	Name              string                 `json:"name"`
+	Kind              int                    `json:"kind"`
+	StartTimeUnixNano string                 `json:"startTimeUnixNano"`
+	EndTimeUnixNano   string                 `json:"endTimeUnixNano"`
+	Attributes        []otlpAttributePayload `json:"attributes"`
+	Status            *otlpStatusPayload     `json:"status"`
 }
 
-func jsonListContains(values []interface{}, want string) bool {
-	for _, value := range values {
-		if got, _ := value.(string); got == want {
+type otlpAttributePayload struct {
+	Key   string           `json:"key"`
+	Value otlpValuePayload `json:"value"`
+}
+
+type otlpValuePayload struct {
+	StringValue string `json:"stringValue"`
+	BoolValue   *bool  `json:"boolValue"`
+	// Langfuse drops observations whose intValue arrives as a string, so the
+	// exporter sends integers as JSON numbers.
+	IntValue    *int64            `json:"intValue"`
+	DoubleValue *float64          `json:"doubleValue"`
+	ArrayValue  *otlpArrayPayload `json:"arrayValue"`
+}
+
+type otlpArrayPayload struct {
+	Values []otlpValuePayload `json:"values"`
+}
+
+type otlpStatusPayload struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type otlpRequestPayload struct {
+	ResourceSpans []struct {
+		Resource struct {
+			Attributes []otlpAttributePayload `json:"attributes"`
+		} `json:"resource"`
+		ScopeSpans []struct {
+			Spans []otlpSpanPayload `json:"spans"`
+		} `json:"scopeSpans"`
+	} `json:"resourceSpans"`
+}
+
+func decodeOTLPSpans(t *testing.T, body []byte) []otlpSpanPayload {
+	t.Helper()
+	var payload otlpRequestPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode otlp body: %v", err)
+	}
+	var spans []otlpSpanPayload
+	for _, resource := range payload.ResourceSpans {
+		for _, scope := range resource.ScopeSpans {
+			spans = append(spans, scope.Spans...)
+		}
+	}
+	if len(spans) == 0 {
+		t.Fatalf("otlp body contained no spans: %s", strings.TrimSpace(string(body)))
+	}
+	return spans
+}
+
+func otlpSpanByName(t *testing.T, spans []otlpSpanPayload, name string) otlpSpanPayload {
+	t.Helper()
+	var matches []otlpSpanPayload
+	for _, span := range spans {
+		if span.Name == name {
+			matches = append(matches, span)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("%s otlp span count = %d, want 1", name, len(matches))
+	}
+	return matches[0]
+}
+
+func (s otlpSpanPayload) attribute(key string) (otlpValuePayload, bool) {
+	for _, attribute := range s.Attributes {
+		if attribute.Key == key {
+			return attribute.Value, true
+		}
+	}
+	return otlpValuePayload{}, false
+}
+
+func (s otlpSpanPayload) attributeString(t *testing.T, key string) string {
+	t.Helper()
+	value, ok := s.attribute(key)
+	if !ok {
+		t.Fatalf("%s missing attribute %s", s.Name, key)
+	}
+	return value.StringValue
+}
+
+func (s otlpSpanPayload) jsonObjectAttribute(t *testing.T, key string) map[string]interface{} {
+	t.Helper()
+	raw := s.attributeString(t, key)
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("%s attribute %s = %q, want JSON object: %v", s.Name, key, raw, err)
+	}
+	return decoded
+}
+
+func otlpArrayContains(array *otlpArrayPayload, want string) bool {
+	if array == nil {
+		return false
+	}
+	for _, value := range array.Values {
+		if value.StringValue == want {
 			return true
 		}
 	}
 	return false
+}
+
+func isDashlessHex(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }

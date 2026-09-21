@@ -1183,7 +1183,10 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	contextCompactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	// The compactor runs on the run's usage-tracking model so its model calls are
+	// counted and traced as part of the episode rather than disappearing from the
+	// run's token accounting.
+	contextCompactor := compactor.NewCompactor(compactor.DefaultProtectRule, m)
 	budgetContextWindow := contextWindow
 	if budgetContextWindow <= 0 {
 		budgetContextWindow = r.models.Spec().ContextWindow
@@ -1387,7 +1390,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return activeManager, changed, nil
 	}
 	compactAgentContext := func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager, triggerReason string) (*contextmanager.ContextManager, bool, error) {
-		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager, r.sessionChunkWriter())
+		// Compaction summarises the conversation with the same model as the run;
+		// tag it so its prompt becomes a `summarize-context` generation.
+		newManager, compacted, compactErr := contextCompactor.Compact(withTelemetryRole(recoveryCtx, telemetryRoleCompaction), currentManager, r.sessionChunkWriter())
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
