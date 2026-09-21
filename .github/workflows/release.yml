@@ -91,9 +91,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Test release decisions
-        run: |
-          python3 scripts/test_channel_release.py
-          bash scripts/test_system_config_package.sh
+        run: python3 scripts/test_channel_release.py
       - name: Plan release
         id: plan
         env:
@@ -139,7 +137,9 @@ jobs:
       - name: Build and verify paired business and configuration packages
         env:
           RK_JOBS: '4'
-        run: python3 scripts/release/release.py build --plan output/release/plan.json
+        run: |
+          bash scripts/test_system_config_package.sh
+          python3 scripts/release/release.py build --plan output/release/plan.json
       - uses: actions/upload-artifact@v4
         with:
           name: channel-release-assets

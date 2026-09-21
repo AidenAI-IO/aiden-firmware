@@ -442,7 +442,9 @@ jobs:
       env:
         RK_JOBS: ${{ steps.meta.outputs.rk_jobs }}
         DEBIAN_SYSTEM_APT_CACHE_PROXY: ${{ inputs.apt_cache_proxy || vars.DEBIAN_SYSTEM_APT_CACHE_PROXY }}
-      run: python3 scripts/release/release.py build --plan output/release/plan.json
+      run: |
+        bash scripts/test_system_config_package.sh
+        python3 scripts/release/release.py build --plan output/release/plan.json
 
     - name: Upload channel release assets
       if: ${{ !inputs.dry_run && inputs.release_plan_artifact != '' }}

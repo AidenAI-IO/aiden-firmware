@@ -84,6 +84,8 @@ build = File.read(File.join(root, '.github/workflows/build.yml'))
 raise 'legacy release bypass remains' if build.include?('scripts/create_github_release.sh')
 raise 'firmware build entrypoint missing' unless build.include?('run: ./debian_build.sh')
 raise 'channel build entrypoint missing' unless build.include?('scripts/release/release.py build --plan')
+raise 'channel firmware must validate package transactions' unless build.include?('bash scripts/test_system_config_package.sh')
+raise 'package builds must validate package transactions' unless jobs['business']['steps'].any? { |step| step.fetch('run', '').include?('bash scripts/test_system_config_package.sh') }
 raise 'signing key must also be rootfs trust anchor' unless build.include?('OTA_TRUST_PUBLIC_KEY_PATH=$public_key')
 raise 'SDK checkout must use planned source' unless build.include?('inputs.source_ref || github.sha')
 raise 'Go caches must remain cleanable' unless build.include?('chmod -R u+w "$go_mod_cache"')
