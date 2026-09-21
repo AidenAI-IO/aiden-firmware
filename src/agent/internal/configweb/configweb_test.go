@@ -703,6 +703,28 @@ func TestModelsEndpointReturnsLocalizedCatalog(t *testing.T) {
 	}
 }
 
+func TestModelsEndpointReturnsGeminiCatalog(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet,
+		"/api/models?provider=gemini&locale=en-US", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		Models []agent.LocalizedModelInfo `json:"models"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 3 || payload.Models[0].ID != "gemini-3.8-flash" || !payload.Models[0].Recommended {
+		t.Fatalf("Gemini catalog = %+v", payload.Models)
+	}
+}
+
 func TestModelsEndpointReturnsRequestedModelSpec(t *testing.T) {
 	options := testOptions(t)
 	server, err := NewServer(options)

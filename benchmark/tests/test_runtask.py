@@ -5,6 +5,7 @@ from PIL import Image
 
 from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
+from runner.metrics import aggregate
 from runner.models import RubricVerdict
 from runner.reset import SetupAssertionError
 from runner.runtask import run_one_task
@@ -110,6 +111,80 @@ def test_run_one_task_does_not_count_pre_execution_agent_error_as_agent_failure(
     assert result.metrics["success"] is None
     assert result.metrics["agent_eligible"] is False
     assert result.metrics["failure_class"] == "unknown"
+
+
+def test_run_one_task_applies_environment_state_assertions(tmp_path: Path, monkeypatch):
+    suite = Suite(
+        name="mobilegym",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="find_target",
+        category="multi_step",
+        description_for_judge="Open the exact target.",
+        prompt="open target",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+        environment_assertions={
+            "route.path": "/item/scroll-item-083",
+            "apps.scroll_lab.selectedItemId": "scroll-item-083",
+        },
+    )
+    monkeypatch.setattr(runtask_mod, "prepare_task_isolation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtask_mod, "take_environment_screenshot", lambda *args, **kwargs: (360, 800))
+    monkeypatch.setattr(
+        runtask_mod,
+        "read_environment_state",
+        lambda *args, **kwargs: {
+            "route": {"path": "/item/scroll-item-083"},
+            "apps": {"scroll_lab": {"selectedItemId": "scroll-item-024"}},
+        },
+    )
+
+    result = run_one_task(
+        FakeClient(),
+        suite,
+        task,
+        1,
+        tmp_path / "artifacts",
+        None,
+        None,
+        "run-1",
+        environment_url="http://environment.test",
+    )
+
+    assert result.status == "failed"
+    assert result.hard_assertions.environment_state is False
+    assert result.metrics["success"] is False
+    assert result.metrics["agent_eligible"] is True
+    assert result.metrics["quality_score"] == 0.0
+    assert aggregate([result])["pass_at_1"]["value"] == 0.0
+    assert [failure.id for failure in result.hard_assertion_failures] == [
+        "environment_state:apps.scroll_lab.selectedItemId"
+    ]
+    assert (tmp_path / "artifacts" / "environment_state.json").exists()
+
+
+def test_missing_environment_state_invalidates_success_metrics():
+    task = TaskSpec(
+        id="missing_state", category="multi_step", description_for_judge="", prompt="",
+        rubric=[], hard_assertions=HardAssertions(),
+        environment_assertions={"route.path": "/item/scroll-item-083"},
+    )
+    result = runtask_mod.TaskResult(
+        suite="mobilegym", run_id="run", task_id=task.id, category=task.category,
+        attempt=1, status="passed", rubric=[],
+        metrics={"success": True, "agent_eligible": True, "quality_score": 1.0},
+    )
+    runtask_mod._apply_environment_assertions(result, task, None, "state unavailable")
+    assert result.status == "judge_error"
+    assert result.metrics["success"] is None
+    assert result.metrics["agent_eligible"] is False
+    assert result.metrics["failure_class"] == "evaluation"
+    assert result.metrics["quality_score"] is None
 
 
 def test_run_one_task_includes_static_screenshot_dimensions(tmp_path: Path):

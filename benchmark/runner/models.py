@@ -34,6 +34,7 @@ class HardAssertionResults:
     response_exists: bool = False
     expected_answer: bool | None = None
     expected_recalled_memory: bool | None = None
+    environment_state: bool | None = None
 
 @dc.dataclass
 class HardAssertionFailure:

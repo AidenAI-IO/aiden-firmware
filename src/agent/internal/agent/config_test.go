@@ -441,10 +441,11 @@ base_url = "https://gateway.example.com/v1"
 
 func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 	tests := []struct {
-		name    string
-		model   string
-		explSet string // explicit temperature line, empty means unset
-		want    *float64
+		name     string
+		provider string
+		model    string
+		explSet  string // explicit temperature line, empty means unset
+		want     *float64
 	}{
 		{
 			name:  "kimi-k3 without explicit temperature pins model default",
@@ -468,11 +469,43 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 			explSet: "temperature = 0.0",
 			want:    floatPtr(0),
 		},
+		{
+			// Google documents 1.0 as the Gemini 3 default and warns that a lower
+			// value may cause looping or degraded reasoning, so the global 0.2
+			// fallback must not reach these models.
+			name:     "gemini 3 without explicit temperature pins documented default",
+			provider: "gemini",
+			model:    "gemini-3.8-flash",
+			want:     floatPtr(1),
+		},
+		{
+			name:     "explicit temperature overrides gemini 3 default",
+			provider: "gemini",
+			model:    "gemini-3.8-flash",
+			explSet:  "temperature = 0.4",
+			want:     floatPtr(0.4),
+		},
+		{
+			name:     "gemini 2.5 without documented temperature stays unset",
+			provider: "gemini",
+			model:    "gemini-2.5-flash",
+			want:     nil,
+		},
+		{
+			name:     "unknown gemini model without documented temperature stays unset",
+			provider: "gemini",
+			model:    "gemini-future",
+			want:     nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.toml")
-			contents := "[model_settings.model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			provider := tt.provider
+			if provider == "" {
+				provider = "openai"
+			}
+			contents := "[model_settings.model]\nprovider = \"" + provider + "\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
@@ -485,6 +518,32 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 				t.Errorf("model.temperature = %v, want %v", formatFloatPtr(cfg.Model.Temperature), formatFloatPtr(tt.want))
 			}
 		})
+	}
+}
+
+func TestLoadRuntimeConfigNamedGeminiProviderLeavesUnknownTemperatureUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `[model_settings.model]
+provider = "google-main"
+model = "gemini-2.5-pro"
+
+[model_settings.providers.google-main]
+type = "gemini"
+api_key = "test-key"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Model.Provider != "gemini" {
+		t.Fatalf("model.provider = %q, want resolved gemini", cfg.Model.Provider)
+	}
+	if cfg.Model.Temperature != nil {
+		t.Fatalf("model.temperature = %v, want nil", formatFloatPtr(cfg.Model.Temperature))
 	}
 }
 

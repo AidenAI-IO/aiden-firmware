@@ -225,6 +225,13 @@ func newContextRevision(session *contextmanager.ContextManager, messageList []me
 	// A revision starts a fresh provider conversation. Retaining a Responses
 	// response ID would chain the rewritten local transcript onto stale provider
 	// state. The original session remains on disk for audit and recovery.
+	//
+	// InteractionsSteps are deliberately kept. They are not server-side state
+	// pointers like a Responses ID: they are the Gemini thought and function-call
+	// steps replayed inside the next request, and the provider validates every
+	// replayed function call against the thought signature it was returned with.
+	// Dropping them here would leave the retained tool exchanges in exactly the
+	// shape Gemini rejects.
 	for i := range messageList {
 		messageList[i].ResponsesResponseID = ""
 	}
@@ -470,6 +477,9 @@ func compactCurrentTurnToolExchange(callMessage, resultMessage messages.Message)
 	compactedCall.ResponsesResponseID = ""
 	compactedCall.ResponsesOutputItems = nil
 	compactedCall.ResponsesAssistantPhase = ""
+	// InteractionsSteps stay because the provider still requires the thought
+	// signatures that accompany the retained function calls; only the bulky tool
+	// payloads below are replaced with placeholders.
 	for i := range compactedCall.ToolCalls {
 		compactedCall.ToolCalls[i].Arguments = `{}`
 	}

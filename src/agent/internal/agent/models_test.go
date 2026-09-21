@@ -333,6 +333,78 @@ func TestBuildOpenAICompatibleResponsesMode(t *testing.T) {
 	}
 }
 
+func TestBuildGeminiInteractionsModes(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		apiMode     string
+		providerCtx bool
+	}{
+		{name: "local", apiMode: "interactions"},
+		{name: "stateful", apiMode: "interactions_stateful", providerCtx: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{Provider: "gemini", Model: "gemini-3.8-flash", APIKey: "test-key", APIMode: tt.apiMode}, ProxyConfig{})
+			model, err := mgr.build()
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			interactions, ok := model.(*interactionsModel)
+			if !ok || interactions.providerManagedContext != tt.providerCtx {
+				t.Fatalf("model = %#v, want interactions provider_context=%v", model, tt.providerCtx)
+			}
+			if interactions.baseURL != "https://generativelanguage.googleapis.com/v1beta" {
+				t.Fatalf("base URL = %q", interactions.baseURL)
+			}
+		})
+	}
+}
+
+// An unset api_mode must resolve to stateless Interactions. The
+// OpenAI-compatible endpoint cannot replay thought signatures, so falling back
+// to it would break multi-turn tool calls with HTTP 400.
+func TestBuildGeminiDefaultsToStatelessInteractions(t *testing.T) {
+	mgr := NewModelManager(ModelConfig{Provider: "gemini", Model: "gemini-3.8-flash", APIKey: "test-key"}, ProxyConfig{})
+	model, err := mgr.build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	interactions, ok := model.(*interactionsModel)
+	if !ok {
+		t.Fatalf("model type = %T, want *interactionsModel", model)
+	}
+	if interactions.baseURL != "https://generativelanguage.googleapis.com/v1beta" {
+		t.Fatalf("base URL = %q", interactions.baseURL)
+	}
+	if interactions.providerManagedContext {
+		t.Fatal("unset api_mode must not enable provider-managed context")
+	}
+	if interactions.token != "test-key" {
+		t.Fatal("token was not passed to the interactions transport")
+	}
+}
+
+func TestBuildGeminiRejectsCompatibleAndResponsesModes(t *testing.T) {
+	for _, apiMode := range []string{"chat_completions", "responses", "responses_stateful", "bogus"} {
+		mgr := NewModelManager(ModelConfig{Provider: "gemini", Model: "gemini-3.8-flash", APIKey: "test-key", APIMode: apiMode}, ProxyConfig{})
+		if _, err := mgr.build(); err == nil {
+			t.Fatalf("api_mode=%s built a model, want an error", apiMode)
+		}
+	}
+}
+
+// Gemini exposes exactly one endpoint and one wire shape here, including when
+// api_mode is unset, so the config UI never advertises a compatible endpoint.
+func TestGeminiModelAPIEndpointAndShapeAreAlwaysInteractions(t *testing.T) {
+	for _, apiMode := range []string{"", "interactions", "interactions_stateful"} {
+		if got := modelAPIEndpoint("gemini", ""); got != "https://generativelanguage.googleapis.com/v1beta" {
+			t.Fatalf("endpoint = %q", got)
+		}
+		if got := modelAPIShape("gemini", apiMode); got != "interactions" {
+			t.Fatalf("api_mode=%q shape = %q, want interactions", apiMode, got)
+		}
+	}
+}
+
 func TestBuildOpenAICompatibleResponsesStatefulMode(t *testing.T) {
 	mgr := NewModelManager(ModelConfig{
 		Provider: "openai",
