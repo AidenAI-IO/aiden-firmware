@@ -10,6 +10,9 @@ Debian 构建链使用 `aiden-business` 作为业务基线包。应用构建阶�
 `output/debian-system/aiden-business.deb`。系统构建阶段在 debootstrap
 生成的 rootfs 中执行 `dpkg -i`，随后再制作 `rootfs.ext4` 和 A/B 镜像。
 
+现在同时生成精确同版本的 `aiden-system-config`，业务包依赖它。两包的文件归属、
+首次启用所需的 OTA、安装协调和恢复机制见 [系统配置包](system-config-package.md)。
+
 包内容位于标准 Debian 路径：
 
 ```text
@@ -20,7 +23,7 @@ Debian 构建链使用 `aiden-business` 作为业务基线包。应用构建阶�
 /usr/share/aiden/audio/         # 业务音频资源
 ```
 
-驱动、内核模块、Rockchip 运行库、EDID、启动集成脚本和 OTA 信任根由 base rootfs
+驱动、内核模块、Rockchip 运行库、EDID、未列入配置包的启动集成脚本和 OTA 信任根由 base rootfs
 提供。取消 OEM 分区和 `/oem` 目录，不提供兼容路径；旧版本设备必须完整强刷。`/userdata/agent`、`/userdata/system` 和用户 Skill 不在包内。
 
 包内的 `release-manifest.json` 记录业务版本、架构、平台契约范围、配置 schema 和
@@ -105,13 +108,15 @@ Go/OpenCV 缓存环境变量与 `debian_build.sh` 相同。
 
 ```text
 aiden-business_0.0.1-2_armhf.deb
+aiden-system-config_0.0.1-2_all.deb
 release-manifest.json
+system-config-manifest.json
 build-metadata.json
 RELEASE-NOTES.md
 SHA256SUMS
 ```
 
-**Debian Business Package (artifacts only)** 工作流只构建产物。
+**Debian Business and Config Packages (artifacts only)** 工作流只构建产物。
 正式发布使用 **Aiden Channel Release**，全部手动触发，由计划判断该发业务包还是
 完整 OTA。旧 `scripts/debian-package/release.sh publish` 入口已关闭。
 发布操作、自动变更对比、失败重试和所需仓库设置见 [三通道发布](channel-release.md)。
@@ -129,9 +134,9 @@ SHA256SUMS
 cd /path/to/downloaded-release
 sha256sum -c SHA256SUMS
 cat /usr/lib/aiden/platform/contract.json
-sudo apt install ./aiden-business_0.0.1-2_armhf.deb
+sudo apt install ./aiden-business_0.0.1-2_armhf.deb ./aiden-system-config_0.0.1-2_all.deb
 sudo /usr/lib/aiden/ota --config /userdata/debian/ota/config.json self-check
-dpkg-query -W aiden-business
+dpkg-query -W aiden-business aiden-system-config
 ```
 
 从 revision 2 开始，`preinst/prerm/postinst/postrm` 维护脚本随 apt/dpkg 自动停启业务。
@@ -143,7 +148,7 @@ Config Web、Wi-Fi proxy、frame、audio、BLE 和 ttyd。解包和配置成功�
 首次从旧包升级也会由新包 preinst 接管停服。同版本演练用：
 
 ```bash
-sudo apt install --reinstall ./aiden-business_0.0.1-2_armhf.deb
+sudo apt install --reinstall ./aiden-business_0.0.1-2_armhf.deb ./aiden-system-config_0.0.1-2_all.deb
 ```
 
 制作 rootfs 时的 chroot、`SYSTEMD_OFFLINE=1`、非空 `DPKG_ROOT` 和无 systemd 环境

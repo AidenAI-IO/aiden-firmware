@@ -14,6 +14,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/debian-package"))
 import system_config
+import importlib.util
+spec = importlib.util.spec_from_file_location("standalone_release", ROOT / "scripts/debian-package/release.py")
+standalone_release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(standalone_release)
 import test_debian_package_lifecycle as lifecycle
 from test_debian_package_lifecycle import UNITS, RESTART, TTYD
 
@@ -149,6 +153,35 @@ class PairTests(unittest.TestCase):
         owners = subprocess.check_output([shutil.which("dpkg-query"), "--root=" + str(self.device),
                                            "-S", "/etc/profile.d/aiden-env.sh"], text=True)
         self.assertEqual(owners.strip(), "aiden-system-config: /etc/profile.d/aiden-env.sh")
+
+    def test_production_packager_creates_a_disjoint_verified_pair(self):
+        apps = self.root / "apps"
+        (apps / "bin").mkdir(parents=True)
+        names = "agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd"
+        for name in names.split():
+            binary = apps / "bin" / name
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o755)
+        output = self.root / "production-output"
+        output.mkdir()
+        script = (ROOT / "scripts/debian-package/container-build.sh").read_text()
+        script = script.replace("REPO_ROOT=/work APPS_DIR=/apps OUTPUT_DIR=/out",
+                                f'REPO_ROOT="{ROOT}" APPS_DIR="{apps}" OUTPUT_DIR="{output}"')
+        env = {**self.env, "AIDEN_BUSINESS_VERSION": "0.0.9"}
+        subprocess.run(["bash", "-c", script], env=env, check=True, stdout=subprocess.DEVNULL)
+        business = output / "aiden-business_0.0.9-1_armhf.deb"
+        config = output / "aiden-system-config_0.0.9-1_all.deb"
+        standalone_release.verify_pair(business, config, "0.0.9-1")
+        def payload(package):
+            data = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
+            with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                return {m.name for m in archive if m.isfile() or m.issym()}
+        self.assertFalse(payload(business) & payload(config))
+        # Exercise standalone staging using the real package bytes, isolating
+        # source provenance because the binaries above intentionally are fixtures.
+        with patch.object(standalone_release, "check_source", return_value=("a" * 40, "b" * 40)), patch.dict(os.environ, env):
+            standalone_release.stage(ROOT, apps, output)
+        self.assertEqual(standalone_release.verify(output / "release")["package_set"], 2)
 
 
 if __name__ == "__main__":
