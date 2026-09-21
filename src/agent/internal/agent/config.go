@@ -310,7 +310,7 @@ type Config struct {
 	Timezone                   string                        `toml:"timezone,omitempty"`
 	Instruction                string                        `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                        `toml:"additional_prompt,omitempty"`
-	InputMode                  string                        `toml:"input_mode,omitempty"`  // "text", "stt", or "realtime"
+	InputMode                  string                        `toml:"input_mode,omitempty"`  // "stt" or "realtime"
 	VADBackend                 string                        `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                        `toml:"vad_model_path,omitempty"`
 	VADHelperPath              string                        `toml:"vad_helper_path,omitempty"`
@@ -822,11 +822,11 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"-"`
 	APIKey   string `toml:"api_key,omitempty"`
-	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
-	// and "chat_completions" preserve the historical default; "responses"
-	// sends the locally maintained context as Responses input items;
-	// "responses_stateful" chains provider-stored responses with
-	// previous_response_id.
+	// APIMode selects the model wire protocol. Empty and "chat_completions"
+	// preserve the historical default; "responses" and "responses_stateful"
+	// select OpenAI-compatible Responses transports. Gemini also supports its
+	// native "interactions" (local StepList) and "interactions_stateful"
+	// (previous_interaction_id) modes.
 	APIMode string `toml:"api_mode,omitempty"`
 	// ResponsesContextManagement selects provider-side context management for
 	// Responses requests. "compaction" is OpenAI's token-based policy and
@@ -847,8 +847,9 @@ type ModelConfig struct {
 	ResponsesInclude []string `toml:"responses_include,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
-	// (see applyModelTemperatureDefault); an explicit value, including 0, is
-	// always honored and sent to the provider.
+	// or left to providers whose defaults Aiden does not know (see
+	// applyModelTemperatureDefault). An explicit value, including 0, is always
+	// honored and sent to the provider.
 	Temperature       *float64 `toml:"temperature,omitempty"`
 	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool     `toml:"log_raw_http,omitempty"`
@@ -1034,12 +1035,14 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 }
 
 // applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
-// the model when the user has not set it. The default is sourced
-// from the model's metadata (some models, e.g. Kimi K3, require a fixed
-// temperature) and falls back to defaultModelTemperature. An explicit
-// model.temperature always takes precedence. This is only called in
-// LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps temperature unset
-// so the editor displays empty and saves without baking defaults into agent.toml.
+// the model when the user has not set it. The default is sourced from the
+// model's metadata (some models, e.g. Kimi K3, require a fixed temperature).
+// Native Gemini models without a documented default stay unset so Google can
+// choose the model default; other providers fall back to
+// defaultModelTemperature. An explicit model.temperature always takes
+// precedence. This is only called in LoadRuntimeConfig; LoadResolvedConfig
+// (config editor) keeps temperature unset so the editor displays empty and saves
+// without baking defaults into agent.toml.
 func applyRuntimeModelTemperatureDefaults(cfg *Config) {
 	if cfg == nil {
 		return
@@ -1055,6 +1058,14 @@ func applyModelTemperatureDefault(m *ModelConfig) {
 		// Copy the value rather than aliasing the registry pointer.
 		temp := *spec.DefaultTemperature
 		m.Temperature = &temp
+		return
+	}
+	// Some native providers recommend using each model's own default. If the
+	// model registry has no reliable value for one of those providers, omit
+	// temperature rather than substituting Aiden's cross-provider fallback. The
+	// provider has already been resolved by applyRuntimeModelProviders, including
+	// named provider records.
+	if modelProviderUsesProviderTemperatureDefault(m.Provider) {
 		return
 	}
 	temp := defaultModelTemperature
@@ -1725,13 +1736,26 @@ func (c Config) Validate() error {
 	}
 	apiMode := normalizeModelAPIMode(c.Model.APIMode)
 	if apiMode == "" {
-		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions, responses, or responses_stateful)", c.Model.APIMode)
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions, responses, responses_stateful, interactions, or interactions_stateful)", c.Model.APIMode)
 	}
 	if (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) && !c.modelProviderSupportsResponses() {
 		return fmt.Errorf("model.api_mode=%s requires a provider transport with an OpenAI-compatible /responses endpoint", apiMode)
 	}
 	if apiMode == modelAPIModeResponsesStateful && !c.modelProviderSupportsResponsesStateful() {
 		return fmt.Errorf("model.api_mode=responses_stateful requires a provider that supports stored Responses and previous_response_id; use responses for stateless-compatible endpoints")
+	}
+	if (apiMode == modelAPIModeInteractions || apiMode == modelAPIModeInteractionsStateful) && !c.modelProviderSupportsInteractions() {
+		return fmt.Errorf("model.api_mode=%s requires the native Gemini Interactions transport", apiMode)
+	}
+	if apiMode == modelAPIModeInteractionsStateful && !c.modelProviderSupportsInteractionsStateful() {
+		return fmt.Errorf("model.api_mode=interactions_stateful requires a provider that supports stored Gemini Interactions and previous_interaction_id; use interactions for local context")
+	}
+	// An unset api_mode is normalized to chat_completions for historical
+	// compatibility, but some providers have no compatible transport at all. Only
+	// reject the mode when it was configured explicitly, so a minimal provider
+	// record still resolves to that provider's native default.
+	if apiMode == modelAPIModeChatCompletions && strings.TrimSpace(c.Model.APIMode) != "" && !c.modelProviderSupportsChatCompletions() {
+		return fmt.Errorf("model.api_mode=chat_completions is not supported by provider type %s; leave api_mode empty or use its native transport", c.modelProviderType())
 	}
 	contextManagement := strings.ToLower(strings.TrimSpace(c.Model.ResponsesContextManagement))
 	switch contextManagement {
@@ -1816,7 +1840,6 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.InputMode) != "" {
 		mode := strings.ToLower(strings.TrimSpace(c.InputMode))
 		switch mode {
-		case "text":
 		case "stt":
 			if strings.TrimSpace(c.STT.Provider) == "" {
 				return errors.New("stt.provider is required when input_mode=stt")
@@ -1825,10 +1848,10 @@ func (c Config) Validate() error {
 			if !c.VoiceModel.Enabled() {
 				return errors.New("voice_model.api_key is required when input_mode=realtime")
 			}
-		case "audio":
-			return fmt.Errorf("invalid input_mode: %s (audio mode has been removed; use stt instead)", c.InputMode)
+		case "text", "audio":
+			return fmt.Errorf("invalid input_mode: %s (text and audio modes have been removed; use stt or realtime)", c.InputMode)
 		default:
-			return fmt.Errorf("invalid input_mode: %s (expected text, stt, or realtime)", c.InputMode)
+			return fmt.Errorf("invalid input_mode: %s (expected stt or realtime)", c.InputMode)
 		}
 
 		// Validate TTS/STT config only for the legacy STT audio path.
@@ -1969,6 +1992,27 @@ func (c Config) modelProviderSupportsResponsesStateful() bool {
 	providerType := c.modelProviderType()
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponsesStateful
+}
+
+func (c Config) modelProviderSupportsInteractions() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsInteractions
+}
+
+func (c Config) modelProviderSupportsInteractionsStateful() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsInteractionsStateful
+}
+
+func (c Config) modelProviderSupportsChatCompletions() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	if !ok {
+		return true
+	}
+	return !definition.chatCompletionsUnsupported
 }
 
 func (c Config) modelProviderType() string {
@@ -2146,13 +2190,25 @@ func (t TelemetryConfig) EnvironmentOrDefault() string {
 	return "default"
 }
 
-// InputModeOrDefault returns the input mode or "text" as default
+// InputModeOrDefault returns the effective input mode. An unset mode is
+// inferred from the configured providers rather than defaulting to a fixed
+// value: speech providers are opt-in (see
+// applyRuntimeOptionalProviderDefaults), so a device that never configured
+// voice has no mode to fall back to. Returns "stt" when the classic pair is
+// configured, "realtime" when a realtime credential is present, and "" when
+// voice is unavailable and only the Web UI can reach the agent.
 func (c Config) InputModeOrDefault() string {
 	mode := strings.TrimSpace(c.InputMode)
-	if mode == "" {
-		return defaultInputMode
+	if mode != "" {
+		return strings.ToLower(mode)
 	}
-	return strings.ToLower(mode)
+	if strings.TrimSpace(c.STT.Provider) != "" && strings.TrimSpace(c.TTS.Provider) != "" {
+		return "stt"
+	}
+	if c.VoiceModel.Enabled() {
+		return "realtime"
+	}
+	return ""
 }
 
 func (c Config) VADBackendOrDefault() string {

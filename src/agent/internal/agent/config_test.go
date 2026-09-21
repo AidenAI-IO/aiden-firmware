@@ -247,13 +247,16 @@ func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid input_mode error for removed audio mode")
 	}
-	if !strings.Contains(err.Error(), "audio mode has been removed") {
+	if !strings.Contains(err.Error(), "text and audio modes have been removed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
+// TestConfigInputModeDefaultContract pins the unconfigured contract: input_mode
+// has no baked-in default, because both modes require providers the device may
+// never have configured. The effective mode is inferred from those providers.
 func TestConfigInputModeDefaultContract(t *testing.T) {
-	const want = "text"
+	const want = ""
 
 	if got := DefaultConfig().InputMode; got != want {
 		t.Fatalf("DefaultConfig().InputMode = %q, want %q", got, want)
@@ -276,6 +279,16 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	if metaDefault != want {
 		t.Fatalf("ConfigMeta agent.input_mode default = %#v, want %q", metaDefault, want)
 	}
+
+	// The classic pair and a realtime credential each imply their own mode.
+	classic := Config{STT: STTConfig{Provider: "openai-whisper"}, TTS: TTSConfig{Provider: "minimax-cn"}}
+	if got := classic.InputModeOrDefault(); got != "stt" {
+		t.Fatalf("configured classic pair InputModeOrDefault() = %q, want stt", got)
+	}
+	realtime := Config{VoiceModel: VoiceModelConfig{APIKey: "key"}}
+	if got := realtime.InputModeOrDefault(); got != "realtime" {
+		t.Fatalf("configured realtime InputModeOrDefault() = %q, want realtime", got)
+	}
 }
 
 func TestLoadRuntimeConfigFallsBackFromUnconfiguredRealtime(t *testing.T) {
@@ -295,8 +308,8 @@ provider = "fake"
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig() error = %v", err)
 	}
-	if got, want := cfg.InputModeOrDefault(), "text"; got != want {
-		t.Fatalf("InputModeOrDefault() = %q, want runtime fallback %q", got, want)
+	if got, want := cfg.InputModeOrDefault(), ""; got != want {
+		t.Fatalf("InputModeOrDefault() = %q, want runtime fallback %q (voice unconfigured)", got, want)
 	}
 }
 
@@ -428,10 +441,11 @@ base_url = "https://gateway.example.com/v1"
 
 func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 	tests := []struct {
-		name    string
-		model   string
-		explSet string // explicit temperature line, empty means unset
-		want    *float64
+		name     string
+		provider string
+		model    string
+		explSet  string // explicit temperature line, empty means unset
+		want     *float64
 	}{
 		{
 			name:  "kimi-k3 without explicit temperature pins model default",
@@ -455,11 +469,43 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 			explSet: "temperature = 0.0",
 			want:    floatPtr(0),
 		},
+		{
+			// Google documents 1.0 as the Gemini 3 default and warns that a lower
+			// value may cause looping or degraded reasoning, so the global 0.2
+			// fallback must not reach these models.
+			name:     "gemini 3 without explicit temperature pins documented default",
+			provider: "gemini",
+			model:    "gemini-3.8-flash",
+			want:     floatPtr(1),
+		},
+		{
+			name:     "explicit temperature overrides gemini 3 default",
+			provider: "gemini",
+			model:    "gemini-3.8-flash",
+			explSet:  "temperature = 0.4",
+			want:     floatPtr(0.4),
+		},
+		{
+			name:     "gemini 2.5 without documented temperature stays unset",
+			provider: "gemini",
+			model:    "gemini-2.5-flash",
+			want:     nil,
+		},
+		{
+			name:     "unknown gemini model without documented temperature stays unset",
+			provider: "gemini",
+			model:    "gemini-future",
+			want:     nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent.toml")
-			contents := "[model_settings.model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			provider := tt.provider
+			if provider == "" {
+				provider = "openai"
+			}
+			contents := "[model_settings.model]\nprovider = \"" + provider + "\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
@@ -472,6 +518,32 @@ func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
 				t.Errorf("model.temperature = %v, want %v", formatFloatPtr(cfg.Model.Temperature), formatFloatPtr(tt.want))
 			}
 		})
+	}
+}
+
+func TestLoadRuntimeConfigNamedGeminiProviderLeavesUnknownTemperatureUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `[model_settings.model]
+provider = "google-main"
+model = "gemini-2.5-pro"
+
+[model_settings.providers.google-main]
+type = "gemini"
+api_key = "test-key"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Model.Provider != "gemini" {
+		t.Fatalf("model.provider = %q, want resolved gemini", cfg.Model.Provider)
+	}
+	if cfg.Model.Temperature != nil {
+		t.Fatalf("model.temperature = %v, want nil", formatFloatPtr(cfg.Model.Temperature))
 	}
 }
 
@@ -1375,8 +1447,23 @@ provider = "fake"
 		t.Fatalf("write audio config: %v", err)
 	}
 	_, err = LoadRuntimeConfig(audioPath)
-	if err == nil || !strings.Contains(err.Error(), "audio mode has been removed") {
-		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want removed audio mode error", err)
+	if err == nil || !strings.Contains(err.Error(), "text and audio modes have been removed") {
+		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want removed audio/text mode error", err)
+	}
+
+	textPath := filepath.Join(dir, "text.toml")
+	if err := os.WriteFile(textPath, []byte(`
+[voice_settings.mode]
+input_mode = "text"
+
+[model_settings.model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write text config: %v", err)
+	}
+	_, err = LoadRuntimeConfig(textPath)
+	if err == nil || !strings.Contains(err.Error(), "text and audio modes have been removed") {
+		t.Fatalf("LoadRuntimeConfig(text) error = %v, want removed audio/text mode error", err)
 	}
 }
 

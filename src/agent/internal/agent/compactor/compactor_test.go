@@ -398,6 +398,7 @@ func TestPruneForBudgetBoundsCurrentTurnToolExchangesAndStates(t *testing.T) {
 				ResponsesReasoningItems: []json.RawMessage{json.RawMessage(`{"type":"reasoning"}`)},
 				ResponsesOutputItems:    []json.RawMessage{json.RawMessage(`{"type":"function_call"}`)},
 				ResponsesAssistantPhase: "commentary",
+				InteractionsSteps:       []json.RawMessage{json.RawMessage(fmt.Sprintf(`{"type":"thought","signature":"sig_%d"}`, i))},
 				ToolCalls: []messages.ToolCall{{
 					ID:        id,
 					Name:      "shell",
@@ -471,6 +472,9 @@ func TestPruneForBudgetBoundsCurrentTurnToolExchangesAndStates(t *testing.T) {
 		if call.ToolCalls[0].Arguments != `{}` || call.Content != "" || len(call.ResponsesReasoningItems) != 0 || len(call.ResponsesOutputItems) != 0 || call.ResponsesAssistantPhase != "" {
 			t.Fatalf("old current-turn call %s was not compacted safely: %#v", id, call)
 		}
+		if len(call.InteractionsSteps) != 1 || !strings.Contains(string(call.InteractionsSteps[0]), fmt.Sprintf(`"sig_%d"`, i)) {
+			t.Fatalf("old current-turn call %s lost its Gemini thought steps: %#v", id, call)
+		}
 		result := results[id]
 		if result.Meta == nil || result.Meta.Reason != currentTurnToolExchangePruneReason || result.Meta.Complete ||
 			!strings.Contains(result.Content, `"status":"current_turn_prune"`) || strings.Contains(result.Content, strings.Repeat("y", 200)) {
@@ -480,7 +484,8 @@ func TestPruneForBudgetBoundsCurrentTurnToolExchangesAndStates(t *testing.T) {
 	for i := 4; i <= 6; i++ {
 		id := fmt.Sprintf("call_%d", i)
 		call := calls[id]
-		if !strings.Contains(call.ToolCalls[0].Arguments, strings.Repeat("x", 100)) || len(call.ResponsesOutputItems) != 1 {
+		if !strings.Contains(call.ToolCalls[0].Arguments, strings.Repeat("x", 100)) || len(call.ResponsesOutputItems) != 1 ||
+			len(call.InteractionsSteps) != 1 {
 			t.Fatalf("recent protected call %s changed: %#v", id, call)
 		}
 		if result := results[id]; result.Meta != nil || !strings.Contains(result.Content, strings.Repeat("y", 100)) {

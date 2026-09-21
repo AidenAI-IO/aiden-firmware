@@ -296,13 +296,13 @@ stateModule.namespace.runtime.updateAllProviderActionStates = () => {};
 stateModule.namespace.runtime.VoiceModelProvidersManager = {records: {}};
 const configMetaModule = await loadModule(path.join(webRoot, 'assets/js/config/config-meta.js'));
 await configMetaModule.evaluate();
-const {bindFieldVisibility, buildConfigMeta} = configMetaModule.namespace;
+const {bindFieldVisibility, buildConfigMeta, hydrateSelectField} = configMetaModule.namespace;
 
 buildConfigMeta({sections: [
   {name: 'agent', fields: [
     {key: 'locale', label: 'Language', widget: 'select', enum: [{value: 'en-US'}, {value: 'zh-CN'}]},
     {key: 'timezone', label: 'Time zone', widget: 'select', enum: [{value: 'UTC'}, {value: 'Asia/Shanghai'}, {value: 'America/Los_Angeles'}]},
-    {key: 'input_mode', label: 'Input mode', widget: 'select', enum: [{value: 'text'}, {value: 'stt'}, {value: 'realtime'}]},
+    {key: 'input_mode', label: 'Input mode', widget: 'select', enum: [{value: 'stt'}, {value: 'realtime'}]},
     {key: 'new_field', label: 'New field', help: 'Rendered from metadata.', placeholder: 'example', layout: 'wide', widget: 'text'},
     {key: 'defaulted', label: 'Defaulted', widget: 'text', default: 'value'},
     {key: 'secret_value', label: 'Secret value', widget: 'text', secret: true},
@@ -311,7 +311,16 @@ buildConfigMeta({sections: [
   {name: 'model', fields: [
     {key: 'provider', label: 'provider', widget: 'select', layout: 'wide'},
     {key: 'model', label: 'model', widget: 'text', layout: 'wide'},
-    {key: 'temperature', label: 'temperature', widget: 'number'},
+    {key: 'temperature', label: 'temperature', widget: 'number', nullable: true, default: 0.2, placeholderWhen: [
+      {value: 1, when: {all: [{field: 'model.model', op: 'in', values: ['gemini-3.8-flash']}]}},
+      {value: null, when: {all: [{field: 'model.provider', op: 'providerType', value: 'gemini'}]}},
+    ]},
+    {key: 'api_mode', label: 'api_mode', widget: 'select', layout: 'wide', enum: [
+      {value: '', label: 'Chat Completions (compatible)', excludeProviders: ['gemini']},
+      {value: 'responses', label: 'Responses (local context)', providers: ['openai']},
+      {value: 'interactions', label: 'Interactions (local context)', providers: ['gemini']},
+      {value: 'interactions_stateful', label: 'Interactions (provider context)', providers: ['gemini']},
+    ]},
   ]},
   {name: 'quick_capture', fields: [
     {key: 'enabled', label: 'Enabled', widget: 'boolean', default: true},
@@ -530,6 +539,42 @@ configFormModule.namespace.setSectionLocked('model', false);
 assert.equal(document.getElementById('model_provider').disabled, false, 'editing a section enables its fields');
 assert.equal(modelSaveButton.disabled, false, 'editing a section enables its save button');
 assert.equal(modelSelectorDetails.inert, false, 'editing a section enables composite controls');
+
+// A choice a provider cannot use must never become that provider's default:
+// Gemini has no compatible transport, so an unset api_mode has to render as the
+// native Interactions mode instead of "Chat Completions".
+appendSpecialField(document, modelTarget, 'model.api_mode', 'model_api_mode');
+stateModule.namespace.runtime.resolveModelProviderType = (ref) => ref;
+const modelProviderSelect = document.getElementById('model_provider');
+const apiModeSelect = () => document.getElementById('model_api_mode');
+modelProviderSelect.value = 'gemini';
+hydrateSelectField('model', 'api_mode', '', false);
+assert.deepEqual(apiModeSelect().options.map((option) => option.value), ['interactions', 'interactions_stateful']);
+assert.equal(apiModeSelect().value, 'interactions', 'Gemini defaults to its native Interactions mode');
+modelProviderSelect.value = 'openai';
+hydrateSelectField('model', 'api_mode', '', false);
+assert.deepEqual(apiModeSelect().options.map((option) => option.value), ['', 'responses']);
+assert.equal(apiModeSelect().value, '', 'providers with a compatible transport keep the empty default');
+modelProviderSelect.value = 'gemini';
+hydrateSelectField('model', 'api_mode', 'interactions_stateful', false);
+assert.equal(apiModeSelect().value, 'interactions_stateful', 'an explicit Gemini mode is preserved');
+
+// Temperature placeholders follow the resolved provider type, including a
+// named provider record. Known Gemini defaults win over the provider-level rule;
+// unknown defaults remain empty instead of inheriting the global 0.2 fallback.
+stateModule.namespace.modelProvidersByName['google-main'] = {type: 'gemini'};
+configMetaModule.namespace.ensureSelectOption(modelProviderSelect, 'google-main');
+modelProviderSelect.value = 'google-main';
+document.getElementById('model_model').value = 'gemini-2.5-flash';
+configMetaModule.namespace.applyFieldVisibility(false, 'model.provider');
+assert.equal(document.getElementById('model_temperature').dataset.configDefaultPlaceholder, '', 'named native Gemini providers defer unknown defaults to Google');
+document.getElementById('model_model').value = 'gemini-3.8-flash';
+configMetaModule.namespace.applyFieldVisibility(false, 'model.model');
+assert.equal(document.getElementById('model_temperature').dataset.configDefaultPlaceholder, '1', 'known Gemini model defaults override provider-level omission');
+modelProviderSelect.value = 'openai';
+document.getElementById('model_model').value = 'custom-model';
+configMetaModule.namespace.applyFieldVisibility(false, 'model.provider');
+assert.equal(document.getElementById('model_temperature').dataset.configDefaultPlaceholder, '0.2', 'non-Gemini models retain the global fallback');
 
 const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);

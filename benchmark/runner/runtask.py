@@ -11,12 +11,14 @@ from PIL import Image
 
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 from runner.assertions import (
+    evaluate_environment_state_assertions,
     evaluate_expected_answer,
     evaluate_expected_recalled_memory_ids,
     evaluate_hard_assertions,
     evaluate_trace_observations,
 )
 from runner.capture import take_environment_screenshot
+from runner.environment_state import read_environment_state
 from runner.judge import judge_task, JudgeConfig
 from runner.metrics import derive_episode_metrics, derive_history_metrics
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
@@ -624,7 +626,25 @@ def run_one_task(
             "environment_url is required for live screenshot capture"
         )
         post_path = None
-    return evaluate_task_history(
+    environment_state: dict[str, Any] | None = None
+    environment_state_error = ""
+    if effective_task.environment_assertions:
+        if not environment_url:
+            environment_state_error = "environment_url is required for environment_assertions"
+        else:
+            try:
+                environment_state = read_environment_state(
+                    environment_url,
+                    benchmark_task_id=benchmark_task_id,
+                )
+                (artifact_dir / "environment_state.json").write_text(
+                    json.dumps(environment_state, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                environment_state_error = str(exc)[:300]
+
+    result = evaluate_task_history(
         suite=suite,
         task=effective_task,
         history=history,
@@ -642,6 +662,67 @@ def run_one_task(
         active_skills=active_skills,
         episode=episode,
     )
+    return _apply_environment_assertions(
+        result,
+        effective_task,
+        environment_state,
+        environment_state_error,
+    )
+
+
+def _apply_environment_assertions(
+    result: TaskResult,
+    task: TaskSpec,
+    state: dict[str, Any] | None,
+    error: str,
+) -> TaskResult:
+    if not task.environment_assertions:
+        return result
+    if result.hard_assertions is None:
+        result.hard_assertions = HardAssertionResults()
+    if error or state is None:
+        result.hard_assertions.environment_state = None
+        result.metrics["environment_state_error"] = error or "environment state unavailable"
+        result.status = "judge_error"
+        result.metrics["quality_score"] = None
+        _set_outcome_metrics(
+            result,
+            success=None,
+            eligible=False,
+            failure_class="evaluation",
+            stage="evaluation",
+        )
+        result.finished_at = now_iso()
+        return result
+
+    checks = evaluate_environment_state_assertions(state, task.environment_assertions)
+    result.metrics["environment_state_assertions"] = [dc.asdict(check) for check in checks]
+    all_passed = all(check.passed for check in checks)
+    result.hard_assertions.environment_state = all_passed
+    if not all_passed:
+        for check in checks:
+            if check.passed:
+                continue
+            result.hard_assertion_failures.append(
+                HardAssertionFailure(
+                    id=f"environment_state:{check.path}",
+                    label="Environment State",
+                    requirement=f"{check.path} must equal {check.expected!r}.",
+                    actual=f"Observed {check.actual!r}.",
+                )
+            )
+        if result.status == "passed":
+            result.status = "failed"
+            result.metrics["quality_score"] = 0.0
+            _set_outcome_metrics(
+                result,
+                success=False,
+                eligible=True,
+                failure_class="agent",
+                stage=_failure_stage(result),
+            )
+    result.finished_at = now_iso()
+    return result
 
 
 def client_history_or_empty(client: AgentClient) -> list[dict]:

@@ -666,6 +666,21 @@ func TestModelAPIModeValidation(t *testing.T) {
 	if got := normalizeModelAPIMode("responses_stateful"); got != modelAPIModeResponsesStateful {
 		t.Fatalf("responses_stateful mode = %q", got)
 	}
+	if got := normalizeModelAPIMode("interactions"); got != modelAPIModeInteractions {
+		t.Fatalf("interactions mode = %q", got)
+	}
+	if got := normalizeModelAPIMode("interactions_stateful"); got != modelAPIModeInteractionsStateful {
+		t.Fatalf("interactions_stateful mode = %q", got)
+	}
+	if err := (Config{Model: ModelConfig{Provider: "gemini", Model: "gemini-3.8-flash", APIMode: "interactions"}}).Validate(); err != nil {
+		t.Fatalf("Gemini Interactions Validate() error = %v", err)
+	}
+	if err := (Config{Model: ModelConfig{Provider: "gemini", Model: "gemini-3.8-flash", APIMode: "interactions_stateful"}}).Validate(); err != nil {
+		t.Fatalf("Gemini stateful Interactions Validate() error = %v", err)
+	}
+	if err := (Config{Model: ModelConfig{Provider: "openai", Model: "gpt-test", APIMode: "interactions"}}).Validate(); err == nil || !strings.Contains(err.Error(), "native Gemini Interactions") {
+		t.Fatalf("OpenAI Interactions Validate() error = %v", err)
+	}
 	cfg := Config{
 		ModelProviders: map[string]ModelProvider{"gateway": {Type: "openai", BaseURL: "https://gateway.example.test/v1"}},
 		Model:          ModelConfig{Provider: "gateway", Model: "test-model", APIMode: "responses"},

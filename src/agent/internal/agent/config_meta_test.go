@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -52,7 +53,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		WidgetText: true, WidgetTextarea: true, WidgetNumber: true,
 		WidgetBoolean: true, WidgetSelect: true, WidgetList: true,
 	}
-	validOps := map[string]bool{"eq": true, "ne": true, "in": true, "notIn": true, "truthy": true}
+	validOps := map[string]bool{"eq": true, "ne": true, "in": true, "notIn": true, "truthy": true, "providerType": true}
 
 	idx := fieldIndex(t)
 	seenSections := map[string]bool{}
@@ -217,7 +218,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.api_mode": {
 			layout: "wide",
 			label:  "Conversation API",
-			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+			help:   "Choose the conversation wire protocol and who manages context. Local modes submit the transcript; provider modes continue from provider state.",
 		},
 		"agent.context_prune_threshold": {
 			label:       "Context prune threshold (fraction)",
@@ -252,7 +253,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.responses_context_edit_trigger":        {label: "Ark tool-call trigger", placeholder: "10 = recommended", help: "After this many tool calls, Ark clears old tool inputs. 0 uses the recommended value 10."},
 		"model.responses_context_edit_keep":           {label: "Ark tool calls to keep", placeholder: "3 = recommended", help: "Number of recent tool calls Ark keeps after cleanup. 0 uses the recommended value 3."},
 		"model.responses_context_edit_clear_thinking": {label: "Clear old thinking", help: "Ask Ark to remove previous thinking turns when it applies the context edit."},
-		"model.temperature":                           {label: "Temperature", help: "Controls response randomness. Lower values are more deterministic; 0 is sent as an explicit value."},
+		"model.temperature":                           {label: "Temperature", help: "Controls response randomness. Leave empty to use the Agent-selected default; some models defer to their provider default. 0 is sent as an explicit value."},
 		"model.max_response_tokens":                   {label: "Maximum response tokens", help: "Maximum number of tokens allowed in one model response."},
 		"model.log_raw_http":                          {label: "Raw HTTP logging", help: "Write raw model HTTP requests and responses to the Agent log directory. Enable only while troubleshooting."},
 		"model.reasoning_effort":                      {label: "Reasoning effort", help: "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning."},
@@ -525,6 +526,95 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}
 }
 
+// TestConfigMeta_TemperaturePlaceholderFollowsModelSpec pins the editor
+// placeholder to the value the runtime resolves. The static Default is the
+// non-Gemini global fallback, so conditional placeholders cover both pinned
+// model values and native Gemini's provider-managed default.
+func TestConfigMeta_TemperaturePlaceholderFollowsModelSpec(t *testing.T) {
+	idx := fieldIndex(t)
+	field, ok := idx["model.temperature"]
+	if !ok {
+		t.Fatal("missing model.temperature metadata")
+	}
+	// The field must stay Nullable with the global fallback as Default: an
+	// untouched field saves as unset so the runtime keeps resolving it.
+	if !field.Nullable {
+		t.Error("model.temperature must stay nullable so an empty field saves as unset")
+	}
+	if !reflect.DeepEqual(field.Default, defaultModelTemperature) {
+		t.Errorf("model.temperature default = %#v, want global fallback %#v", field.Default, defaultModelTemperature)
+	}
+
+	// modelsFor returns the model ids carried by the placeholder for a value.
+	modelsFor := func(value float64) []string {
+		for _, candidate := range field.PlaceholderWhen {
+			if !reflect.DeepEqual(candidate.Value, value) {
+				continue
+			}
+			if len(candidate.When.All) != 1 || candidate.When.All[0].Field != "model.model" || candidate.When.All[0].Op != "in" {
+				t.Fatalf("placeholder for %v has unexpected condition: %#v", value, candidate.When)
+			}
+			return candidate.When.All[0].Values
+		}
+		return nil
+	}
+
+	pinnedToOne := modelsFor(1)
+	if pinnedToOne == nil {
+		t.Fatalf("model.temperature missing placeholder for 1.0: %#v", field.PlaceholderWhen)
+	}
+	contains := func(ids []string, want string) bool {
+		for _, id := range ids {
+			if id == want {
+				return true
+			}
+		}
+		return false
+	}
+	// Both spellings must be covered: model.model is free text and the UI
+	// matches it exactly, so a provider-prefixed id must hit the same placeholder.
+	for _, want := range []string{
+		"gemini-3.8-flash", "google/gemini-3.8-flash",
+		"gemini-3.5-pro", "google/gemini-3.5-pro",
+		"kimi-k3",
+	} {
+		if !contains(pinnedToOne, want) {
+			t.Errorf("placeholder for 1.0 missing %q: %#v", want, pinnedToOne)
+		}
+	}
+	// Gemini 2.5 has no documented default constant, so it must not inherit the
+	// Gemini 3 pin.
+	for _, unwanted := range []string{"gemini-2.5-flash", "google/gemini-2.5-pro"} {
+		if contains(pinnedToOne, unwanted) {
+			t.Errorf("placeholder for 1.0 must not cover %q: %#v", unwanted, pinnedToOne)
+		}
+	}
+	for _, providerType := range modelProviderTypesUsingProviderTemperatureDefault() {
+		wantProviderUnset := VisibleRule{All: []Condition{providerTypeIs("model.provider", providerType)}}
+		hasProviderUnset := false
+		for _, candidate := range field.PlaceholderWhen {
+			if candidate.Value == nil && reflect.DeepEqual(candidate.When, wantProviderUnset) {
+				hasProviderUnset = true
+				break
+			}
+		}
+		if !hasProviderUnset {
+			t.Errorf("model.temperature missing empty placeholder for provider %q: %#v", providerType, field.PlaceholderWhen)
+		}
+	}
+
+	// Ids are sorted so `agent config-meta` output does not churn between runs.
+	for _, candidate := range field.PlaceholderWhen {
+		if len(candidate.When.All) != 1 || candidate.When.All[0].Op != "in" {
+			continue
+		}
+		ids := candidate.When.All[0].Values
+		if !sort.StringsAreSorted(ids) {
+			t.Errorf("placeholder ids for %v are not sorted: %#v", candidate.Value, ids)
+		}
+	}
+}
+
 func TestConfigMeta_TTSFieldsFollowProviderCapabilities(t *testing.T) {
 	idx := fieldIndex(t)
 	hasPlaceholder := func(field FieldMeta, value interface{}, when VisibleRule) bool {
@@ -677,8 +767,10 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 		t.Fatal("missing model.api_mode metadata")
 	}
 	wantProviders := map[string][]string{
-		"responses":          {"openai", "openrouter", "volcengine", "deepseek"},
-		"responses_stateful": {"openai", "volcengine"},
+		"responses":             {"openai", "openrouter", "volcengine", "deepseek"},
+		"responses_stateful":    {"openai", "volcengine"},
+		"interactions":          {"gemini"},
+		"interactions_stateful": {"gemini"},
 	}
 	for _, option := range field.Enum {
 		want, tracked := wantProviders[option.Value]
@@ -692,6 +784,23 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 	}
 	if len(wantProviders) != 0 {
 		t.Fatalf("model.api_mode enum missing scoped options: %#v", wantProviders)
+	}
+	// The empty value means "the provider's compatible default". Gemini has no
+	// compatible transport, so offering that value would both mislabel its
+	// resolved Interactions mode and let the UI save an api_mode the config
+	// validator rejects.
+	excluded := false
+	for _, option := range field.Enum {
+		if option.Value != "" {
+			continue
+		}
+		if !reflect.DeepEqual(option.ExcludeProviders, []string{"gemini"}) {
+			t.Errorf("empty api_mode excludeProviders = %#v, want [gemini]", option.ExcludeProviders)
+		}
+		excluded = true
+	}
+	if !excluded {
+		t.Fatal("model.api_mode enum has no empty option")
 	}
 
 	for _, tt := range []struct {
@@ -744,9 +853,11 @@ func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 
 	apiMode := idx["model.api_mode"]
 	wantOptions := map[string]string{
-		"":                   "Chat Completions (compatible)",
-		"responses":          "Responses (local context)",
-		"responses_stateful": "Responses (provider context)",
+		"":                      "Chat Completions (compatible)",
+		"responses":             "Responses (local context)",
+		"responses_stateful":    "Responses (provider context)",
+		"interactions":          "Interactions (local context)",
+		"interactions_stateful": "Interactions (provider context)",
 	}
 	for _, option := range apiMode.Enum {
 		if want, ok := wantOptions[option.Value]; ok && option.Label != want {

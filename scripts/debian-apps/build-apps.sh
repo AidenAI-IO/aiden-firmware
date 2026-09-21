@@ -81,6 +81,9 @@ run_builder() {
         >"${OUTPUT_DIR}/builder-image-id.txt"
 }
 
+# Run an application build script with the pinned Go toolchain and writable
+# caches. Preserve the caller's GOPROXY when configured, including fallback
+# separators, while leaving the container default in place when it is unset.
 run_container_script() {
     local script=$1
     local image_id source_git_common_dir

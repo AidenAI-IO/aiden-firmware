@@ -382,7 +382,7 @@ func TestStorageManagerIgnoresRejectedStorageSettings(t *testing.T) {
 provider = "fake"
 
 [voice_settings.mode]
-input_mode = "text"
+input_mode = "stt"
 
 [storage_settings.storage]
 monitor_enabled = true
@@ -561,13 +561,68 @@ func TestConfigTestAcceptsRealtimeInputMode(t *testing.T) {
 	}
 	for _, result := range payload.Results {
 		if result.Check == "input_mode" {
-			if !result.Passed || result.Detail != "got 'realtime', allowed: text/stt/realtime" {
+			if !result.Passed || result.Detail != "got 'realtime', allowed: stt/realtime" {
 				t.Fatalf("input_mode result=%+v", result)
 			}
 			return
 		}
 	}
 	t.Fatalf("input_mode result missing: %+v", payload.Results)
+}
+
+// TestConfigTestInputModeAcceptsUnsetAndRejectsRemovedModes covers the agent
+// section smoke test. The handler sees only this section's values and has no
+// provider context, so an unset mode has to pass here: voice providers are
+// opt-in and Config.Validate() is what resolves the effective mode over the
+// full candidate configuration.
+func TestConfigTestInputModeAcceptsUnsetAndRejectsRemovedModes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		value      string
+		wantPassed bool
+		wantDetail string
+	}{
+		{"omitted", "", true, "unset (voice not configured; Web UI and HTTP API only)"},
+		{"explicit empty", `"input_mode":"",`, true, "unset (voice not configured; Web UI and HTTP API only)"},
+		{"stt", `"input_mode":"stt",`, true, "got 'stt', allowed: stt/realtime"},
+		{"removed text", `"input_mode":"text",`, false, "invalid input_mode: text (text and audio modes have been removed; use stt or realtime)"},
+		{"removed audio", `"input_mode":"audio",`, false, "invalid input_mode: audio (text and audio modes have been removed; use stt or realtime)"},
+		{"unknown", `"input_mode":"bogus",`, false, "got 'bogus', allowed: stt/realtime"},
+		{"wrong type", `"input_mode":5,`, false, "must be a string"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := NewServer(testOptions(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := `{"section":"agent","values":{` + test.value + `"vad_speech_threshold":0.5,"screen_stable_diff_threshold":6,"silence_ms":550,"min_speech_ms":300,"voice_followup_timeout_ms":1000,"voice_first_turn_timeout_ms":1000,"voice_max_turns":2,"voice_max_response_tokens":100,"screenshot_keep_n":3,"screenshot_prune_interval":2,"screen_stable_timeout_ms":2000,"screen_stable_ms":250,"max_iterations":-1}}`
+			resp := httptest.NewRecorder()
+			server.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/config/test", strings.NewReader(request)))
+			if resp.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+			}
+			var payload struct {
+				Results []struct {
+					Check  string `json:"check"`
+					Passed bool   `json:"passed"`
+					Detail string `json:"detail"`
+				} `json:"results"`
+			}
+			if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			for _, result := range payload.Results {
+				if result.Check != "input_mode" {
+					continue
+				}
+				if result.Passed != test.wantPassed || result.Detail != test.wantDetail {
+					t.Fatalf("input_mode result=%+v, want passed=%v detail=%q", result, test.wantPassed, test.wantDetail)
+				}
+				return
+			}
+			t.Fatalf("input_mode result missing: %+v", payload.Results)
+		})
+	}
 }
 
 func TestConfigTestRejectsInvalidTelemetryURL(t *testing.T) {
@@ -645,6 +700,28 @@ func TestModelsEndpointReturnsLocalizedCatalog(t *testing.T) {
 	}
 	if zh[0].Spec == nil || zh[0].Spec.Reasoning == nil {
 		t.Fatalf("catalog model is missing capability metadata: %+v", zh[0])
+	}
+}
+
+func TestModelsEndpointReturnsGeminiCatalog(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet,
+		"/api/models?provider=gemini&locale=en-US", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		Models []agent.LocalizedModelInfo `json:"models"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 3 || payload.Models[0].ID != "gemini-3.8-flash" || !payload.Models[0].Recommended {
+		t.Fatalf("Gemini catalog = %+v", payload.Models)
 	}
 }
 

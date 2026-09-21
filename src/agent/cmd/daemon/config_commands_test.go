@@ -409,8 +409,8 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	if defaults.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {
 		t.Fatalf("log defaults were not populated: %+v", defaults.Log)
 	}
-	if defaults.Agent.InputMode != "text" {
-		t.Fatalf("agent input mode default = %q, want text", defaults.Agent.InputMode)
+	if defaults.Agent.InputMode != "" {
+		t.Fatalf("agent input mode default = %q, want empty (unconfigured)", defaults.Agent.InputMode)
 	}
 	if defaults.Agent.VoiceFollowupTimeoutMs == 0 ||
 		defaults.Agent.VoiceFirstTurnTimeoutMs == 0 ||
@@ -971,7 +971,7 @@ func TestParseValidationErrors_ExtractsField(t *testing.T) {
 		},
 		{
 			name:          "model api mode error",
-			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions, responses, or responses_stateful)",
+			errorMsg:      "invalid model.api_mode: invalid (expected chat_completions, responses, responses_stateful, interactions, or interactions_stateful)",
 			expectedField: "model.api_mode",
 		},
 		{
@@ -1239,4 +1239,3 @@ input_mode = "stt"
 		t.Fatal("config-check exited 0 for a config the release gate must reject")
 	}
 }
-
