@@ -717,7 +717,7 @@ api_key = "$DASHSCOPE_API_KEY"
 model = "qwen-audio-3.0-realtime-plus"
 region = "cn-beijing"
 voice = "longanqian"
-turn_detection = "smart_turn"
+turn_detection = "server_vad"
 turn_detection_threshold = 0.5
 turn_detection_silence_ms = 800
 
@@ -756,8 +756,8 @@ provider = "speko-main"
 | `model` / `voice` | all | Provider-specific model and voice. Speko requires an explicit model; voice may stay empty for the selected upstream default. |
 | `workspace_id` / `region` | Qwen | Optional DashScope routing settings. |
 | `turn_detection` | Qwen | Qwen turn detector: `server_vad` (default) or `smart_turn`. Config Web exposes this under the provider's Advanced Settings. |
-| `turn_detection_threshold` | Qwen | Optional Qwen turn-detection threshold; leave unset to use the service default. |
-| `turn_detection_silence_ms` | Qwen | Optional silence duration before Qwen completes a turn; leave unset to use the service default. |
+| `turn_detection_threshold` | Qwen `server_vad` | Optional Qwen VAD threshold; leave unset to use the service default. Ignored by `smart_turn`. |
+| `turn_detection_silence_ms` | Qwen `server_vad` | Optional silence duration before Qwen completes a turn; leave unset to use the service default. Ignored by `smart_turn`. |
 | `auth_mode` | Gemini | `api_key` (default) for the Gemini Developer API, or `vertex` for Vertex OAuth. |
 | `project_id` / `location` | Gemini Vertex | Required Google Cloud project and Vertex region, for example `us-central1`. |
 | `endpoint` | Qwen, OpenAI, Gemini, xAI | Optional WebSocket endpoint override, primarily for regional gateways and protocol tests. |

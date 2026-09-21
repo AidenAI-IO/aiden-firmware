@@ -119,8 +119,12 @@ func TestConfigMeta_VoiceProviderRulesKeyOnRecordType(t *testing.T) {
 
 func TestConfigMeta_QwenTurnDetectionFieldsAreAdvancedAndProviderScoped(t *testing.T) {
 	idx := fieldIndex(t)
-	wantVisibility := VisibleRule{All: []Condition{
+	wantQwenVisibility := VisibleRule{All: []Condition{
 		eq("voice_model_providers.type", "qwen"),
+	}}
+	wantServerVADVisibility := VisibleRule{All: []Condition{
+		eq("voice_model_providers.type", "qwen"),
+		eq("voice_model_providers.turn_detection", "server_vad"),
 	}}
 	for _, path := range []string{
 		"voice_model_providers.turn_detection",
@@ -135,12 +139,12 @@ func TestConfigMeta_QwenTurnDetectionFieldsAreAdvancedAndProviderScoped(t *testi
 		if !field.Advanced {
 			t.Errorf("%s must be under Advanced Settings", path)
 		}
-		if field.VisibleWhen == nil || !reflect.DeepEqual(*field.VisibleWhen, wantVisibility) {
-			t.Errorf("%s visibleWhen = %#v, want %#v", path, field.VisibleWhen, wantVisibility)
-		}
 	}
 
 	turn := idx["voice_model_providers.turn_detection"]
+	if turn.VisibleWhen == nil || !reflect.DeepEqual(*turn.VisibleWhen, wantQwenVisibility) {
+		t.Errorf("turn detection visibleWhen = %#v, want %#v", turn.VisibleWhen, wantQwenVisibility)
+	}
 	wantOptions := []EnumOption{
 		{Value: "server_vad", Label: "Server VAD"},
 		{Value: "smart_turn", Label: "Smart Turn"},
@@ -153,6 +157,21 @@ func TestConfigMeta_QwenTurnDetectionFieldsAreAdvancedAndProviderScoped(t *testi
 	}
 	if threshold := idx["voice_model_providers.turn_detection_threshold"]; threshold.Widget != WidgetNumber || !threshold.Nullable {
 		t.Errorf("turn detection threshold metadata = %+v, want nullable number", threshold)
+	}
+	if got := idx["voice_model_providers.turn_detection_threshold"].Placeholder; got != "Default: 0.5" {
+		t.Errorf("turn detection threshold placeholder = %q, want %q", got, "Default: 0.5")
+	}
+	if got := idx["voice_model_providers.turn_detection_silence_ms"].Placeholder; got != "Default: 800" {
+		t.Errorf("turn detection silence placeholder = %q, want %q", got, "Default: 800")
+	}
+	for _, path := range []string{
+		"voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
+	} {
+		field := idx[path]
+		if field.VisibleWhen == nil || !reflect.DeepEqual(*field.VisibleWhen, wantServerVADVisibility) {
+			t.Errorf("%s visibleWhen = %#v, want %#v", path, field.VisibleWhen, wantServerVADVisibility)
+		}
 	}
 }
 
