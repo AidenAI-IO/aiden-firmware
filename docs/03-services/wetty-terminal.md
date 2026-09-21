@@ -60,6 +60,21 @@ account's password. This avoids a Debian `login`/PTY interaction that leaves
 ttyd waiting for input without displaying a prompt. A custom `TTYD_COMMAND`
 still runs as `aiden`.
 
+Both `aiden` and `root` login shells (SSH, ttyd, or `sudo -i`) load the current
+network proxy from `/run/wifi_proxy/proxy-env`. HTTP, HTTPS and SOCKS-aware tools
+use the loopback relay at `127.0.0.1:18080`; the relay selects the configured
+upstream for the active Wi-Fi network. Both uppercase and lowercase proxy
+variables are exported. The generated file is readable by both accounts and
+contains no upstream credentials; `/userdata/system/wifi-proxies.json` and
+`/run/aiden/system.env` remain private.
+
+`sudo` preserves only the proxy variables via `/etc/sudoers.d/20-aiden-proxy`,
+so `sudo apt update` uses the same route as the login shell. Authentication is
+still required. After installing this fix, existing terminals can reload it with
+`. /etc/profile.d/aiden-env.sh`; newly opened login terminals load it automatically.
+An SSH one-shot command does not load a login profile; use
+`ssh luckfox 'bash -lc "COMMAND"'` when it needs the same environment.
+
 ## Mobile browser defaults
 
 ttyd 1.7.3 does not include a mobile virtual-keyboard toolbar, but its

@@ -270,6 +270,7 @@ configure_rootfs() {
             chmod 0644 "${ROOTFS_DIR}/${path}"
         fi
     done < <(find "${REPO_ROOT}/overlay-debian" -type f -printf '%P\0')
+    chmod 0440 "${ROOTFS_DIR}/etc/sudoers.d/20-aiden-proxy"
     "${REPO_ROOT}/scripts/stage_rootfs_cli_tools.sh" \
         --catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog" \
         --source-dir "${ROOTFS_CLI_TOOLS_DIR}" \

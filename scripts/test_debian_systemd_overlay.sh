@@ -42,7 +42,11 @@ fi
 
 while IFS= read -r script; do
     [ "${script##*/}" = aiden-log.sh ] || [ -x "${script}" ] || fail "helper is not executable: ${script#${REPO_ROOT}/}"
-    sh -n "${script}"
+    IFS= read -r shebang <"${script}"
+    case "${shebang}" in
+        *python3*) python3 -c 'import pathlib, sys; p = pathlib.Path(sys.argv[1]); compile(p.read_bytes(), str(p), "exec")' "${script}" ;;
+        *) sh -n "${script}" ;;
+    esac
 done < <(find "${OVERLAY}/usr/lib/aiden" -maxdepth 1 -type f | LC_ALL=C sort)
 
 # Debian units that consume the sanitized environment. This list replaces the
@@ -94,6 +98,29 @@ managed_output=$(env -i AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
     HTTP_PROXY=http://upstream.example:8080 "${managed_env_run}" /usr/bin/env)
 printf '%s\n' "${managed_output}" \
     | grep -qx 'HTTP_PROXY=socks5h://127.0.0.1:18080'
+for proxy_key in http_proxy https_proxy all_proxy; do
+    printf '%s\n' "${managed_output}" | grep -qx "${proxy_key}=socks5h://127.0.0.1:18080"
+done
+login_output=$(env -i PATH="$PATH" \
+    AIDEN_SYSTEM_ENVIRONMENT="${TEST_ROOT}/missing-system-env" \
+    AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
+    http_proxy=http://stale.example:8080 \
+    sh -c '. "$1"; /usr/bin/env' sh "${OVERLAY}/etc/profile.d/aiden-env.sh")
+for proxy_key in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+    printf '%s\n' "${login_output}" | grep -qx "${proxy_key}=socks5h://127.0.0.1:18080"
+done
+login_disabled_output=$(env -i PATH="$PATH" AIDEN_WIFI_PROXY_ENABLED=0 \
+    AIDEN_SYSTEM_ENVIRONMENT="${TEST_ROOT}/missing-system-env" \
+    AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
+    http_proxy=http://explicit.example:8080 \
+    sh -c '. "$1"; /usr/bin/env' sh "${OVERLAY}/etc/profile.d/aiden-env.sh")
+printf '%s\n' "${login_disabled_output}" | grep -qx 'http_proxy=http://explicit.example:8080'
+if printf '%s\n' "${login_disabled_output}" | grep -q '^HTTP_PROXY='; then
+    fail "disabled login proxy must preserve the explicit environment"
+fi
+if command -v visudo >/dev/null 2>&1; then
+    visudo -cf "${OVERLAY}/etc/sudoers.d/20-aiden-proxy"
+fi
 bypass_output=$(env -i AIDEN_WIFI_PROXY_ENABLED=0 \
     AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
     HTTP_PROXY=http://upstream.example:8080 "${managed_env_run}" /usr/bin/env)
@@ -387,7 +414,7 @@ else
     login_status=$?
 fi
 [ "${login_status}" -eq 1 ] || fail "unknown ttyd login account returned ${login_status}"
-[ "${login_output}" = 'login: Invalid login name' ] \
+[ "$(printf '%s' "${login_output}" | tr -d '\r')" = 'login: Invalid login name' ] \
     || fail "unexpected unknown-account output: ${login_output}"
 sed -n '1p' "${getent_args}" | grep -Fxq 'passwd'
 sed -n '2p' "${getent_args}" | grep -Fxq 'missing$'

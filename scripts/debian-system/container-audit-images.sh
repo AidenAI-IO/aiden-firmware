@@ -175,6 +175,8 @@ audit_rootfs() {
         || fail "sudo executable ownership or mode is invalid"
     test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/etc/sudoers")" = 0:0:440 \
         || fail "sudoers ownership or mode is invalid"
+    test "$(stat -c '%u:%g:%a' "${ROOTFS_MOUNT}/etc/sudoers.d/20-aiden-proxy")" = 0:0:440 \
+        || fail "sudo proxy policy ownership or mode is invalid"
     grep -Eq '^%sudo[[:space:]]+ALL=\(ALL:ALL\)[[:space:]]+ALL$' \
         "${ROOTFS_MOUNT}/etc/sudoers" \
         || fail "sudo group does not require password-authenticated administrator access"
