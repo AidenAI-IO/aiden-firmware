@@ -180,6 +180,7 @@ type VoiceModelProvider struct {
 	Endpoint         string `json:"endpoint,omitempty"`
 	BaseURL          string `json:"base_url,omitempty"`
 	RealtimeProtocol string `json:"realtime_protocol,omitempty"`
+	ThinkingLevel    string `json:"thinking_level,omitempty"`
 	Voice            string `json:"voice,omitempty"`
 }
 
@@ -279,6 +280,7 @@ type VoiceModel struct {
 	TurnDetection          string   `json:"turn_detection"`
 	TurnDetectionThreshold *float64 `json:"turn_detection_threshold,omitempty"`
 	TurnDetectionSilenceMs int      `json:"turn_detection_silence_ms"`
+	UseBackendAgent        bool     `json:"use_backend_agent"`
 }
 
 func (d STT) TranscriptionTestRequest(wavData []byte) agent.STTTranscriptionTestRequest {
@@ -584,6 +586,7 @@ func (d Config) ToAgentConfig() agent.Config {
 			TurnDetection:          d.VoiceModel.TurnDetection,
 			TurnDetectionThreshold: d.VoiceModel.TurnDetectionThreshold,
 			TurnDetectionSilenceMs: d.VoiceModel.TurnDetectionSilenceMs,
+			UseBackendAgent:        d.VoiceModel.UseBackendAgent,
 		},
 		AudioArchive: agent.AudioArchiveConfig{
 			Enabled:     d.AudioArchive.Enabled,
@@ -834,6 +837,7 @@ func voiceModelProvidersFromConfig(providers map[string]agent.VoiceModelProvider
 			BaseURL:          provider.BaseURL,
 			RealtimeProtocol: provider.RealtimeProtocol,
 			Voice:            provider.Voice,
+			ThinkingLevel:    provider.ThinkingLevel,
 		}
 	}
 	return result
@@ -859,6 +863,7 @@ func (d Config) voiceModelProvidersToAgentConfig() map[string]agent.VoiceModelPr
 			Endpoint:         provider.Endpoint,
 			BaseURL:          provider.BaseURL,
 			RealtimeProtocol: provider.RealtimeProtocol,
+			ThinkingLevel:    provider.ThinkingLevel,
 			Voice:            provider.Voice,
 		}
 		if mapped.APIKey == "" && provider.HasAPIKey {
@@ -943,6 +948,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 			TurnDetection:          cfg.VoiceModel.TurnDetection,
 			TurnDetectionThreshold: cfg.VoiceModel.TurnDetectionThreshold,
 			TurnDetectionSilenceMs: cfg.VoiceModel.TurnDetectionSilenceMs,
+			UseBackendAgent:        cfg.VoiceModel.UseBackendAgent,
 		},
 		AudioArchive: AudioArchive{
 			Enabled:     audioArchive.Enabled,
