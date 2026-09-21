@@ -305,7 +305,7 @@ func langfuseLiveEpisodeFixture(t *testing.T) (TaskEpisode, string, []telemetryP
 
 	promptCalls := []telemetryPromptCall{
 		{
-			ID:        "2f5a0f2f4a3e4a3e8f2f2c2a0f0d3a11",
+			ID:        "2f5a0f2f4a3e4a3e",
 			Role:      telemetryRoleAgent,
 			StartedAt: start.Add(150 * time.Millisecond),
 			EndedAt:   start.Add(250 * time.Millisecond),

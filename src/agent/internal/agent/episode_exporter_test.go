@@ -151,7 +151,7 @@ func TestBuildLangfuseSpansUsesCapturedPromptsForGenerations(t *testing.T) {
 	}
 	promptCalls := []telemetryPromptCall{
 		{
-			ID:        "11111111-1111-1111-1111-111111111111",
+			ID:        "1111111111111111",
 			Role:      "agent",
 			StartedAt: start,
 			EndedAt:   start.Add(100 * time.Millisecond),
@@ -408,7 +408,7 @@ func TestBuildLangfuseSpansUploadsCapturedPromptMedia(t *testing.T) {
 	start := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
 	image := []byte("prompt-jpeg-bytes")
 	promptMedia := newTelemetryPromptMedia("image/jpeg", image)
-	callID := "11111111-1111-1111-1111-111111111111"
+	callID := "1111111111111111"
 	promptCalls := []telemetryPromptCall{{
 		ID:        callID,
 		Role:      "agent",
@@ -480,7 +480,7 @@ func TestBuildLangfuseSpansOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	pdf := []byte("%PDF-1.7 prompt bytes")
 	pdfMedia := newTelemetryPromptMedia("application/pdf", pdf)
 	promptCalls := []telemetryPromptCall{{
-		ID:        "11111111-1111-1111-1111-111111111111",
+		ID:        "1111111111111111",
 		Role:      "agent",
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
@@ -1123,8 +1123,8 @@ func TestExportEpisodeDirOTLPPayloadCarriesTraceContext(t *testing.T) {
 		if len(span.TraceID) != 32 || !isDashlessHex(span.TraceID) {
 			t.Fatalf("span %s trace id = %q, want 32 dashless hex chars", span.Name, span.TraceID)
 		}
-		if len(span.SpanID) != 32 || !isDashlessHex(span.SpanID) {
-			t.Fatalf("span %s span id = %q, want 32 dashless hex chars", span.Name, span.SpanID)
+		if len(span.SpanID) != 16 || !isDashlessHex(span.SpanID) {
+			t.Fatalf("span %s span id = %q, want 16 dashless hex chars", span.Name, span.SpanID)
 		}
 		ids[span.SpanID] = true
 	}
@@ -1255,7 +1255,7 @@ func TestExportEpisodeDirOTLPPayloadCarriesGenerationAttributes(t *testing.T) {
 		{EventID: "evt_plan", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: "planner_decision", Role: "agent", Objective: "capture", Plan: []string{"capture"}, NextStep: "capture"},
 	})
 	promptCalls := []telemetryPromptCall{{
-		ID:              "22222222-2222-2222-2222-222222222222",
+		ID:              "2222222222222222",
 		Role:            "agent",
 		StartedAt:       start.Add(150 * time.Millisecond),
 		EndedAt:         start.Add(190 * time.Millisecond),
@@ -1311,7 +1311,7 @@ func TestExportSpansWithRetryResendsOnlyFailedChunk(t *testing.T) {
 	for i := 0; i < langfuseBatchSize+5; i++ {
 		spans = append(spans, langfuse.Span{
 			TraceID: strings.Repeat("a", 32),
-			SpanID:  fmt.Sprintf("%032x", i),
+			SpanID:  fmt.Sprintf("%016x", i),
 			Name:    fmt.Sprintf("span-%d", i),
 		})
 	}
@@ -1392,7 +1392,7 @@ func TestExportSpansWithRetryDoesNotRetryRejectedSpans(t *testing.T) {
 	}, nil)
 	err := exporter.exportSpansWithRetry(context.Background(), []langfuse.Span{{
 		TraceID: strings.Repeat("a", 32),
-		SpanID:  strings.Repeat("b", 32),
+		SpanID:  strings.Repeat("b", 16),
 		Name:    "agent-run",
 	}})
 	var rejected *langfuse.RejectedSpansError

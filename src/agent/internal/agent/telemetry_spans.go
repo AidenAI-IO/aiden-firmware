@@ -2,6 +2,7 @@ package agent
 
 import (
 	"aiden-agent/internal/agent/langfuse"
+	"encoding/hex"
 	"strings"
 	"time"
 
@@ -76,9 +77,12 @@ func (b *telemetrySpanBuilder) spansList() []langfuse.Span {
 	return b.spans
 }
 
-// telemetryObservationID returns an OTLP span ID (16 random bytes, hex encoded).
+// telemetryObservationID returns an OTLP SpanId: 8 random bytes encoded as
+// 16 lowercase hexadecimal characters. OpenTelemetry TraceIds are 16 bytes;
+// SpanIds are half that size.
 func telemetryObservationID() string {
-	return strings.ReplaceAll(uuid.NewString(), "-", "")
+	id := uuid.New()
+	return hex.EncodeToString(id[:8])
 }
 
 // telemetryTraceID returns the OTLP trace ID (32 hex characters) for an
