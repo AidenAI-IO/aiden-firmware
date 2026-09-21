@@ -1,0 +1,59 @@
+{
+  "base": "b4281646d4a02acc6a169760096fd44448e26a23",
+  "fixed": "3e9eac9ecd425b4f5e2f1279e0f527d0ec6a85d2",
+  "mobilegym": "d0549195beccbe08f963bf7758bef3a65fe3ac08",
+  "model": {
+    "log_raw_http": false,
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "max_response_tokens": 1396,
+    "api_mode": "",
+    "responses_context_management": "",
+    "responses_include": [],
+    "responses_truncation": ""
+  },
+  "provider_type": "deepseek",
+  "provider_url": "https://api.deepseek.com",
+  "repeats_per_target_per_arm": 10,
+  "targets": [
+    24,
+    83
+  ],
+  "suite_sha256": "15784af282b920d4f1355922eab87ef0dcf78afaf8126256a953d1acf2535b0d",
+  "replay": "Production touchscreen HID reports; identical 100ms release velocity window; original MobileGym Android fling functions.",
+  "limitations": [
+    "Host HID timing, not board USB timing.",
+    "Finite-window velocity estimate, not full Android VelocityTracker.",
+    "Simulation results do not establish real-device success rates."
+  ],
+  "process_config_changes": [
+    "Disable raw model HTTP logging.",
+    "Remove obsolete input_mode=text; HTTP chat with no voice side effects.",
+    "Fresh runtime directory for every trial."
+  ],
+  "started_at": "2026-09-21T04:15:24.508995+00:00",
+  "conversation_settings": {
+    "agent": {
+      "instruction": "",
+      "trigger_mode": "manual",
+      "max_iterations": -1,
+      "voice_streaming_tts_enabled": false,
+      "voice_tool_call_speech": false,
+      "voice_progress_speech_enabled": false,
+      "screenshot_keep_n": 3,
+      "screenshot_prune_interval": 25,
+      "screen_stable_timeout_ms": 3500,
+      "screen_stable_ms": 500,
+      "screen_stable_diff_threshold": 2
+    }
+  },
+  "sha256": {
+    "/Users/qing/Documents/project/aiden-hardware-demo-pr715-scroll-comparison/benchmark/scripts/pr715/run.py": "ded22b30b5213f47c8c531c909e6bdf4911aa6c7545f74a1d69c831408ebd3d9",
+    "/Users/qing/Documents/project/aiden-hardware-demo-pr715-scroll-comparison/benchmark/scripts/pr715/bridge.py": "5dde68a0aa3763172265b601a91ba3624820d7fd7a1d1cc814d93224f87c97b4",
+    "/Users/qing/Documents/project/aiden-hardware-demo-pr715-scroll-comparison/benchmark/scripts/pr715/replay.js": "b4ca1f22155ab286b96bf9068f7d241611738d4bf63e5ad392bf1bc806f045ba",
+    "/tmp/pr715-before-agent": "13159e61efb6ebfc8be7dd76029cc36b6ac6ebb4abd68b9b8e13bed4c5773024",
+    "/tmp/pr715-before-hid": "da0e732c11d679696eeafc79ae523be605aa351e5995888442337ccc34219a9d",
+    "/tmp/pr715-after-agent": "73f6d4d4dbe353f581cec5487ec545e3f07cce00bc76d90026155305c3a60002",
+    "/tmp/pr715-after-hid": "be662d28ed26562a925781b56642cd4baac981ada4b6afd9eba9fdd753fec8e4"
+  }
+}
