@@ -446,6 +446,7 @@ func persistLegacyProviderFields(
 				"endpoint":          record.Endpoint,
 				"base_url":          record.BaseURL,
 				"realtime_protocol": record.RealtimeProtocol,
+				"thinking_level":    record.ThinkingLevel,
 				"voice":             record.Voice,
 			}
 			if strings.EqualFold(strings.TrimSpace(record.Type), "qwen") {

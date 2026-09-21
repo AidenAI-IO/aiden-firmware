@@ -490,7 +490,7 @@ awk '{ if ($1 + 0 < previous) exit 1; previous = $1 + 0 }' \
 
 verify_output=${TEST_ROOT}/systemd-verify.txt
 systemd-analyze verify \
-    "${UNIT_DIR}"/*.service "${UNIT_DIR}"/*.mount "${UNIT_DIR}/aiden.target" \
+    "${UNIT_DIR}"/*.service "${UNIT_DIR}"/*.timer "${UNIT_DIR}"/*.mount "${UNIT_DIR}/aiden.target" \
     >"${verify_output}" 2>&1 || true
 if grep -E "${UNIT_DIR}/.*(Unknown key name|Failed to parse|Missing '=')" \
     "${verify_output}"; then
@@ -500,6 +500,7 @@ fi
 "${REPO_ROOT}/scripts/test_debian_ota_health_aggregate.sh"
 "${REPO_ROOT}/scripts/test_debian_machine_id_provision.sh"
 "${REPO_ROOT}/scripts/test_debian_agent_control.sh"
+"${REPO_ROOT}/scripts/test_debian_agent_log_retention.sh"
 "${REPO_ROOT}/scripts/test_debian_frame_control.sh"
 "${REPO_ROOT}/scripts/test_debian_python_environment.sh"
 python3 "${REPO_ROOT}/scripts/test_wlan_guard.py"

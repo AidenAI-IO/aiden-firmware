@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
-	"aiden-agent/internal/agenttask"
 	"aiden-agent/internal/configweb"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/wifiproxy"
@@ -256,8 +255,10 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	if cfg.InputModeOrDefault() == "realtime" {
-		tasks := agenttask.NewManager(runtimeAgentTaskRunner{runtime: runtime})
-		defer tasks.Close()
+		tasks := newRealtimeAgentTaskManager(cfg, runtime)
+		if tasks != nil {
+			defer tasks.Close()
+		}
 		runRealtimeWakeupModeWithServer(cfg, sigChan, server, runtime, tasks, newGPIOWatcher)
 		return
 	}

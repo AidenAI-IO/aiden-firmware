@@ -26,6 +26,7 @@ type VoiceModelProvider struct {
 	Endpoint               string   `toml:"endpoint,omitempty"`
 	BaseURL                string   `toml:"base_url,omitempty"`
 	RealtimeProtocol       string   `toml:"realtime_protocol,omitempty"`
+	ThinkingLevel          string   `toml:"thinking_level,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
 	TurnDetection          string   `toml:"turn_detection,omitempty"`
 	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
@@ -210,6 +211,9 @@ func fillVoiceModelProviderFields(config *VoiceModelConfig, record VoiceModelPro
 	}
 	if config.RealtimeProtocol == "" {
 		config.RealtimeProtocol = record.RealtimeProtocol
+	}
+	if config.ThinkingLevel == "" {
+		config.ThinkingLevel = record.ThinkingLevel
 	}
 	if config.Voice == "" {
 		config.Voice = record.Voice
