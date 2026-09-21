@@ -1249,7 +1249,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, summarizing conversation... tokenUsage: %d, trigger: %d, contextWindow: %d", tokenUsage, compactionTrigger, contextWindow)
 		}
-		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager, r.sessionChunkWriter())
+		newManager, compacted, err := contextCompactor.Compact(withTelemetryRole(ctx, telemetryRoleCompaction), r.contextManager, r.sessionChunkWriter())
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
@@ -1361,7 +1361,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			// Deterministic pruning cannot shrink historical user/assistant text.
 			// Try the existing summary recovery before failing locally, including
 			// when provider-managed compaction disables threshold summaries.
-			compactedManager, compacted, compactErr := contextCompactor.Compact(guardCtx, activeManager, &pendingChunk)
+			compactedManager, compacted, compactErr := contextCompactor.Compact(withTelemetryRole(guardCtx, telemetryRoleCompaction), activeManager, &pendingChunk)
 			if episodeRecorder != nil {
 				episodeRecorder.RecordEvent(contextCompactionEvent(
 					contextCompactor.LastCompactionStats(), compacted, compactErr, "active_turn_input_budget",
