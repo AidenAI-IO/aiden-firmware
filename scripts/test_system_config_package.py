@@ -14,13 +14,14 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/debian-package"))
 import system_config
-from test_debian_package_lifecycle import LifecycleTests, UNITS, RESTART, TTYD
+import test_debian_package_lifecycle as lifecycle
+from test_debian_package_lifecycle import UNITS, RESTART, TTYD
 
 
 @unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg"), "Requires Linux dpkg")
 class PairTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = LifecycleTests()
+        self.fixture = lifecycle.LifecycleTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.root = self.fixture.root
@@ -74,6 +75,7 @@ class PairTests(unittest.TestCase):
 
     def dpkg(self, *args, success=True):
         result = subprocess.run(["dpkg", "--force-not-root", "--force-script-chrootless", "--force-confold",
+                                 "--log=" + str(self.root / "dpkg.log"),
                                  "--root=" + str(self.device), *map(str, args)],
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
@@ -150,4 +152,6 @@ class PairTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if shutil.which("dpkg") and os.geteuid() != 0:
+        raise SystemExit("Run this integration test as root in the disposable package-builder container; dpkg must replace 0440 conffiles.")
     unittest.main()

@@ -154,6 +154,7 @@ class RepositoryTests(unittest.TestCase):
             "Package: aiden-business\nStatus: install ok installed\nArchitecture: armhf\nVersion: 0.0.2-1\nDescription: old business\n\n"
             "Package: system-fixture\nStatus: install ok installed\nArchitecture: armhf\nVersion: 1\nDescription: old system\n")
         self.apt_options = ["-o", f"Dir={root}", "-o", f"Dir::State::status={root}/var/lib/dpkg/status",
+                            "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=",
                             "-o", "Dir::Etc::sourcelist=-", "-o", "APT::Architecture=armhf",
                             "-o", "Acquire::Languages=none", "-o", "APT::Update::Error-Mode=any",
                             "-o", f"APT::Sandbox::User={getpass.getuser()}", "-o", "Debug::NoLocking=true"]

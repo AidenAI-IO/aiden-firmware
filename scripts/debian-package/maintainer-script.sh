@@ -29,6 +29,13 @@ peer_ready() {
     [ "$peer_state" = "install ok installed $package_version" ]
 }
 
+installed_pair_ready() {
+    installed_business=$(dpkg-query -W -f='${Status} ${Version}' aiden-business 2>/dev/null) || return 1
+    installed_config=$(dpkg-query -W -f='${Status} ${Version}' aiden-system-config 2>/dev/null) || return 1
+    case "$installed_business" in 'install ok installed '*) ;; *) return 1 ;; esac
+    [ "$installed_business" = "$installed_config" ]
+}
+
 # Use systemctl directly to also restore disabled units that the administrator
 # had started manually. deb-systemd-invoke start skips these after they stop.
 # Honor Debian's service policy before changing any unit in the transaction.
@@ -48,7 +55,13 @@ policy_allows() {
 
 restore_services() {
     [ -f "$state_dir/active" ] || return 0
-    if [ "${1:-}" != before-unpack ] && ! peer_ready; then
+    ready=0
+    if [ "${1:-}" = before-unpack ]; then
+        installed_pair_ready && ready=1
+    else
+        peer_ready && ready=1
+    fi
+    if [ "$ready" != 1 ]; then
         echo "$package: waiting for the matching $package_version package pair before restarting services" >&2
         return 0
     fi
@@ -102,8 +115,9 @@ stop_services() {
         esac
     done < "$state_dir/loaded"
     if [ "$#" -gt 0 ] && ! systemctl stop "$@"; then
-        # No files have changed yet. Restore the pre-transaction services even
-        # when the new package version differs from the installed peer.
+        # Restore the old pair only if both packages are still configured at
+        # the same version. An earlier unpack in this transaction must not be
+        # mistaken for a safe pre-upgrade state.
         restore_services before-unpack || true
         return 1
     fi
