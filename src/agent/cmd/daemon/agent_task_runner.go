@@ -13,6 +13,13 @@ type runtimeAgentTaskRunner struct {
 	runtime *agent.Runtime
 }
 
+func newRealtimeAgentTaskManager(cfg agent.Config, runtime *agent.Runtime) *agenttask.Manager {
+	if !cfg.VoiceModel.UseBackendAgent {
+		return nil
+	}
+	return agenttask.NewManager(runtimeAgentTaskRunner{runtime: runtime})
+}
+
 func (r runtimeAgentTaskRunner) Run(ctx context.Context, prompt string) (string, error) {
 	var actionHandler agent.UserActionHandler
 	if handler := agenttask.UserActionHandlerFromContext(ctx); handler != nil {

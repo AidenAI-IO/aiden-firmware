@@ -898,6 +898,7 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+
 	defer func() {
 		if runErr != nil && isLLMTurnFailureSource(runErr) {
 			result.TurnFailure = TurnFailureFromError(runErr)
@@ -921,6 +922,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	defer unlockRun()
 	r.configOperations.RLock()
 	defer r.configOperations.RUnlock()
+
+	// A realtime session configured without a backend agent must execute the
+	// transferred tools itself. Take the decision under the same config snapshot
+	// the rest of the run reads, so a reload cannot flip it mid-run.
+	cfg := r.ConfigSnapshot()
+	if cfg.InputModeOrDefault() == "realtime" && !cfg.VoiceModel.UseBackendAgent {
+		return RunResult{}, fmt.Errorf("backend agent is disabled for this realtime session; all processing should be handled by the realtime voice session")
+	}
 
 	// Register this run's cancel so future callers can preempt us.
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -1891,6 +1900,14 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	}
 	tools := NewToolSpecs(r.toolSnapshot().All()).AgentToolsForPlatform(r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+// AvailableTools returns the runtime-filtered tools exposed to the
+// conversational agent for the current device platform and bridge state.
+// Realtime providers use this same catalog when they execute tool calls
+// without the legacy backend agent.
+func (r *Runtime) AvailableTools() []langtools.Tool {
+	return r.availableTools()
 }
 
 // Tool returns a registered runtime tool by name. Realtime voice uses this to
