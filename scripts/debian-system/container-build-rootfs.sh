@@ -226,6 +226,10 @@ stage_platform() {
     rsync -aH --chown=0:0 \
         "${SDK_DIR}/output/out/sysdrv_out/kernel_drv_ko/" "${platform}/modules/"
     install -m 0644 "${OTA_PUBLIC_KEY}" "${ROOTFS_DIR}/usr/share/keyrings/aiden-ota.pem"
+    # Local/unmanaged images have no release channel and cannot select an APT suite.
+    if [ -n "${AIDEN_RELEASE_CHANNEL:-}" ]; then
+        python3 "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-apt-source" --root "${ROOTFS_DIR}"
+    fi
     find "${platform}" -type d -exec chmod 0755 {} +
     find "${platform}" -type f -exec chmod 0644 {} +
     # Runtime loaders use explicit insmod paths; vendor loader scripts are not

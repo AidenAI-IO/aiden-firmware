@@ -35,6 +35,8 @@ on:
         required: false
       AGENT_CONFIG_TOML:
         required: false
+      APT_SIGNING_PRIVATE_KEY:
+        required: false
   workflow_dispatch:
     inputs:
       channel:
@@ -172,7 +174,21 @@ jobs:
         with:
           name: channel-release-assets
           path: output/release/assets/
+      - name: Require APT signing configuration before publication
+        env:
+          APT_KEY_CONFIGURED: ${{ secrets.APT_SIGNING_PRIVATE_KEY != '' }}
+        run: test "$APT_KEY_CONFIGURED" = true
       - name: Verify, upload draft, verify downloads, then publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release/release.py publish output/release/assets
+
+  apt:
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/apt-repository.yml
+    secrets: inherit

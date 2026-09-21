@@ -32,6 +32,10 @@ on:
         description: 'Preflight only: check the backup runner, secrets and toolchain; overrides plan and publish options'
         type: boolean
         default: false
+      apt_only:
+        description: 'Refresh the signed APT repository from existing published releases; no build or new release (dry_run takes precedence)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,10 +56,12 @@ jobs:
     secrets: inherit
 
   release:
-    if: ${{ !inputs.dry_run && startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    if: ${{ !inputs.dry_run && !inputs.apt_only && startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     # The callee keeps planning/build jobs read-only and grants write only to publication.
     permissions:
       contents: write
+      pages: write
+      id-token: write
     uses: ./.github/workflows/release.yml
     with:
       runner: aiden-hosted-02
@@ -65,4 +71,13 @@ jobs:
       force_ota: ${{ inputs.force_ota }}
       plan_only: ${{ inputs.plan_only }}
       publish: ${{ inputs.publish }}
+    secrets: inherit
+
+  apt:
+    if: ${{ !inputs.dry_run && inputs.apt_only }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/apt-repository.yml
     secrets: inherit

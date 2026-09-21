@@ -32,7 +32,7 @@ jobs:
       - name: Install Debian-only policy dependency
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ripgrep
+          sudo apt-get install -y --no-install-recommends ripgrep gnupg
       - name: Verify Debian-only production policy
         run: bash scripts/test_debian_only_policy.sh
       - name: Verify release scripts
@@ -53,6 +53,7 @@ jobs:
           python3 scripts/test_debian_package_release.py
           python3 scripts/test_debian_package_lifecycle.py
           python3 scripts/test_channel_release.py
+          python3 scripts/test_apt_repository.py
       - name: Verify normalized UI coordinates
         run: |
           python3 scripts/check_normalized_coords.py

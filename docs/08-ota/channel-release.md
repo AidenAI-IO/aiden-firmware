@@ -131,5 +131,6 @@ dev/staging 是 prerelease。只有 prod 的 OTA 可以更新 GitHub Latest；pr
 版本最高的 OTA，跳过业务包，并验证已签名 manifest 的通道。空 channel 和旧配置
 继续使用旧 Latest 入口；旧设备需要先强刷本通道的新基础镜像，才能获得通道选择。
 
-这套流程发布 GitHub Release 下载附件，尚不生成 APT 仓库的 Packages/InRelease。
-业务升级仍使用下载的 `.deb` 执行 `apt install ./...deb`；固件 OTA 走现有 A/B 更新器。
+正式发布后自动刷新 GitHub Pages 上的签名 APT 源。设备运行 `apt update && apt upgrade`
+即可升级本通道、当前基础契约内的业务包；系统更新继续走 A/B OTA。首次配置、签名
+密钥、系统包 pin 和索引维护见 [GitHub APT 软件源](apt-repository.md)。

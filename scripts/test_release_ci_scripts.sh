@@ -33,6 +33,16 @@ raise 'only publication needs write' unless jobs['publish']['permissions']['cont
 raise 'business job must depend on classification' unless jobs['business']['if'].include?("kind == 'business'")
 raise 'OTA job must depend on classification' unless jobs['ota']['if'].include?("kind == 'ota'")
 raise 'OTA must reuse the system build' unless jobs['ota']['uses'] == './.github/workflows/build.yml'
+raise 'APT indexing must follow successful publication' unless jobs['apt']['needs'] == 'publish' && jobs['apt']['if'].include?("needs.publish.result == 'success'")
+raise 'APT must use the shared index workflow' unless jobs['apt']['uses'] == './.github/workflows/apt-repository.yml'
+%w[pages id-token].each do |permission|
+  raise "APT caller must grant #{permission}" unless jobs['apt']['permissions'][permission] == 'write'
+end
+apt = load_workflow.call('apt-repository.yml')
+apt_events = apt['on'] || apt[true]
+raise 'APT metadata must be refreshable without a new release' unless apt_events.key?('schedule') && apt_events.key?('workflow_dispatch')
+raise 'APT deploys must serialize' unless apt['concurrency'] == {'group' => 'aiden-apt-pages', 'cancel-in-progress' => false}
+raise 'APT deployment must depend on verified output' unless apt['jobs']['deploy']['needs'] == 'build'
 
 backup = load_workflow.call('build-backup.yml')
 backup_events = backup['on'] || backup[true]
@@ -41,7 +51,10 @@ backup_inputs = backup_events['workflow_dispatch']['inputs']
 raise 'backup must expose three channels' unless backup_inputs['channel']['options'] == inputs['channel']['options']
 raise 'backup must default to preview' unless backup_inputs['plan_only']['default'] && !backup_inputs['publish']['default'] && !backup_inputs['dry_run']['default']
 backup_jobs = backup['jobs']
-raise 'backup must not have a separate publisher' unless backup_jobs.keys.sort == %w[preflight release]
+raise 'backup must reuse release and APT publishers' unless backup_jobs.keys.sort == %w[apt preflight release]
+raise 'APT-only must not enter release flow' unless backup_jobs['release']['if'].include?('!inputs.apt_only')
+raise 'APT-only must reuse index workflow' unless backup_jobs['apt']['uses'] == './.github/workflows/apt-repository.yml'
+raise 'preflight must override APT-only' unless backup_jobs['apt']['if'].include?('!inputs.dry_run')
 backup_release = backup_jobs['release']
 raise 'backup must reuse channel decisions and publication' unless backup_release['uses'] == './.github/workflows/release.yml'
 raise 'backup must use runner 02' unless backup_release['with']['runner'] == 'aiden-hosted-02'
@@ -49,6 +62,9 @@ raise 'backup must use runner 02' unless backup_release['with']['runner'] == 'ai
   raise "backup does not forward #{name}" unless backup_release['with'][name] == "${{ inputs.#{name} }}"
 end
 raise 'backup must pass publication permission to callee' unless backup_release['permissions']['contents'] == 'write'
+%w[pages id-token].each do |permission|
+  raise "backup must pass #{permission} permission to APT deployment" unless backup_release['permissions'][permission] == 'write'
+end
 raise 'backup must forward secrets' unless backup_release['secrets'] == 'inherit'
 raise 'preflight must not enter release flow' unless backup_release['if'].include?('!inputs.dry_run')
 preflight = backup_jobs['preflight']

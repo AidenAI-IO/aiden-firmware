@@ -1,0 +1,70 @@
+name: Aiden APT Repository
+
+on:
+  workflow_call:
+    secrets:
+      APT_SIGNING_PRIVATE_KEY:
+        required: true
+  workflow_dispatch:
+  # Refresh signed metadata before Valid-Until, without allocating a release/version.
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aiden-apt-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Install repository tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg
+      - name: Test repository and APT compatibility rules
+        run: python3 scripts/test_apt_repository.py
+      - name: Build and sign indexes from published releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+          APT_SIGNING_PRIVATE_KEY: ${{ secrets.APT_SIGNING_PRIVATE_KEY }}
+          GNUPGHOME: ${{ runner.temp }}/aiden-apt-gnupg
+        run: |
+          test -n "$APT_SIGNING_PRIVATE_KEY"
+          install -d -m 0700 "$GNUPGHOME"
+          printf '%s\n' "$APT_SIGNING_PRIVATE_KEY" | gpg --batch --import
+          unset APT_SIGNING_PRIVATE_KEY
+          python3 scripts/apt/repository.py --repo "$RELEASE_REPO"
+          cat output/apt/site/apt/repository.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove signing material
+        if: always()
+        env:
+          GNUPGHOME: ${{ runner.temp }}/aiden-apt-gnupg
+        run: |
+          gpgconf --kill all || true
+          rm -rf -- "$GNUPGHOME"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: output/apt/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish signed APT repository
+        id: deployment
+        uses: actions/deploy-pages@v4
