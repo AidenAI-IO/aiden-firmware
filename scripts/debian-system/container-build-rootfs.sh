@@ -339,6 +339,8 @@ EOF
         echo "dpkg reports an incomplete or inconsistent production rootfs" >&2
         exit 1
     fi
+    # Check package-owned configs before spending time creating and packing images.
+    python3 "${REPO_ROOT}/scripts/debian-package/system_config.py" audit "${ROOTFS_DIR}"
     sed -i '1i package\tversion\tarchitecture\tsource\tmaintainer' \
         "${OUTPUT_DIR}/packages.txt"
     (

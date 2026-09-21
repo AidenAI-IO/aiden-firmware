@@ -36,6 +36,11 @@ class RuntimeConfigTests(unittest.TestCase):
             target = self.source / "overlay-debian" / path
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "overlay-debian" / path, target)
+        # Debian 13 systemd creates this link before aiden-business is installed.
+        # A conffile at the legacy path would be left as locale.dpkg-new.
+        locale = self.device / "etc/default/locale"
+        locale.parent.mkdir(parents=True, exist_ok=True)
+        locale.symlink_to("../locale.conf")
         self.fixture.set_states({unit: "inactive" for unit in UNITS})
 
     def package(self, version, *, fail_preinst=False):
@@ -99,6 +104,18 @@ class RuntimeConfigTests(unittest.TestCase):
         for path in system_config.inventory():
             self.assertFalse((overlay / path).exists(), path)
         self.assertTrue((overlay / "usr/lib/aiden/platform/contract.json").exists())
+
+    def test_locale_conffile_installs_behind_debian_compatibility_link(self):
+        self.dpkg("-i", self.package("0.0.2"))
+        locale = self.device / "etc/default/locale"
+        self.assertEqual(str(locale.readlink()), "../locale.conf")
+        self.assertEqual(locale.read_text(), "LANG=C.UTF-8\n")
+        self.assertFalse(locale.with_name("locale.dpkg-new").exists())
+        self.assertFalse((self.device / "etc/locale.conf").is_symlink())
+        inventory = json.loads((self.device / "usr/lib/aiden/runtime-config.json").read_text())["files"]
+        self.assertIn("etc/locale.conf", inventory)
+        self.assertNotIn("etc/default/locale", inventory)
+        system_config.audit(self.device)
 
     def test_upgrade_downgrade_and_reinstall_restart_only_previous_services(self):
         old = self.package("0.0.2")

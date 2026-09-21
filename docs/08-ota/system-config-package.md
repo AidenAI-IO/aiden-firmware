@@ -14,7 +14,7 @@
 | 纳入业务包的范围 | 示例 / 用途 |
 | --- | --- |
 | `/etc/aiden/**`、`/etc/aiden_*.conf`、`/etc/default/aiden-*` | 新功能优先放入专属目录；兼容已有音频、BLE、启动、swap 配置 |
-| `/etc/default/locale` | 默认语言环境 |
+| `/etc/locale.conf` | 默认语言环境；Debian 提供 `/etc/default/locale → ../locale.conf` 兼容链接 |
 | `/etc/profile.d/aiden-*.sh`、`/etc/sudoers.d/*-aiden-*` | root/aiden 终端环境、sudo 代理保留规则 |
 | `/etc/ssh/sshd_config.d/*-aiden.conf` | Aiden SSH 设置 |
 | `/etc/systemd/system/aiden*.{service,path,timer}`、`aiden.target` | 业务和设备辅助服务，受平台排除项约束 |
@@ -40,6 +40,10 @@ APT 源及公钥、OTA 信任根、EDID、VQE 基础配置也继续归平台。
 新的库、驱动、启动前提或 ABI，也必须选择 `force_ota`。自动路径分类不能证明语义兼容。
 
 ## 安装、配置与生效
+
+Debian 13 的 locale 规范路径是 `/etc/locale.conf`；业务包仅拥有这个普通 conffile，
+保留系统创建的 `/etc/default/locale` 链接，避免 dpkg 在已有链接上遗留 `.dpkg-new`。
+rootfs 在压缩、镜像打包前和最终镜像审计中均检查配置的内容、权限和归属。
 
 文件作为真实 dpkg payload 安装，hook 不以 `cp` 方式覆盖系统文件。包内
 `/usr/lib/aiden/runtime-config.json` 记录路径、权限、哈希和生效方式：

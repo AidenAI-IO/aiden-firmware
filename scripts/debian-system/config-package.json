@@ -4,7 +4,7 @@
     "etc/aiden/**",
     "etc/default/aiden-*",
     "etc/aiden_*.conf",
-    "etc/default/locale",
+    "etc/locale.conf",
     "etc/profile.d/aiden-*.sh",
     "etc/sudoers.d/*-aiden-*",
     "etc/ssh/sshd_config.d/*-aiden.conf",
@@ -52,7 +52,7 @@
   "live": [
     "etc/profile.d/*",
     "etc/sudoers.d/*",
-    "etc/default/locale",
+    "etc/locale.conf",
     "etc/aiden_audio_service.conf",
     "etc/aiden_ble_service.conf",
     "etc/aiden_frame_service.conf",

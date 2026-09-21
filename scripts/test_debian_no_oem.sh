@@ -22,7 +22,7 @@ for unit, number in [('userdata.mount',9),('userdata-ota.mount',10)]:
 assert not (root/'overlay-debian-oem').exists()
 assert not (root/'overlay-debian/oem').exists()
 assert not (root/'overlay-debian/etc/systemd/system/oem.mount').exists()
-assert read('overlay-debian/etc/default/locale') == 'LANG=C.UTF-8\n'
+assert read('overlay-debian/etc/locale.conf') == 'LANG=C.UTF-8\n'
 contract = json.loads(read('overlay-debian/usr/lib/aiden/platform/contract.json'))
 assert contract['platform_contract'] == '1.0.0'
 assert contract['architecture'] == 'armhf'

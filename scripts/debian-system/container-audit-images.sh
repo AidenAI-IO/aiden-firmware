@@ -149,8 +149,10 @@ audit_rootfs_cli_tools() {
 }
 
 audit_rootfs() {
-    grep -qx 'LANG=C.UTF-8' "${ROOTFS_MOUNT}/etc/default/locale" \
+    grep -qx 'LANG=C.UTF-8' "${ROOTFS_MOUNT}/etc/locale.conf" \
         || fail "default UTF-8 locale is missing"
+    test "$(readlink "${ROOTFS_MOUNT}/etc/default/locale")" = ../locale.conf \
+        || fail "Debian locale compatibility link is missing"
     python3 "${REPO_ROOT}/scripts/release/contract.py" platform "${OUTPUT_DIR}/expected-contract.json"
     cmp "${OUTPUT_DIR}/expected-contract.json" \
         "${ROOTFS_MOUNT}/usr/lib/aiden/platform/contract.json" \

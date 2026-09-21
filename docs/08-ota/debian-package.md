@@ -165,5 +165,6 @@ self-check，失败时根据备份恢复旧包。托管包由 preinst 自动核�
 从此前测试包 `5.2.1-2` 重新编号到 `0.0.1-2` 属于一次明确降级；自动安装时额外使用
 `apt install -y --allow-downgrades ./aiden-business_0.0.1-2_armhf.deb`。
 业务包只修改当前活动 rootfs，B 槽不会同步升级，也不更新固件 OTA 的出厂版本记录。
-`/etc/default/locale` 的 `LANG=C.UTF-8` 现在由业务包管理，下一次登录生效；平台契约
+`/etc/locale.conf` 的 `LANG=C.UTF-8` 由业务包管理，Debian 的 `/etc/default/locale`
+链接指向它，下一次登录生效；平台契约
 文件仍属于基座。首次配置接管必须建立新 OTA 基线，不能仅手动修改契约文件。
