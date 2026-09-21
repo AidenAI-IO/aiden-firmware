@@ -265,13 +265,16 @@ uv run python -m runner publish-langfuse --run-dir runs/<run-id>
 
 Runs with the same suite name appear in the same Dataset. The experiment metadata
 records the Git SHA, suite hash, workload hash, model, judge, platform, metrics
-schema, and fixed `k`. Runs with matching suite hash, workload hash, and `k` are
-strictly comparable. Runs from different suite versions can still be inspected
-in Langfuse, but their aggregate scores should not be treated as a like-for-like
-regression unless the unchanged item intersection is used or the old product
-version is rerun against the new suite definition. When an Agent episode ID is
-present, the experiment trace also records the deterministic Agent trace ID for
-correlation with Aiden telemetry.
+schema, and fixed `k`. The workload hash covers only task and attempt keys. For a
+like-for-like regression, require matching suite hash, workload hash, `k`, Agent
+model, judge provider/model/prompt version, target platform, and active skills.
+When comparing models or judges intentionally, treat that changed field as the
+experiment axis and keep the other score-affecting metadata fixed. Runs from
+different suite versions can still be inspected in Langfuse, but their aggregate
+scores should not be treated as a like-for-like regression unless the unchanged
+item intersection is used or the old product version is rerun against the new
+suite definition. When an Agent episode ID is present, the experiment trace also
+records the deterministic Agent trace ID for correlation with Aiden telemetry.
 
 Publishing is idempotent by run ID. A retry verifies the Dataset Run Item set,
 adds any missing items, and rewrites scores with stable IDs. A conflicting run ID
@@ -320,6 +323,7 @@ device environment, suite selection, and trigger policy remain to be configured.
 - `AIDEN_AGENT_URL` - Default `--agent-url`.
 - `AIDEN_ENVIRONMENT_URL` - Default `--environment-url`.
 - `AIDEN_DAEMON_IMAGE` - Default daemon worker image for auto agent setup.
+- `LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS` - Maximum publication read-back wait; defaults to 660 seconds to cover Langfuse asynchronous ingestion lag.
 
 ## Execution Modes
 

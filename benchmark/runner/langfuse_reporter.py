@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import hashlib
 import json
+import math
 import os
 import time
 import uuid
@@ -63,8 +64,10 @@ RELIABILITY_DISTRIBUTION_METRICS = (
     "retry_count",
 )
 RUN_DISTRIBUTION_STATISTICS = ("count", "sum", "mean", "p50", "p90", "p95")
-PUBLICATION_VERIFY_ATTEMPTS = 6
-PUBLICATION_VERIFY_DELAY_SECONDS = 0.5
+PUBLICATION_VERIFY_TIMEOUT_ENV = "LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS"
+PUBLICATION_VERIFY_TIMEOUT_SECONDS = 11 * 60.0
+PUBLICATION_VERIFY_INITIAL_DELAY_SECONDS = 1.0
+PUBLICATION_VERIFY_MAX_DELAY_SECONDS = 30.0
 
 
 class LangfusePublishError(RuntimeError):
@@ -348,7 +351,9 @@ def _verify_published_run(
 ) -> tuple[Any, dict[str, str]]:
     """Read back the run and traces so a swallowed OTEL export error cannot pass."""
     last_incomplete_message = "Langfuse run was not readable after publishing"
-    for attempt in range(PUBLICATION_VERIFY_ATTEMPTS):
+    deadline = time.monotonic() + _publication_verify_timeout_seconds()
+    delay_seconds = PUBLICATION_VERIFY_INITIAL_DELAY_SECONDS
+    while True:
         dataset_run = _get_existing_run(client, dataset_name, run_name)
         if dataset_run is not None:
             _validate_existing_run_metadata(dataset_run, expected_metadata, run_name)
@@ -371,9 +376,32 @@ def _verify_published_run(
                 last_incomplete_message = (
                     "Langfuse run does not contain all expected dataset items"
                 )
-        if attempt + 1 < PUBLICATION_VERIFY_ATTEMPTS:
-            time.sleep(PUBLICATION_VERIFY_DELAY_SECONDS)
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            break
+        time.sleep(min(delay_seconds, remaining_seconds))
+        delay_seconds = min(
+            delay_seconds * 2,
+            PUBLICATION_VERIFY_MAX_DELAY_SECONDS,
+        )
     raise LangfusePublishError(last_incomplete_message)
+
+
+def _publication_verify_timeout_seconds() -> float:
+    raw_value = os.environ.get(PUBLICATION_VERIFY_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return PUBLICATION_VERIFY_TIMEOUT_SECONDS
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError as exc:
+        raise LangfusePublishError(
+            f"{PUBLICATION_VERIFY_TIMEOUT_ENV} must be a positive number"
+        ) from exc
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise LangfusePublishError(
+            f"{PUBLICATION_VERIFY_TIMEOUT_ENV} must be a positive number"
+        )
+    return timeout_seconds
 
 
 def _traces_are_readable(client: Any, trace_ids: Any) -> bool:

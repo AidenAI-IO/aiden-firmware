@@ -538,16 +538,61 @@ def test_publish_run_retries_trace_readback_on_not_found(monkeypatch, tmp_path: 
                 raise FakeAPIError(404, "not found yet")
             return SimpleNamespace(id=trace_id)
 
-    monkeypatch.setattr(
-        "runner.langfuse_reporter.PUBLICATION_VERIFY_DELAY_SECONDS",
-        0,
-    )
+    now = 0.0
+    sleep_calls = []
+
+    def monotonic():
+        return now
+
+    def sleep(seconds):
+        nonlocal now
+        sleep_calls.append(seconds)
+        now += seconds
+
+    monkeypatch.setattr("runner.langfuse_reporter.time.monotonic", monotonic)
+    monkeypatch.setattr("runner.langfuse_reporter.time.sleep", sleep)
     client = FakeLangfuse()
     client.api.trace = EventuallyReadableTrace(client)
 
     publish_run(_write_run(tmp_path), client=client)
 
     assert len(client.trace_calls) == 2
+    assert sleep_calls == [1.0]
+
+
+def test_publish_run_uses_exponential_backoff_until_deadline(monkeypatch, tmp_path: Path):
+    now = 0.0
+    sleep_calls = []
+
+    def monotonic():
+        return now
+
+    def sleep(seconds):
+        nonlocal now
+        sleep_calls.append(seconds)
+        now += seconds
+
+    monkeypatch.setenv("LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS", "7")
+    monkeypatch.setattr("runner.langfuse_reporter.time.monotonic", monotonic)
+    monkeypatch.setattr("runner.langfuse_reporter.time.sleep", sleep)
+    client = FakeLangfuse(trace_error=FakeAPIError(404, "not found yet"))
+
+    with pytest.raises(LangfusePublishError, match="traces were not readable"):
+        publish_run(_write_run(tmp_path), client=client)
+
+    assert sleep_calls == [1.0, 2.0, 4.0]
+    assert len(client.trace_calls) == 4
+
+
+@pytest.mark.parametrize("value", ["invalid", "0", "inf"])
+def test_publish_run_rejects_invalid_verify_timeout(monkeypatch, tmp_path: Path, value: str):
+    monkeypatch.setenv("LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(
+        LangfusePublishError,
+        match="LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS must be a positive number",
+    ):
+        publish_run(_write_run(tmp_path), client=FakeLangfuse())
 
 
 def test_publish_run_does_not_create_dataset_after_lookup_failure(tmp_path: Path):
