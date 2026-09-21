@@ -21,6 +21,13 @@ live_systemd() {
 # still present. Keep the shared snapshot until a compatible peer is configured.
 # The package currently running postinst is itself half-configured at this point.
 peer_ready() {
+    # Abort hooks can come from the new archive after dpkg restored old files.
+    # Do not infer our installed version from the script's embedded version.
+    own_state=$(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null) || return 1
+    case "$own_state" in
+        "install ok installed $package_version"|"install ok half-configured $package_version") ;;
+        *) return 1 ;;
+    esac
     case "$package" in
         aiden-business) peer=aiden-system-config ;;
         aiden-system-config) peer=aiden-business ;;

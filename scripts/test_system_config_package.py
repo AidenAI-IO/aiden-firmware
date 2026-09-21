@@ -46,7 +46,7 @@ class PairTests(unittest.TestCase):
         visudo.chmod(0o755)
         self.fixture.set_states({unit: "inactive" for unit in UNITS})
 
-    def package(self, version):
+    def package(self, version, *, fail_preinst=False):
         output = self.root / ("build-" + version)
         env = {**self.env, "AIDEN_BUSINESS_VERSION": version}
         with patch.dict(os.environ, env):
@@ -70,6 +70,8 @@ class PairTests(unittest.TestCase):
                 text = text.replace("/var/lib/aiden-business", str(self.root / "package-state"))
                 text = text.replace("/run/systemd/system", str(self.fixture.marker))
                 text = text.replace("/usr/sbin/policy-rc.d", str(self.fixture.policy))
+                if fail_preinst and name == "aiden-business" and phase == "preinst":
+                    text = text.removesuffix("exit 0\n") + "exit 42\n"
                 path.write_text(text)
             package = output / f"{name}_{version}-1_all.deb"
             subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(root), str(package)],
@@ -119,6 +121,13 @@ class PairTests(unittest.TestCase):
         self.assert_stopped()
         self.dpkg("--configure", "aiden-business")
         self.assertEqual(self.fixture.states(), self.before)
+
+    def test_failed_preinst_restores_old_pair(self):
+        self.installed_pair()
+        new = self.package("0.0.3", fail_preinst=True)
+        self.dpkg("--install", new["aiden-business"], success=False)
+        self.assertEqual(self.fixture.states(), self.before)
+        self.assertFalse(self.fixture.transaction.exists())
 
     def test_invalid_installed_sudoers_blocks_service_restart_and_retry_recovers(self):
         self.installed_pair()
