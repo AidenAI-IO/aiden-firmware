@@ -48,6 +48,18 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 }
 
+func TestRuntimeRejectsBackendRunWhenBackendAgentDisabled(t *testing.T) {
+	runtime := &Runtime{config: Config{
+		InputMode:  "realtime",
+		VoiceModel: VoiceModelConfig{},
+	}}
+
+	_, err := runtime.Run(context.Background(), RunRequest{Input: "handled by realtime session"})
+	if err == nil || !strings.Contains(err.Error(), "backend agent is disabled for this realtime session") {
+		t.Fatalf("Run() error = %v, want backend-disabled realtime guard", err)
+	}
+}
+
 func TestRuntimeDoesNotRegisterArtifactReadTool(t *testing.T) {
 	toolSet := &ToolSet{tools: map[string]langtools.Tool{}}
 	runtime := NewRuntimeWithDeps(

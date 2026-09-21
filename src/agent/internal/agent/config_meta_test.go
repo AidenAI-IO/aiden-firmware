@@ -944,8 +944,36 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 func TestConfigMeta_VoiceModelRequiresRealtimeInputMode(t *testing.T) {
 	idx := fieldIndex(t)
 	for _, section := range ConfigMeta().Sections {
-		if section.Name == "voice_model" && (len(section.Fields) != 1 || section.Fields[0].Key != "provider") {
-			t.Fatalf("voice_model fields = %#v, want only the provider reference", section.Fields)
+		if section.Name == "voice_model" {
+			want := map[string]bool{"provider": true, "use_backend_agent": true}
+			if len(section.Fields) != len(want) || section.Fields[0].Key != "provider" {
+				t.Fatalf("voice_model fields = %#v, want provider + use_backend_agent", section.Fields)
+			}
+			for _, field := range section.Fields {
+				want[field.Key] = false
+			}
+			for key, seen := range want {
+				if seen {
+					t.Errorf("voice_model missing metadata field %s", key)
+				}
+			}
+			agentSwitch := idx["voice_model.use_backend_agent"]
+			if !agentSwitch.Advanced {
+				t.Fatal("voice_model.use_backend_agent must be an advanced field")
+			}
+			if enabled, ok := agentSwitch.Default.(bool); !ok || enabled {
+				t.Fatalf("voice_model.use_backend_agent default = %#v, want false", agentSwitch.Default)
+			}
+			if agentSwitch.VisibleWhen == nil {
+				t.Fatal("voice_model.use_backend_agent has no visibleWhen rule")
+			}
+			for _, cond := range agentSwitch.VisibleWhen.All {
+				if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "realtime" {
+					goto backendSwitchVisible
+				}
+			}
+			t.Fatal("voice_model.use_backend_agent must require realtime input mode")
+		backendSwitchVisible:
 		}
 	}
 

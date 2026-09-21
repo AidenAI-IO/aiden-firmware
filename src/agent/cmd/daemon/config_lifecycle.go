@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 
 	"aiden-agent/internal/agent"
-	"aiden-agent/internal/agenttask"
 	"aiden-agent/internal/logging"
 )
 
@@ -105,8 +104,10 @@ func (c *inputLifecycle) startVoice(cfg agent.Config, dialog *agent.AudioDialog)
 		case "stt":
 			runWakeupMode(cfg, dialog, c.runtime, shutdown, c.newWatcher, stop)
 		case "realtime":
-			tasks := agenttask.NewManager(runtimeAgentTaskRunner{runtime: c.runtime})
-			defer tasks.Close()
+			tasks := newRealtimeAgentTaskManager(cfg, c.runtime)
+			if tasks != nil {
+				defer tasks.Close()
+			}
 			runRealtimeWakeupModeWithServer(cfg, shutdown, c.server, c.runtime, tasks, c.newWatcher, stop)
 		default:
 			select {
