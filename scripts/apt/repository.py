@@ -2,7 +2,7 @@
 """Build a signed GitHub Pages APT repository from verified, published releases."""
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from email.parser import Parser
 from email.utils import format_datetime
 import gzip
@@ -122,7 +122,6 @@ def write_suite(directory, packages, records, now, key, keyring):
     files = [metadata, binary / "Packages", binary / "Packages.gz"]
     text = (f"Origin: Aiden\nLabel: Aiden business packages\nSuite: {directory.name}\nCodename: {directory.name}\n"
             f"Date: {format_datetime(now, usegmt=True)}\n"
-            f"Valid-Until: {format_datetime(now + timedelta(days=30), usegmt=True)}\n"
             "Architectures: armhf\nComponents: main\nAcquire-By-Hash: yes\nSHA256:\n")
     for path in files:
         digest = sha256(path)

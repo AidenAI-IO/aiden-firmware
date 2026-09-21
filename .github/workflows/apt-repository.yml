@@ -6,9 +6,6 @@ on:
       APT_SIGNING_PRIVATE_KEY:
         required: true
   workflow_dispatch:
-  # Refresh signed metadata before Valid-Until, without allocating a release/version.
-  schedule:
-    - cron: '23 3 * * 1'
 
 permissions:
   contents: read

@@ -171,14 +171,15 @@ class RepositoryTests(unittest.TestCase):
             downloaded = self.apt("apt-get", "--print-uris", "--download-only", "--assume-yes", "install", "aiden-business").stdout
             self.assertIn("pool/dev-c1/dev-v0.0.3/aiden-business_0.0.3-1_armhf.deb", downloaded)
 
-    def test_expired_metadata_is_rejected(self):
+    def test_signed_metadata_has_no_expiry(self):
         device = self.release("0.0.2", kind="ota", contract="1.0.0")
         self.build(now=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        for name in ("Release", "InRelease"):
+            self.assertNotIn("Valid-Until:", (self.site / "apt/dists/dev-c1" / name).read_text())
         with self.serve() as url:
             self.apt_fixture(device, url)
-            result = self.apt("apt-get", "update", check=False)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("expired", result.stderr.lower())
+            self.apt("apt-get", "update")
+            self.assertIn("Candidate: 0.0.2-1", self.apt("apt-cache", "policy", "aiden-business").stdout)
 
     def test_tampered_indexes_are_rejected(self):
         device = self.release("0.0.2", kind="ota", contract="1.0.0")

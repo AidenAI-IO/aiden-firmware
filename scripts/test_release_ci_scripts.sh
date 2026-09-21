@@ -40,7 +40,7 @@ raise 'APT must use the shared index workflow' unless jobs['apt']['uses'] == './
 end
 apt = load_workflow.call('apt-repository.yml')
 apt_events = apt['on'] || apt[true]
-raise 'APT metadata must be refreshable without a new release' unless apt_events.key?('schedule') && apt_events.key?('workflow_dispatch')
+raise 'APT indexes must update only on publication or manual refresh' unless apt_events.keys.sort == %w[workflow_call workflow_dispatch]
 raise 'APT deploys must serialize' unless apt['concurrency'] == {'group' => 'aiden-apt-pages', 'cancel-in-progress' => false}
 raise 'APT deployment must depend on verified output' unless apt['jobs']['deploy']['needs'] == 'build'
 

@@ -62,8 +62,8 @@ ssh -t luckfox 'sudo apt update && sudo apt upgrade'
 业务包，也不会分配版本或改变发布比较基线。正式发布前会检查签名 secret 是否存在。
 APT 刷新失败不会撤销已公开的 Release，修复后单独重跑 APT 流程即可。
 
-每周重新生成签名，有效期 30 天；这只是索引维护，三个通道的新版本仍全部手动发布。
-GitHub 定时任务仅在默认分支上生效，必须合入 main 才能长期自动续签。
+索引不设置 `Valid-Until`，无需定时刷新；仅在正式发布后或手动触发时更新。
+APT 仍会验证索引签名和包校验和，三个通道的新版本仍全部手动发布。
 Pages 的 `github-pages` Environment 必须允许运行发布流程的分支。
 
 每个“通道 + 契约”保留最新三个正式包，旧契约的源继续可用。索引使用 APT
@@ -83,5 +83,5 @@ GNUPGHOME=/path/to/private-gnupg python3 scripts/apt/repository.py \
 ```
 
 测试运行真实的 `apt update` 和模拟 `apt upgrade`，覆盖契约隔离、系统包 pin、
-错误公钥、篡改索引、过期元数据和发布包校验失败。签名私钥应另存安全备份；轮换
+错误公钥、篡改索引、无到期限制的签名元数据和发布包校验失败。签名私钥应另存安全备份；轮换
 公钥时先通过 OTA 向设备分发新旧公钥的过渡信任，再切换仓库签名。
