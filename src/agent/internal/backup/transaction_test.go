@@ -191,6 +191,36 @@ func TestCommitAdoptsUncheckpointedOldRenameAndRollbackRestores(t *testing.T) {
 	}
 }
 
+// Power loss after the rollback moved the new version back to new/ but
+// before that checkpoint persisted: the log still says NewInstalled, Target is
+// absent, and both copies sit in old/ and new/.  Resuming must restore the
+// original instead of failing on the already-completed rename.
+func TestRollbackResumesAfterUncheckpointedStagedRename(t *testing.T) {
+	root := t.TempDir()
+	unit := &TransactionUnit{Key: "userdata:agent-memory", Component: ComponentAgentMemory, Layer: LayerUserdata,
+		Target: filepath.Join(root, "agent/memory"), Staged: filepath.Join(TransactionDir(root, "j"), "new/agent-memory"),
+		Old: filepath.Join(TransactionDir(root, "j"), "old/agent-memory"), Directory: true,
+		HadOriginal: true, Unmounted: true, OldMoved: true, NewInstalled: true}
+	mustWrite(t, filepath.Join(unit.Old, "profile.md"), "old")
+	mustWrite(t, filepath.Join(unit.Staged, "profile.md"), "new")
+	checkpoints := 0
+	if err := RollbackUnit(unit, nil, func() error { checkpoints++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, filepath.Join(unit.Target, "profile.md")); got != "old" {
+		t.Fatalf("target after resumed rollback = %q", got)
+	}
+	if got := mustRead(t, filepath.Join(unit.Staged, "profile.md")); got != "new" {
+		t.Fatalf("staged copy after resumed rollback = %q", got)
+	}
+	if unit.NewInstalled || unit.OldMoved || unit.Committed || checkpoints == 0 {
+		t.Fatalf("unit after resumed rollback = %+v (checkpoints %d)", unit, checkpoints)
+	}
+	if _, err := os.Stat(unit.Old); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old copy still present after rollback: %v", err)
+	}
+}
+
 func TestRollbackPreservesAllCopiesWhenStagingIsOccupied(t *testing.T) {
 	root := t.TempDir()
 	unit := &TransactionUnit{Key: "userdata:user-home", Target: filepath.Join(root, "userhome"),

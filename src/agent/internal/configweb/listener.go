@@ -2,6 +2,7 @@ package configweb
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"syscall"
@@ -37,4 +38,38 @@ func listenConfigWeb(address, device string) (net.Listener, error) {
 		return socketErr
 	}}
 	return config.Listen(context.Background(), "tcp4", address)
+}
+
+// usbListenRetrySchedule returns the delay before the next bind attempt:
+// quick retries while the USB gadget is still being configured at boot, then
+// a slow poll so a late or re-plugged interface is still picked up.
+func usbListenRetrySchedule(attempt int) time.Duration {
+	if attempt <= 30 {
+		return 2 * time.Second
+	}
+	return 15 * time.Second
+}
+
+var errListenRetryStopped = errors.New("listener retry stopped")
+
+// retryListen calls listen until it succeeds or stop is closed.  schedule maps
+// the failed attempt count to the delay before the next try; onError is
+// invoked after every failed attempt with that count.
+func retryListen(listen func() (net.Listener, error), stop <-chan struct{}, schedule func(int) time.Duration, onError func(int, error)) (net.Listener, error) {
+	for attempt := 1; ; attempt++ {
+		listener, err := listen()
+		if err == nil {
+			return listener, nil
+		}
+		if onError != nil {
+			onError(attempt, err)
+		}
+		timer := time.NewTimer(schedule(attempt))
+		select {
+		case <-stop:
+			timer.Stop()
+			return nil, errListenRetryStopped
+		case <-timer.C:
+		}
+	}
 }

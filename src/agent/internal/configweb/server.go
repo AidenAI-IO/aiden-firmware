@@ -32,6 +32,8 @@ type Server struct {
 	options                  Options
 	http                     *http.Server
 	usbHTTP                  *http.Server
+	usbRetryStop             chan struct{}
+	usbRetryOnce             sync.Once
 	storage                  storageController
 	sttTest                  *agent.STTConfigTestAPI
 	closeMu                  sync.Once
@@ -108,6 +110,7 @@ func NewServer(options Options) (*Server, error) {
 	s.http = configHTTPServer(options.Addr(), s, usbOnly)
 	if options.BindAddress == "0.0.0.0" {
 		s.usbHTTP = configHTTPServer(net.JoinHostPort(options.USBAddress, strconv.Itoa(options.Port)), s, true)
+		s.usbRetryStop = make(chan struct{})
 	}
 	return s, nil
 }
@@ -128,13 +131,10 @@ func (s *Server) ListenAndServe() error {
 	// never maintenance-authorized, even when addressed to the USB IP.
 	errorsCh := make(chan error, 2)
 	if s.usbHTTP != nil {
-		usbListener, err := listenConfigWeb(s.usbHTTP.Addr, s.options.USBInterface)
-		if err != nil {
-			logging.Warnf("config_web", "config_web", "USB maintenance listener unavailable (fail closed): %v", err)
-		} else {
-			defer usbListener.Close()
-			go func() { errorsCh <- s.usbHTTP.Serve(usbListener) }()
-		}
+		// The USB gadget can come up after Config Web (a Wants= dependency);
+		// keep retrying the interface-bound socket in the background so USB
+		// maintenance becomes available without a service restart.
+		go s.serveUSBListener(errorsCh)
 	}
 	device := ""
 	if s.options.BindAddress == s.options.USBAddress {
@@ -153,7 +153,40 @@ func (s *Server) ListenAndServe() error {
 	return err
 }
 
+// serveUSBListener binds the SO_BINDTODEVICE maintenance socket, retrying
+// with backoff until it succeeds or the server shuts down.  Failures are
+// fail-closed: no USB listener means no maintenance authorization.
+func (s *Server) serveUSBListener(errorsCh chan<- error) {
+	listener, err := retryListen(func() (net.Listener, error) {
+		return listenConfigWeb(s.usbHTTP.Addr, s.options.USBInterface)
+	}, s.usbRetryStop, usbListenRetrySchedule, func(attempt int, err error) {
+		if attempt == 1 {
+			logging.Warnf("config_web", "config_web", "USB maintenance listener unavailable (fail closed), retrying: %v", err)
+		}
+	})
+	if err != nil {
+		return
+	}
+	logging.Infof("config_web", "config_web", "USB maintenance listener ready on %s (%s)", s.usbHTTP.Addr, s.options.USBInterface)
+	select {
+	case <-s.usbRetryStop:
+		// Shutdown raced the successful bind; Serve would return immediately.
+		_ = listener.Close()
+		return
+	default:
+	}
+	errorsCh <- s.usbHTTP.Serve(listener)
+}
+
+func (s *Server) stopUSBRetry() {
+	if s.usbRetryStop == nil {
+		return
+	}
+	s.usbRetryOnce.Do(func() { close(s.usbRetryStop) })
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.stopUSBRetry()
 	if s.backupJobs != nil {
 		s.backupJobs.cancelAll()
 	}

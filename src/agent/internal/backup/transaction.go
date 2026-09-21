@@ -621,6 +621,9 @@ func RollbackUnit(unit *TransactionUnit, mounts MountController, checkpoint func
 			return err
 		}
 		if exists {
+			if err := EnsureParent(unit.Target); err != nil {
+				return err
+			}
 			if err := os.Rename(unit.Old, unit.Target); err != nil {
 				return err
 			}
