@@ -13,6 +13,7 @@ CHANNELS = ("dev", "staging", "prod")
 VERSION = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 TAG = re.compile(r"(dev|staging|prod)-v(" + VERSION + r")\Z")
 POLICY = Path(__file__).with_name("policy.json")
+CONFIG_FILES = json.loads((Path(__file__).resolve().parents[1] / "debian-system/config-package.json").read_text())["files"]
 
 
 def command(*args, cwd=None):
@@ -36,6 +37,8 @@ def version_tuple(value):
 def validate_record(record):
     if record["format"] != 1 or record["channel"] not in CHANNELS:
         raise ValueError("Unknown release record format/channel")
+    if record.get("package_set", 1) not in (1, 2):
+        raise ValueError("Unknown package set")
     version_tuple(record["version"])
     if record["tag"] != f"{record['channel']}-v{record['version']}":
         raise ValueError("Release tag/version mismatch")
@@ -88,6 +91,8 @@ def validate_history(records, repo):
                 raise ValueError("Business release has no valid OTA base")
             if base["fingerprints"]["system"] != record["fingerprints"]["system"]:
                 raise ValueError("Business release changed the system fingerprint")
+            if base.get("package_set", 1) != record.get("package_set", 1):
+                raise ValueError("Package ownership changes require a new OTA base")
     ordered = sorted(records, key=lambda item: version_tuple(item["version"]))
     previous = {}
     for record in ordered:
@@ -130,6 +135,8 @@ def history_digest(records):
 
 
 def classify(path, policy):
+    if path.startswith("overlay-debian/") and path.removeprefix("overlay-debian/") in CONFIG_FILES:
+        return "config"
     for kind in ("ignore", "system", "business"):
         if any(fnmatch.fnmatchcase(path, pattern) for pattern in policy[kind]):
             return kind
@@ -144,6 +151,8 @@ def source_fingerprints(root, commit, policy):
             continue
         metadata, path = entry.decode().split("\t", 1)
         kind = classify(path, policy)
+        if kind == "config":
+            kind = "business"
         if kind != "ignore":
             groups[kind].append([path, metadata])
     return {kind: digest(entries) for kind, entries in groups.items()}
@@ -167,6 +176,8 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
         if fingerprints["business"] != previous["fingerprints"]["business"]:
             kind = "business"
         if fingerprints["system"] != previous["fingerprints"]["system"]:
+            kind = "ota"
+        if previous.get("package_set", 1) != 2:
             kind = "ota"
     else:
         raw = subprocess.check_output(["git", "ls-tree", "-rz", "--name-only", commit], cwd=root)
@@ -192,7 +203,7 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
                         for r in records)
         build_time = max(build_time, last_time + timedelta(seconds=1))
     plan = {
-        "format": 1, "repo": repo, "channel": channel, "version": next_version, "tag": tag,
+        "format": 1, "package_set": 2, "repo": repo, "channel": channel, "version": next_version, "tag": tag,
         "kind": kind, "source_commit": commit,
         "source_tree": command("git", "rev-parse", f"{commit}^{{tree}}", cwd=root),
         "build_time": build_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -201,7 +212,7 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
         "history_digest": history_digest(records), "fingerprints": fingerprints,
         "platform": platform, "force_ota": force_ota,
         "changes": {k: [p for p in paths if classify(p, policy) == k]
-                    for k in ("business", "system", "ignore")},
+                    for k in ("business", "config", "system", "ignore")},
         "commits": commits,
     }
     validate_record(plan)

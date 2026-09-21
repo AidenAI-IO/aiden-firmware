@@ -60,8 +60,8 @@ def configure(root, key, url=DEFAULT_URL):
     )
     preferences = (
         "# Business updates must match both the signed repository and the OTA contract.\n"
-        f"Package: aiden-business\nPin: release o=Aiden,n={suite}\nPin-Priority: 990\n\n"
-        "Package: aiden-business\nPin: release *\nPin-Priority: -1\n\n"
+        f"Package: aiden-business aiden-system-config\nPin: release o=Aiden,n={suite}\nPin-Priority: 990\n\n"
+        "Package: aiden-business aiden-system-config\nPin: release *\nPin-Priority: -1\n\n"
         "# Installed system packages have priority 100; update them through OTA.\n"
         "# Explicitly installing a previously absent Debian package remains possible.\n"
         "Package: *\nPin: release o=Debian\nPin-Priority: 1\n"

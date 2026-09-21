@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "files": {
+    "etc/profile.d/aiden-env.sh": "0644",
+    "etc/sudoers.d/20-aiden-proxy": "0440",
+    "usr/lib/aiden/aiden-managed-env-run": "0755"
+  }
+}

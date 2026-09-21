@@ -27,7 +27,7 @@ Priority: optional
 Architecture: armhf
 Maintainer: Aiden AI <firmware@aiden.ai>
 Pre-Depends: python3-minimal
-Depends: libc6, systemd
+Depends: libc6, systemd, aiden-system-config (= ${PACKAGE_VERSION})
 Description: Aiden business runtime
  Agent, hardware services, configuration web assets, bundled skills and runtime models.
 CTL
@@ -40,6 +40,9 @@ for binary in agent audio_service audio_service_cli ble_service cpu_vad frame_se
 dpkg-deb --build --root-owner-group "${PKG_ROOT}" "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb"
 dpkg-deb --info "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" >"${OUTPUT_DIR}/${PACKAGE_NAME}.deb.info"
 dpkg-deb --contents "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" >"${OUTPUT_DIR}/${PACKAGE_NAME}.deb.contents"
+python3 "${REPO_ROOT}/scripts/debian-package/system_config.py" build "${OUTPUT_DIR}"
 chown "${HOST_UID:-0}:${HOST_GID:-0}" \
+    "${OUTPUT_DIR}/aiden-system-config_${PACKAGE_VERSION}_all.deb" \
+    "${OUTPUT_DIR}/aiden-system-config.deb" \
     "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" \
     "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.info" "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.contents"

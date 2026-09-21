@@ -90,6 +90,12 @@ audit_packages() {
 }
 
 audit_business_package() {
+    python3 "${REPO_ROOT}/scripts/debian-package/system_config.py" audit "${ROOTFS_MOUNT}"
+    local business_version config_version
+    business_version=$(dpkg-query --root="${ROOTFS_MOUNT}" -W -f='${Status} ${Version}' aiden-business)
+    config_version=$(dpkg-query --root="${ROOTFS_MOUNT}" -W -f='${Status} ${Version}' aiden-system-config)
+    [[ "$business_version" = "install ok installed "* && "$business_version" = "$config_version" ]] \
+        || fail "business/config packages are not configured at the same version"
     awk -F '\t' 'NR > 1 && $1 == "aiden-business" {found=1} END {exit !found}' \
         "${OUTPUT_DIR}/packages.txt" || fail "aiden-business is not installed"
     for path in \

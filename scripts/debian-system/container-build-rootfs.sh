@@ -169,8 +169,9 @@ EOF
         python3 "${REPO_ROOT}/scripts/release/contract.py" platform \
             "${ROOTFS_DIR}/usr/lib/aiden/platform/contract.json"
         install -m 0644 /aiden-business.deb "${ROOTFS_DIR}/tmp/aiden-business.deb"
-        chroot "${ROOTFS_DIR}" dpkg -i /tmp/aiden-business.deb
-        rm -f "${ROOTFS_DIR}/tmp/aiden-business.deb"
+        install -m 0644 /aiden-system-config.deb "${ROOTFS_DIR}/tmp/aiden-system-config.deb"
+        chroot "${ROOTFS_DIR}" env SYSTEMD_OFFLINE=1 dpkg -i /tmp/aiden-business.deb /tmp/aiden-system-config.deb
+        rm -f "${ROOTFS_DIR}/tmp/aiden-business.deb" "${ROOTFS_DIR}/tmp/aiden-system-config.deb"
     else
         echo 'Missing /aiden-business.deb; business package is required' >&2
         exit 1
@@ -257,20 +258,21 @@ stage_platform() {
 configure_rootfs() {
     # Apply only the Debian-native overlay with root ownership. This scoped
     # chown does not touch Debian package files or their numeric UID/GID data.
-    rsync -aHAX --numeric-ids --chown=0:0 \
+    python3 "${REPO_ROOT}/scripts/debian-package/system_config.py" exclude "${OUTPUT_DIR}/config-package.exclude"
+    rsync -aHAX --numeric-ids --chown=0:0 --exclude-from="${OUTPUT_DIR}/config-package.exclude" \
         "${REPO_ROOT}/overlay-debian/" "${ROOTFS_DIR}/"
     chmod 0755 "${ROOTFS_DIR}"
     while IFS= read -r -d '' path; do
         chmod 0755 "${ROOTFS_DIR}/${path}"
     done < <(find "${REPO_ROOT}/overlay-debian" -mindepth 1 -type d -printf '%P\0')
     while IFS= read -r -d '' path; do
+        if grep -Fxq "/${path}" "${OUTPUT_DIR}/config-package.exclude"; then continue; fi
         if [ -x "${REPO_ROOT}/overlay-debian/${path}" ]; then
             chmod 0755 "${ROOTFS_DIR}/${path}"
         else
             chmod 0644 "${ROOTFS_DIR}/${path}"
         fi
     done < <(find "${REPO_ROOT}/overlay-debian" -type f -printf '%P\0')
-    chmod 0440 "${ROOTFS_DIR}/etc/sudoers.d/20-aiden-proxy"
     "${REPO_ROOT}/scripts/stage_rootfs_cli_tools.sh" \
         --catalog "${REPO_ROOT}/scripts/rootfs_cli_tools.catalog" \
         --source-dir "${ROOTFS_CLI_TOOLS_DIR}" \

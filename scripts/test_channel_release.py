@@ -96,6 +96,28 @@ class PlannerTests(GitFixture):
         self.commit({"src/agent/config/skills/new/SKILL.md": "runtime skill"})
         self.assertEqual(self.make()["kind"], "business")
 
+    def test_config_only_uses_packages_and_preserves_contract(self):
+        base = self.publish()
+        self.commit({"overlay-debian/etc/profile.d/aiden-env.sh": "proxy fix"})
+        record = self.publish()
+        self.assertEqual(record["kind"], "business")
+        self.assertEqual(record["platform"], base["platform"])
+        self.assertEqual(record["package_set"], 2)
+        self.assertEqual(record["changes"]["config"], ["overlay-debian/etc/profile.d/aiden-env.sh"])
+        self.commit({"scripts/debian-system/config-package.json": "changed ownership boundary"})
+        self.assertEqual(self.make()["kind"], "ota")
+
+    def test_legacy_base_requires_one_time_ota_for_package_ownership(self):
+        self.publish()
+        self.history[0].pop("package_set")
+        # Even a legacy record with an identical fingerprint cannot silently
+        # switch package ownership/service hooks without establishing a base.
+        self.assertEqual(self.make()["kind"], "ota")
+        candidate = self.make()
+        candidate.update(kind="business", platform=self.history[0]["platform"])
+        with self.assertRaisesRegex(ValueError, "ownership"):
+            plan.validate_history([*self.history, candidate], REPO)
+
     def test_mixed_unknown_ota_and_dependency_changes_are_system(self):
         self.publish()
         for filename in ("new-runtime-file", "src/agent/internal/ota/github.go", "src/agent/go.mod"):
@@ -232,6 +254,7 @@ class AssetTests(GitFixture):
         control = package_root / "DEBIAN/control"
         control.parent.mkdir(parents=True)
         control.write_text(f"Package: aiden-business\nVersion: {record['version']}-1\nArchitecture: armhf\n"
+                           f"Depends: aiden-system-config (= {record['version']}-1)\n"
                            "Maintainer: Test <test@example.test>\nDescription: test package\n")
         manifest_path = package_root / "usr/share/doc/aiden-business/release-manifest.json"
         with patch.dict(os.environ, self.env):
@@ -241,6 +264,19 @@ class AssetTests(GitFixture):
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(package_root), str(self.assets / name)],
                        check=True, stdout=subprocess.DEVNULL)
         shutil.copyfile(manifest_path, self.assets / "release-manifest.json")
+        config_root = self.root / "config-package"
+        config_control = config_root / "DEBIAN/control"
+        config_control.parent.mkdir(parents=True)
+        config_control.write_text(f"Package: aiden-system-config\nVersion: {record['version']}-1\nArchitecture: all\n"
+                                  f"Breaks: aiden-business (<< {record['version']}-1), aiden-business (>> {record['version']}-1)\n"
+                                  "Maintainer: Test <test@example.test>\nDescription: config fixture\n")
+        config_manifest = config_root / "usr/share/doc/aiden-system-config/release-manifest.json"
+        with patch.dict(os.environ, self.env):
+            release.write_json(config_manifest, contract.package_manifest("aiden-system-config"))
+        subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(config_root),
+                        str(self.assets / f"aiden-system-config_{record['version']}-1_all.deb")],
+                       check=True, stdout=subprocess.DEVNULL)
+        shutil.copyfile(config_manifest, self.assets / "system-config-manifest.json")
         release.write_json(self.assets / "platform-contract.json", manifest["platform"])
         (self.assets / "RELEASE-NOTES.md").write_text(release.notes(record))
         if kind == "ota":
@@ -285,6 +321,13 @@ class AssetTests(GitFixture):
         release.write_json(self.assets / "platform-contract.json", platform)
         self.seal()
         with self.assertRaisesRegex(ValueError, "binding"):
+            release.verify(self.assets)
+
+    def test_missing_configuration_package_is_rejected(self):
+        self.create_assets()
+        next(self.assets.glob('aiden-system-config_*.deb')).unlink()
+        self.seal()
+        with self.assertRaisesRegex(ValueError, "inventory"):
             release.verify(self.assets)
 
     def test_signed_ota_and_corrupted_signature(self):

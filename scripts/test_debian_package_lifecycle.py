@@ -75,6 +75,9 @@ elif action != 'daemon-reload':
         detector = self.bin / 'systemd-detect-virt'
         detector.write_text('#!/bin/sh\n[ "${MOCK_CHROOT:-0}" = 1 ]\n')
         detector.chmod(0o755)
+        query = self.bin / 'dpkg-query'
+        query.write_text('#!/bin/sh\nprintf "install ok installed %s" "${MOCK_PEER_VERSION:-0.0.1-2}"\n')
+        query.chmod(0o755)
 
     def set_states(self, states):
         self.state.write_text(json.dumps(states))
@@ -164,6 +167,17 @@ elif action != 'daemon-reload':
         self.assertTrue(self.transaction.exists())
         self.assertEqual(self.states()[WATCHER], 'inactive')
         del self.env['MOCK_FAIL']
+        self.run_phase('postinst', 'configure')
+        self.assertEqual(self.states(), before)
+
+    def test_mismatched_peer_keeps_services_stopped_until_retry(self):
+        before = self.states()
+        self.run_phase('preinst', 'upgrade')
+        self.env['MOCK_PEER_VERSION'] = '0.0.0-1'
+        self.run_phase('postinst', 'configure')
+        self.assertTrue(self.transaction.exists())
+        self.assertTrue(all(value == 'inactive' for value in self.states().values()))
+        del self.env['MOCK_PEER_VERSION']
         self.run_phase('postinst', 'configure')
         self.assertEqual(self.states(), before)
 

@@ -30,7 +30,9 @@ def declaration():
     return value
 
 
-def package_manifest():
+def package_manifest(package="aiden-business"):
+    if package not in ("aiden-business", "aiden-system-config"):
+        raise ValueError("Unknown Aiden package")
     platform = declaration()
     version = os.environ["AIDEN_BUSINESS_VERSION"]
     revision = os.environ["AIDEN_BUSINESS_REVISION"]
@@ -41,13 +43,18 @@ def package_manifest():
     major = int(platform["platform_contract"].split(".")[0])
     manifest = {
         "format": 1, "product": "aiden", "artifact_kind": "debian-package",
-        "package": "aiden-business", "business_release": version, "package_revision": revision,
-        "architecture": "armhf", "required_platform_contract": {
+        "package": package, "business_release": version, "package_revision": revision,
+        "architecture": "all" if package == "aiden-system-config" else "armhf", "required_platform_contract": {
             "min": platform["platform_contract"], "max_exclusive": f"{major + 1}.0.0"},
         "config_schema": {"min_supported": 3, "target": 4}, "business_epoch": 1,
     }
     if "channel" in platform:
         manifest["platform"] = platform
+    manifest["package_set"] = 2
+    manifest["paired_package"] = {
+        "name": "aiden-system-config" if package == "aiden-business" else "aiden-business",
+        "version": f"{version}-{revision}",
+    }
     return manifest
 
 
@@ -55,6 +62,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("platform", "package", "preinst-check"))
     parser.add_argument("output", type=Path)
+    parser.add_argument("--package", choices=("aiden-business", "aiden-system-config"), default="aiden-business")
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.action == "preinst-check":
@@ -75,12 +83,12 @@ def main():
             "    for key, value in expected.items():\n"
             "        if actual.get(key) != value: raise ValueError(f'{key}: expected {value}, got {actual.get(key)}')\n"
             "except (OSError, ValueError) as error:\n"
-            "    sys.exit(f'aiden-business: incompatible platform; install the matching channel OTA first: {error}')\n"
+            f"    sys.exit(f'{args.package}: incompatible platform; install the matching channel OTA first: {{error}}')\n"
             "AIDEN_CONTRACT_CHECK\n"
             '    ;;\n  esac\nfi\n'
         )
     else:
-        value = declaration() if args.action == "platform" else package_manifest()
+        value = declaration() if args.action == "platform" else package_manifest(args.package)
         args.output.write_text(json.dumps(value, indent=2) + "\n")
 
 

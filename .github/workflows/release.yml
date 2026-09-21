@@ -91,7 +91,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Test release decisions
-        run: python3 scripts/test_channel_release.py
+        run: |
+          python3 scripts/test_channel_release.py
+          python3 scripts/test_system_config_package.py
       - name: Plan release
         id: plan
         env:
@@ -134,7 +136,7 @@ jobs:
             .cache/debian-apps
           key: business-armhf-${{ runner.os }}-${{ hashFiles('src/agent/go.sum', 'scripts/debian-apps/Dockerfile', 'scripts/debian-apps/*patch') }}
           restore-keys: business-armhf-${{ runner.os }}-
-      - name: Build and verify business release
+      - name: Build and verify paired business and configuration packages
         env:
           RK_JOBS: '4'
         run: python3 scripts/release/release.py build --plan output/release/plan.json

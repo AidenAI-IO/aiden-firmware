@@ -67,7 +67,7 @@ class RepositoryTests(unittest.TestCase):
         else:
             os.environ["GNUPGHOME"] = self.old_gpg
 
-    def release(self, version, channel="dev", kind="business", contract=None):
+    def release(self, version, channel="dev", kind="business", contract=None, paired=False):
         previous = next((r for r in reversed(self.history) if r["channel"] == channel), None)
         commit = hashlib.sha1(version.encode()).hexdigest()
         tag = f"{channel}-v{version}"
@@ -88,11 +88,16 @@ class RepositoryTests(unittest.TestCase):
         major = int(platform["contract"].split(".")[0])
         manifest = {"business_release": version, "package_revision": "1", "platform": declaration,
                     "required_platform_contract": {"min": f"{major}.0.0", "max_exclusive": f"{major+1}.0.0"}}
+        if paired:
+            record["package_set"] = 2
+            manifest.update(package="aiden-business", architecture="armhf", package_set=2,
+                            paired_package={"name": "aiden-system-config", "version": version + "-1"})
         package_root = self.root / tag
         (package_root / "DEBIAN").mkdir(parents=True)
         (package_root / "DEBIAN/control").write_text(
             f"Package: aiden-business\nVersion: {version}-1\nArchitecture: armhf\n"
-            "Maintainer: Test <apt@example.test>\nDescription: business fixture\n")
+            "Maintainer: Test <apt@example.test>\nDescription: business fixture\n"
+            + (f"Depends: aiden-system-config (= {version}-1)\n" if paired else ""))
         document = package_root / "usr/share/doc/aiden-business/release-manifest.json"
         document.parent.mkdir(parents=True)
         document.write_text(json.dumps(manifest))
@@ -101,6 +106,20 @@ class RepositoryTests(unittest.TestCase):
         path = directory / f"aiden-business_{version}-1_armhf.deb"
         run("dpkg-deb", "--build", "--root-owner-group", str(package_root), str(path))
         record["assets"] = {path.name: {"size": path.stat().st_size, "sha256": repository.sha256(path)}}
+        if paired:
+            config_root = self.root / (tag + "-config")
+            (config_root / "DEBIAN").mkdir(parents=True)
+            (config_root / "DEBIAN/control").write_text(
+                f"Package: aiden-system-config\nVersion: {version}-1\nArchitecture: all\n"
+                f"Breaks: aiden-business (<< {version}-1), aiden-business (>> {version}-1)\n"
+                "Maintainer: Test <apt@example.test>\nDescription: config fixture\n")
+            document = config_root / "usr/share/doc/aiden-system-config/release-manifest.json"
+            document.parent.mkdir(parents=True)
+            document.write_text(json.dumps({**manifest, "package": "aiden-system-config", "architecture": "all",
+                                           "paired_package": {"name": "aiden-business", "version": version + "-1"}}))
+            path = directory / f"aiden-system-config_{version}-1_all.deb"
+            run("dpkg-deb", "--build", "--root-owner-group", str(config_root), str(path))
+            record["assets"][path.name] = {"size": path.stat().st_size, "sha256": repository.sha256(path)}
         self.history.append(record)
         return declaration
 
@@ -180,6 +199,39 @@ class RepositoryTests(unittest.TestCase):
             self.apt_fixture(device, url)
             self.apt("apt-get", "update")
             self.assertIn("Candidate: 0.0.2-1", self.apt("apt-cache", "policy", "aiden-business").stdout)
+
+    def test_apt_upgrade_selects_exact_pair_and_allows_paired_downgrade(self):
+        device = self.release("0.0.2", kind="ota", contract="1.0.0", paired=True)
+        self.release("0.0.3", paired=True)
+        self.build()
+        with self.serve() as url:
+            root = self.apt_fixture(device, url)
+            status = root / "var/lib/dpkg/status"
+            status.write_text(status.read_text().replace("Description: old business", "Depends: aiden-system-config (= 0.0.2-1)\nDescription: old business")
+                              + "\nPackage: aiden-system-config\nStatus: install ok installed\nArchitecture: all\nVersion: 0.0.2-1\n"
+                              "Breaks: aiden-business (<< 0.0.2-1), aiden-business (>> 0.0.2-1)\nDescription: old config\n")
+            self.apt("apt-get", "update")
+            result = self.apt("apt", "--simulate", "upgrade").stdout
+            self.assertIn("Inst aiden-system-config", result)
+            self.assertIn("Inst aiden-business", result)
+            self.assertNotIn("Remv ", result)
+            self.assertNotIn("Inst system-fixture", result)
+            status.write_text(status.read_text().replace("0.0.2-1", "0.0.3-1"))
+            down = self.apt("apt-get", "--simulate", "--allow-downgrades", "install",
+                            "aiden-business=0.0.2-1", "aiden-system-config=0.0.2-1").stdout
+            self.assertIn("Inst aiden-business", down)
+            self.assertIn("Inst aiden-system-config", down)
+            # An explicit incompatible pair is rejected before installing anything.
+            bad = self.apt("apt-get", "--simulate", "install", "aiden-business=0.0.3-1",
+                           "aiden-system-config=0.0.2-1", check=False)
+            self.assertNotEqual(bad.returncode, 0)
+
+    def test_missing_config_asset_cannot_be_indexed_as_half_a_release(self):
+        self.release("0.0.2", kind="ota", contract="1.0.0", paired=True)
+        del self.history[0]["assets"]["aiden-system-config_0.0.2-1_all.deb"]
+        with self.assertRaises(KeyError):
+            self.build()
+        self.assertFalse(self.site.exists())
 
     def test_tampered_indexes_are_rejected(self):
         device = self.release("0.0.2", kind="ota", contract="1.0.0")

@@ -17,6 +17,18 @@ live_systemd() {
     fi
 }
 
+# dpkg may configure the config dependency while the old business payload is
+# still present. Keep the shared snapshot until a compatible peer is configured.
+# The package currently running postinst is itself half-configured at this point.
+peer_ready() {
+    case "$package" in
+        aiden-business) peer=aiden-system-config ;;
+        aiden-system-config) peer=aiden-business ;;
+    esac
+    peer_state=$(dpkg-query -W -f='${Status} ${Version}' "$peer" 2>/dev/null) || return 1
+    [ "$peer_state" = "install ok installed $package_version" ]
+}
+
 # Use systemctl directly to also restore disabled units that the administrator
 # had started manually. deb-systemd-invoke start skips these after they stop.
 # Honor Debian's service policy before changing any unit in the transaction.
@@ -36,6 +48,10 @@ policy_allows() {
 
 restore_services() {
     [ -f "$state_dir/active" ] || return 0
+    if [ "${1:-}" != before-unpack ] && ! peer_ready; then
+        echo "$package: waiting for the matching $package_version package pair before restarting services" >&2
+        return 0
+    fi
     set --
     restore_watcher=0
     while IFS= read -r unit; do
@@ -86,7 +102,9 @@ stop_services() {
         esac
     done < "$state_dir/loaded"
     if [ "$#" -gt 0 ] && ! systemctl stop "$@"; then
-        restore_services || true
+        # No files have changed yet. Restore the pre-transaction services even
+        # when the new package version differs from the installed peer.
+        restore_services before-unpack || true
         return 1
     fi
     set --
@@ -94,7 +112,7 @@ stop_services() {
         case " $services " in *" $unit "*) set -- "$@" "$unit" ;; esac
     done < "$state_dir/loaded"
     if [ "$#" -gt 0 ] && ! systemctl stop "$@"; then
-        restore_services || true
+        restore_services before-unpack || true
         return 1
     fi
 }
@@ -105,12 +123,17 @@ case "$phase:${1:-}" in
         stop_services
         ;;
     postinst:configure|postinst:abort-upgrade|postinst:abort-remove|postinst:abort-deconfigure|postrm:abort-upgrade|postrm:abort-install)
+        if [ "$package:$phase:${1:-}" = aiden-system-config:postinst:configure ] && [ -z "${DPKG_ROOT:-}" ]; then
+            # Validate the installed conffile too: dpkg may have preserved an
+            # administrator's edit instead of using the packaged version.
+            visudo -c || exit 1
+        fi
         live_systemd || exit 0
         restore_services
         ;;
     postrm:remove|postrm:purge)
-        # Units belong to the platform. Leave them stopped when removing the
-        # business payload; never change enablement or remove user data.
+        # Leave services stopped when removing either half of the pair; never
+        # change enablement or remove user data.
         if [ -z "${DPKG_ROOT:-}" ]; then
             rm -rf "$state_dir"
             rmdir "$state_parent" 2>/dev/null || true

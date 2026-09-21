@@ -52,7 +52,7 @@ def notes(plan):
     if plan["kind"] == "ota":
         text += "Install the signed boot + rootfs OTA together, or flash update.img. This establishes a new base contract.\n\n"
     elif plan["kind"] == "business":
-        text += "Install the .deb with apt on the matching channel/base. Previously running services are stopped and restored by dpkg.\n\n"
+        text += "Upgrade aiden-business and aiden-system-config together with apt on the matching channel/base. The packages use the same exact version; services resume only after the compatible pair is configured.\n\n"
     else:
         text += "No runtime changes; no build, version allocation or publication.\n\n"
     text += "## Commits (up to 100)\n\n" + "\n".join(f"- {c}" for c in plan["commits"]) + "\n"
@@ -125,6 +125,10 @@ def verify(directory):
         raise ValueError("A no-change plan cannot be published")
     package = f"aiden-business_{record['version']}-1_armhf.deb"
     expected = {package, "release-manifest.json", "platform-contract.json", "RELEASE-NOTES.md"}
+    paired = record.get("package_set", 1) == 2
+    config_package = f"aiden-system-config_{record['version']}-1_all.deb"
+    if paired:
+        expected |= {config_package, "system-config-manifest.json"}
     if record["kind"] == "ota":
         expected |= IMAGE_ASSETS
     if set(record["assets"]) != expected:
@@ -148,6 +152,12 @@ def verify(directory):
     if embedded != (directory / "release-manifest.json").read_bytes():
         raise ValueError("Package manifest differs from release asset")
     manifest = json.loads(embedded)
+    if paired:
+        business.verify_pair(package_path, directory / config_package, record["version"] + "-1")
+        if business.package_manifest(directory / config_package, "aiden-system-config") != (directory / "system-config-manifest.json").read_bytes():
+            raise ValueError("Configuration manifest differs from release asset")
+    elif manifest.get("package_set", 1) != 1:
+        raise ValueError("Paired package release is missing its configuration package")
     platform = read_json(directory / "platform-contract.json")
     major = int(record["platform"]["contract"].split(".")[0])
     if manifest["required_platform_contract"] != {"min": f"{major}.0.0", "max_exclusive": f"{major + 1}.0.0"}:
@@ -187,6 +197,11 @@ def stage(plan, destination):
     shutil.copyfile(source / package, destination / package)
     manifest = business.package_manifest(destination / package)
     (destination / "release-manifest.json").write_bytes(manifest)
+    if plan.get("package_set", 1) == 2:
+        config_package = f"aiden-system-config_{plan['version']}-1_all.deb"
+        shutil.copyfile(source / config_package, destination / config_package)
+        (destination / "system-config-manifest.json").write_bytes(
+            business.package_manifest(destination / config_package, "aiden-system-config"))
     write_json(destination / "platform-contract.json", json.loads(manifest)["platform"])
     if plan["kind"] == "ota":
         if "Audit passed" not in (source / "audit-report.txt").read_text().splitlines():
