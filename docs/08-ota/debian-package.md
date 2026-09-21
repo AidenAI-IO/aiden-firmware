@@ -153,7 +153,8 @@ sudo apt install --reinstall ./aiden-business_0.0.1-2_armhf.deb
 
 制作 rootfs 时的 chroot、`SYSTEMD_OFFLINE=1`、非空 `DPKG_ROOT` 和无 systemd 环境
 跳过服务操作，并遵守 `policy-rc.d`。首次安装时没有运行的业务不会自动启动，镜像首次
-开机仍由基座的 systemd units 启动。移除包会停服，保留基座 units 和用户数据。
+开机由镜像中安装的 systemd units 启动。移除包会停服；conffile 按 dpkg 规则保留，
+辅助脚本被移除，用户数据不删除。
 
 服务快照保存在 `/var/lib/aiden-business/service-transition/`。dpkg 的 abort 回调会尝试
 恢复先前服务；恢复失败时保留快照且维护脚本返回失败，可修复原因后执行
@@ -164,5 +165,5 @@ self-check，失败时根据备份恢复旧包。托管包由 preinst 自动核�
 从此前测试包 `5.2.1-2` 重新编号到 `0.0.1-2` 属于一次明确降级；自动安装时额外使用
 `apt install -y --allow-downgrades ./aiden-business_0.0.1-2_armhf.deb`。
 业务包只修改当前活动 rootfs，B 槽不会同步升级，也不更新固件 OTA 的出厂版本记录。
-`/etc/default/locale` 的 `LANG=C.UTF-8` 和平台契约文件属于基座，随下一次完整镜像提供；
-现有测试板可单独部署这两个声明文件。
+`/etc/default/locale` 的 `LANG=C.UTF-8` 现在由业务包管理，下一次登录生效；平台契约
+文件仍属于基座。首次配置接管必须建立新 OTA 基线，不能仅手动修改契约文件。

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Real single-package config upgrades in a disposable Debian container."""
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
@@ -9,7 +8,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -17,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/debian-package"))
 import system_config
 import test_debian_package_lifecycle as lifecycle
-from test_debian_package_lifecycle import UNITS, WATCHER, RESTART, TTYD
+from test_debian_package_lifecycle import UNITS, RESTART, TTYD
 
 spec = importlib.util.spec_from_file_location("standalone_release", ROOT / "scripts/debian-package/release.py")
 standalone_release = importlib.util.module_from_spec(spec)
@@ -154,6 +152,15 @@ class RuntimeConfigTests(unittest.TestCase):
         self.dpkg("-i", self.package("0.0.4"))
         self.assertEqual(self.changes(), [])
         self.assertIn("local override", local.read_text())
+
+    def test_deferred_helper_permission_change_requires_reboot(self):
+        path = "usr/lib/aiden/aiden-new-helper"
+        self.change(path, "#!/bin/sh\nexit 0\n")
+        self.dpkg("-i", self.package("0.0.2"))
+        self.boot()
+        (self.source / "overlay-debian" / path).chmod(0o755)
+        self.dpkg("-i", self.package("0.0.3"))
+        self.assertEqual(self.changes(), [path])
 
     def test_configure_failure_keeps_services_stopped_until_retry(self):
         self.dpkg("-i", self.package("0.0.2"))

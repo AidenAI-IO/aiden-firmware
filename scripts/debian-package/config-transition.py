@@ -26,7 +26,8 @@ def digest(path):
         return "symlink:" + os.readlink(target)
     if not target.exists():
         return None
-    return hashlib.sha256(target.read_bytes()).hexdigest()
+    return {"sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            "mode": target.stat().st_mode & 0o7777}
 
 
 def snapshot(state):

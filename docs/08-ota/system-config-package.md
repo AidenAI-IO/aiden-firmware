@@ -52,7 +52,7 @@ APT 源及公钥、OTA 信任根、EDID、VQE 基础配置也继续归平台。
   改名时，应在该版本增加可回滚的 `dpkg-maintscript-helper` 迁移，并测试升降级，不能
   把“从清单消失”当作删除管理员配置。
 
-`preinst/prerm` 保存原先运行的业务服务并停止它们，同时记录安装前的实际配置哈希。
+`preinst/prerm` 保存原先运行的业务服务并停止它们，同时记录安装前的实际配置哈希和权限。
 `postinst` 检查实际 sudo 配置、应用 Aiden tmpfiles、daemon-reload，然后恢复原先运行
 的业务服务，最后恢复代理重启监听器。原先停止的业务服务不会主动启动。
 校验或启动失败保留恢复记录；修复后执行 `sudo dpkg --configure -a` 可继续。
@@ -61,7 +61,7 @@ APT 源及公钥、OTA 信任根、EDID、VQE 基础配置也继续归平台。
 规则中的 `live` 表示不要求整机重启：业务配置随业务服务恢复生效，终端 profile 和
 locale 在下一次登录/新建终端时生效。其余范围内文件默认要求稍后重启，包括新加入
 且尚未审核为 live 的配置。APT 不自动重启 SSH、systemd-networkd、USB 或整机。
-只有实际安装后的延迟生效文件内容发生变化，才写入：
+只有实际安装后的延迟生效文件内容或权限发生变化，才写入：
 
 ```text
 /run/reboot-required
