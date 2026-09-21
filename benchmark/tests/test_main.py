@@ -9,6 +9,7 @@ from runner.agent_client import ToolInvokeResult
 from runner.analysis import AnalysisResult
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 import runner.main as main
+import runner.langfuse_reporter as langfuse_reporter
 import runner.preflight as preflight_module
 import runner.suite as suite_module
 import runner.webui as webui
@@ -23,6 +24,33 @@ class FakeClockClient:
         self.calls.append((name, args))
         year = self.years.pop(0)
         return ToolInvokeResult(output=f"{year}\n", is_error=False, duration_ms=1)
+
+
+def test_publish_langfuse_cli_reports_experiment_url(monkeypatch, capsys):
+    published = langfuse_reporter.PublishResult(
+        dataset_name="aiden-benchmark:memory_v1",
+        run_name="ci-123",
+        dataset_run_id="run-1",
+        dataset_run_url="http://langfuse.local/run-1",
+        item_count=15,
+    )
+    monkeypatch.setattr(langfuse_reporter, "publish_run", lambda *args, **kwargs: published)
+
+    assert main.cli(["publish-langfuse", "--run-dir", "runs/ci-123"]) == 0
+
+    output = capsys.readouterr().out
+    assert "dataset=aiden-benchmark:memory_v1" in output
+    assert "View experiment: http://langfuse.local/run-1" in output
+
+
+def test_publish_langfuse_cli_returns_failure(monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise langfuse_reporter.LangfusePublishError("score storage unavailable")
+
+    monkeypatch.setattr(langfuse_reporter, "publish_run", fail)
+
+    assert main.cli(["publish-langfuse", "--run-dir", "runs/ci-123"]) == 2
+    assert "score storage unavailable" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("target_platform", ["windows", "linux"])
@@ -409,7 +437,7 @@ def test_log_task_result_shows_details_in_verbose_mode(capsys):
     assert "Rubric Details" in out
 
 
-def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
+def test_run_manifest_records_agent_model(monkeypatch, tmp_path, capsys):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
         json.dumps(
@@ -420,6 +448,7 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
         ),
         encoding="utf-8",
     )
+    original_suite = suite_path.read_bytes()
 
     class FakeClient:
         def __init__(self, base_url, benchmark_token=""):
@@ -427,6 +456,7 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
             self.benchmark_token = benchmark_token
 
         def health(self):
+            suite_path.write_text('{"name":"changed","tasks":[]}', encoding="utf-8")
             return True
 
         def device_type(self):
@@ -447,6 +477,8 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
             str(suite_path),
             "--out",
             str(tmp_path / "runs"),
+            "--run-id",
+            "snapshot-run",
             "--agent-model",
             "qwen3.6-35b",
             "--no-judge",
@@ -458,6 +490,67 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["agent_model"] == "qwen3.6-35b"
     assert manifest["judge_config"] is None
+    assert manifest["suite_snapshot_path"] == "suite.json"
+    assert (manifest_path.parent / "suite.json").read_bytes() == original_suite
+
+    assert main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "snapshot-run",
+            "--no-judge",
+        ]
+    ) == 2
+    assert "run directory already exists" in capsys.readouterr().err
+
+
+def test_unreachable_agent_does_not_reserve_run_directory(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "health_failure_suite",
+                "tasks": [
+                    {
+                        "id": "task-a",
+                        "category": "diagnostic",
+                        "prompt": "test",
+                        "description_for_judge": "test",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class UnreachableClient:
+        def health(self):
+            return False
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "_new_agent_client", lambda *args, **kwargs: UnreachableClient())
+    run_dir = tmp_path / "runs" / "retryable-run"
+
+    assert main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "retryable-run",
+            "--no-judge",
+        ]
+    ) == 2
+    assert not run_dir.exists()
 
 
 def test_run_cli_defaults_use_benchmark_agent_and_judge_model_environment(monkeypatch):
