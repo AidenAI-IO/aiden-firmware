@@ -100,6 +100,9 @@ func testSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T, touchscreen
 				t.Fatal("main movement lacks acceleration/braking")
 			}
 			tailStart := held[24]
+			if duration := tailStart.at.Sub(held[0].at); duration < 180*time.Millisecond {
+				t.Fatalf("main motion duration %v, want at least 180ms before the slow tail", duration)
+			}
 			x, y = position(tailStart)
 			distance := math.Hypot(float64(wantX-x), float64(wantY-y)) * 1000 / absMouseMaxPos
 			if distance <= 0 || distance > 2.1 {
@@ -118,6 +121,35 @@ func testSwipeReleaseHasRealSlowMotionAndExactEndpoint(t *testing.T, touchscreen
 					t.Fatal("swipe reversed or overshot")
 				}
 				previousX, previousY = x, y
+			}
+		})
+	}
+}
+
+func TestControlledSwipeMotionPreservesDurationAcrossSegments(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		durationMs int
+		steps      int
+	}{
+		{"single step per segment", 181, 1},
+		{"fractional intervals", 283, 24},
+		{"sub-millisecond intervals", 181, 1000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &releaseCaptureDevice{}
+			p := NewHIDProvider(d, nil, nil, nil, true, "qwerty", nil)
+			path := [][2]int{{1000, 1000}, {2000, 1000}, {2000, 1000}, {2000, 3000}, {6000, 3000}}
+			started := time.Now()
+			x, y, err := p.moveAlongPathWithSteps(context.Background(), path, 1, tc.durationMs, tc.steps, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if x != 6000 || y != 3000 || len(d.samples) == 0 {
+				t.Fatalf("main motion did not reach endpoint: (%d, %d)", x, y)
+			}
+			if elapsed := d.samples[len(d.samples)-1].at.Sub(started); elapsed < time.Duration(tc.durationMs)*time.Millisecond {
+				t.Fatalf("main motion duration %v, want at least %dms", elapsed, tc.durationMs)
 			}
 		})
 	}

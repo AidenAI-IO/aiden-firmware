@@ -617,6 +617,9 @@ func (p *HIDProvider) moveAlongPathWithSteps(ctx context.Context, absPath [][2]i
 	if totalLength == 0 {
 		return lastX, lastY, ctx.Err()
 	}
+	motionStarted := time.Now()
+	motionDuration := time.Duration(durationMs) * time.Millisecond
+	completedLength := 0.0
 
 	// Distribute steps proportionally across segments
 	for i := 1; i < len(absPath); i++ {
@@ -645,6 +648,18 @@ func (p *HIDProvider) moveAlongPathWithSteps(ctx context.Context, absPath [][2]i
 				return lastX, lastY, err
 			}
 			progress := float64(step) / float64(segmentSteps)
+			if smoothRelease {
+				// Schedule every movement interval against one clock, including
+				// the first step and segment boundaries, without rounding to ms.
+				fraction := (completedLength + segmentLength*progress) / totalLength
+				due := time.Duration(float64(motionDuration) * fraction)
+				if i == len(absPath)-1 && step == segmentSteps {
+					due = motionDuration
+				}
+				if err := waitForContext(ctx, time.Until(motionStarted.Add(due))); err != nil {
+					return lastX, lastY, err
+				}
+			}
 			if smoothRelease && i == len(absPath)-1 {
 				// Quintic smoothstep: gently accelerate and brake; zero velocity
 				// and acceleration at the ends of the main movement.
@@ -658,12 +673,13 @@ func (p *HIDProvider) moveAlongPathWithSteps(ctx context.Context, absPath [][2]i
 			}
 			lastX, lastY = x, y
 
-			if step < segmentSteps && stepDelayMs > 0 {
+			if !smoothRelease && step < segmentSteps && stepDelayMs > 0 {
 				if err := waitForContext(ctx, time.Duration(stepDelayMs)*time.Millisecond); err != nil {
 					return lastX, lastY, err
 				}
 			}
 		}
+		completedLength += segmentLength
 	}
 
 	return lastX, lastY, nil
