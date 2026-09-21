@@ -91,7 +91,8 @@ separate from `[voice_settings.classic.stt].language`, which only configures spe
 | Category changed by this implementation | Application boundary |
 | --- | --- |
 | Ordinary settings: locale/prompts, iteration and context limits, screenshot retention, telemetry, log retention, notifications, Live Activity, quick-capture TTL | Published online for subsequent tasks/operations; shared managers keep their identity |
-| Components: input mode, selected models/provider credentials, STT/TTS/realtime voice, audio/VAD, HID clients, capture backend, search, quick-capture GPIO, storage policies | Drain affected work, prepare replacements, and switch components without restarting Agent; HTTP and Phone Bridge remain alive |
+| Model Settings: ordinary model/provider, credentials, endpoint, and model options | Wait for the current Agent task to finish, then replace the model client; subsequent tasks use the new settings even while a voice session remains open |
+| Components: input mode, STT/TTS/realtime voice and their provider credentials, audio/VAD, HID clients, capture backend, search, quick-capture GPIO, storage policies | Drain affected work, prepare replacements, and switch components without restarting Agent; HTTP and Phone Bridge remain alive |
 | `frame_service.keep_streamon` | Restart only `frame_service`, wait for its listening socket, then queue the Agent snapshot; capture is briefly unavailable |
 
 Existing exceptions remain: Android/non-Android USB pointer descriptor changes
@@ -101,7 +102,8 @@ that explicit action restarts Agent. Deployment
 of a new binary still requires restarting Agent and Config Web; that is separate
 from changing runtime settings.
 
-Voice/model changes wait for the current voice session. Failed replacements
+Voice component changes wait for the current voice session. Ordinary model
+changes do not restart or drain the voice loop. Failed replacements
 retain the previous runtime configuration and drained dialog. A held drag must
 be released before HID component replacement can succeed. Old model requests
 and TTS sessions retain their current provider until completion. Prompt/provider

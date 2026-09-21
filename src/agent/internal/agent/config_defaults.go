@@ -121,9 +121,10 @@ func DefaultConfig() Config {
 		Model: ModelConfig{
 			Provider: defaultModelProvider,
 			Model:    defaultModelName,
-			// Temperature is intentionally left unset here; the effective default
-			// is resolved from model metadata at load time (see
-			// applyModelTemperatureDefault), falling back to defaultModelTemperature.
+			// Temperature is intentionally left unset here; the effective value is
+			// resolved at load time (see applyModelTemperatureDefault). Native
+			// Gemini models without a known default stay unset; other models fall
+			// back to defaultModelTemperature.
 			MaxResponseTokens: defaultModelMaxResponseTokens,
 			LogRawHTTP:        defaultModelLogRawHTTP,
 			ReasoningEffort:   defaultModelReasoningEffort,

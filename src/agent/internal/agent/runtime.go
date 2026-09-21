@@ -980,12 +980,13 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	turnInput := canonicalTurnInputFromRunRequest(req)
 	preRunEvents := cloneTaskEpisodeEvents(turnInput.TelemetryEvents)
 	normalizedInput := turnInput.InputText
+	cfg := r.ConfigSnapshot()
 	if r.waitForWakeup != nil {
 		r.waitForWakeup.Consume()
 	}
 
 	if r.logger != nil {
-		r.logger.Info("Starting agent run: input=%q modality=%s attachments=%d", normalizedInput, turnInput.Modality, len(turnInput.Attachments))
+		r.logger.Info("Starting agent run: input=%q modality=%s attachments=%d provider=%s model=%s", normalizedInput, turnInput.Modality, len(turnInput.Attachments), cfg.Model.Provider, cfg.Model.Model)
 	}
 
 	if normalizedInput == "" {
@@ -1115,7 +1116,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		episodeID = episodeRecorder.ID()
 	}
 
-	cfg := r.ConfigSnapshot()
 	maxIterations := effectiveMaxIterations(cfg.MaxIterations)
 
 	// Record tool count in metrics for observability
