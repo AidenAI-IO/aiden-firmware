@@ -13,18 +13,18 @@ SDK gitlink 提交。草稿、失败构建和 workflow artifact 不推进基线�
 | 对比结果 | 构建和发布 | 基础契约 |
 | --- | --- | --- |
 | 本通道首次发布 | 完整 OTA、刷机镜像及配套 `.deb` | 分配新的契约 |
-| 只有业务或配置包清单内文件变动 | 同版本业务、配置两个 `.deb` | 继承本通道最近 OTA 的契约和底座标识 |
+| 只有业务或管理范围内配置变动（包括新增文件） | `.deb` | 继承本通道最近 OTA 的契约和底座标识 |
 | 系统变动或业务与系统混合变动 | 完整 OTA、刷机镜像及配套 `.deb` | 分配新的契约 |
 | 只有文档、测试或没有变动 | 不构建、不发布 | 不变 |
 | 勾选 `force_ota` | 完整 OTA，即使源码未变 | 分配新的契约 |
 
-规则在 `scripts/release/policy.json`，按 ignore、system、business 顺序匹配。
+先按 `scripts/debian-system/config-package.json` 将管理范围内的 overlay 分类为
+`config`（指纹计入 business），再按 `scripts/release/policy.json` 的 ignore、system、business
+顺序匹配。首次配置接管强制新 OTA；此后范围内新增文件无需扩大契约。详见
+[业务包管理运行配置](system-config-package.md)。
 `src/` 和 `assets/business/` 通常属于业务；OTA 实现、Go 依赖声明、CMake 文件、
-工厂 Agent 配置属于系统。overlay、SDK、内核、分区、基础依赖、构建与发布脚本等
+工厂 Agent 配置属于系统。范围外的 overlay、SDK、内核、分区、基础依赖、构建与发布脚本等
 未列入业务范围的文件默认属于系统。业务技能的 `SKILL.md` 属于业务资源。
-例外是 `scripts/debian-system/config-package.json` 明确列出的 overlay 文件：其内容变化
-分类为 `config`，参与包发布指纹；清单本身变更仍属于系统。两个包的依赖、服务协调和
-首次启用所需的新 OTA 见 [系统配置包](system-config-package.md)。
 删除和重命名也参与比较。源码必须包含本通道前一次发布提交，拒绝倒退或分叉发布。
 
 外部 Debian 仓库、签名密钥、Actions secret 和浮动下载内容不在 Git 比较范围内。
@@ -54,7 +54,9 @@ SDK gitlink 提交。草稿、失败构建和 workflow artifact 不推进基线�
 安装托管业务包时，`preinst` 在解包前核对平台、契约、通道、底座标签和源码指纹；
 不匹配则退出，要求先安装匹配的 OTA。dpkg 原有服务停止、恢复及失败回调逻辑保留。
 初始 rootfs 安装 `.deb` 前先放入契约，最终镜像审计再次核对契约。
-契约是兼容性标识，不代替签名；当前配套 `.deb` 不内含平台库、systemd unit 或分区变更。
+契约是兼容性标识，不代替签名；`.deb` 包含管理范围内的配置和 systemd unit，
+不内含平台库或分区镜像。平台契约、业务 manifest 和发布记录以 `runtime_config: 1`
+声明配置归属；旧记录缺少该字段按 0 处理。
 
 ## Actions 操作
 
@@ -135,5 +137,5 @@ dev/staging 是 prerelease。只有 prod 的 OTA 可以更新 GitHub Latest；pr
 继续使用旧 Latest 入口；旧设备需要先强刷本通道的新基础镜像，才能获得通道选择。
 
 正式发布后自动刷新 GitHub Pages 上的签名 APT 源。设备运行 `apt update && apt upgrade`
-即可升级本通道、当前基础契约内的业务与配置配套包；平台更新继续走 A/B OTA。首次配置、签名
+即可升级本通道、当前基础契约内的业务包；系统更新继续走 A/B OTA。首次配置、签名
 密钥、系统包 pin 和索引维护见 [GitHub APT 软件源](apt-repository.md)。

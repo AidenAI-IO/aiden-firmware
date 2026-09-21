@@ -1,4 +1,4 @@
-name: Debian Business and Config Packages (artifacts only)
+name: Debian Business Package (artifacts only)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
             .cache/debian-apps
           key: business-armhf-${{ runner.os }}-${{ hashFiles('src/agent/go.sum', 'scripts/debian-apps/Dockerfile', 'scripts/debian-apps/*patch') }}
           restore-keys: business-armhf-${{ runner.os }}-
-      - name: Build business and configuration packages
+      - name: Build business package with runtime configuration
         env:
           RK_JOBS: '4'
         run: scripts/debian-package/release.sh build

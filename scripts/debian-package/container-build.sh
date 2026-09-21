@@ -26,8 +26,8 @@ Section: misc
 Priority: optional
 Architecture: armhf
 Maintainer: Aiden AI <firmware@aiden.ai>
-Pre-Depends: python3-minimal
-Depends: libc6, systemd, aiden-system-config (= ${PACKAGE_VERSION})
+Pre-Depends: python3
+Depends: libc6, systemd, sudo
 Description: Aiden business runtime
  Agent, hardware services, configuration web assets, bundled skills and runtime models.
 CTL
@@ -37,12 +37,10 @@ python3 "${REPO_ROOT}/scripts/release/contract.py" package \
 find "${PKG_ROOT}" -type d -exec chmod 0755 {} +
 find "${PKG_ROOT}" -type f ! -path '*/DEBIAN/*' -exec chmod 0644 {} +
 for binary in agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd; do chmod 0755 "${PKG_ROOT}/usr/lib/aiden/${binary}"; done
+python3 "${REPO_ROOT}/scripts/debian-package/system_config.py" stage "${PKG_ROOT}"
 dpkg-deb --build --root-owner-group "${PKG_ROOT}" "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb"
 dpkg-deb --info "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" >"${OUTPUT_DIR}/${PACKAGE_NAME}.deb.info"
 dpkg-deb --contents "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" >"${OUTPUT_DIR}/${PACKAGE_NAME}.deb.contents"
-python3 "${REPO_ROOT}/scripts/debian-package/system_config.py" build "${OUTPUT_DIR}"
 chown "${HOST_UID:-0}:${HOST_GID:-0}" \
-    "${OUTPUT_DIR}/aiden-system-config_${PACKAGE_VERSION}_all.deb" \
-    "${OUTPUT_DIR}/aiden-system-config.deb" \
     "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" \
     "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.info" "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.contents"

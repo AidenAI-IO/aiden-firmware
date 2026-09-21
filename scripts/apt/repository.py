@@ -43,9 +43,8 @@ def select_records(records, repo, keep=3):
     return {suite: items[-keep:] for suite, items in sorted(suites.items())}
 
 
-def fetch_package(record, cache, package_name="aiden-business"):
-    architecture = "all" if package_name == "aiden-system-config" else "armhf"
-    name = f"{package_name}_{record['version']}-1_{architecture}.deb"
+def fetch_package(record, cache):
+    name = f"aiden-business_{record['version']}-1_armhf.deb"
     expected = record["assets"][name]
     directory = cache / record["tag"]
     directory.mkdir(parents=True, exist_ok=True)
@@ -67,19 +66,19 @@ def verify_asset(path, expected):
         raise ValueError(f"Published package checksum/size mismatch: {path.name}")
 
 
-def package_control(package, record, package_name="aiden-business"):
+def package_control(package, record):
     control = command("dpkg-deb", "--field", str(package))
     fields = Parser().parsestr(control)
-    architecture = "all" if package_name == "aiden-system-config" else "armhf"
-    for field, expected in (("Package", package_name), ("Version", record["version"] + "-1"),
-                            ("Architecture", architecture)):
+    for field, expected in (("Package", "aiden-business"), ("Version", record["version"] + "-1"),
+                            ("Architecture", "armhf")):
         if fields.get_all(field) != [expected]:
             raise ValueError(f"Published package {field} differs from release record")
     if any(field in fields for field in ("Filename", "Size", "SHA256", "SHA512")):
         raise ValueError("Package control must not supply repository checksums/paths")
-    manifest = json.loads(business.package_manifest(package, package_name))
-    if manifest.get("package_set", 1) != record.get("package_set", 1):
-        raise ValueError("Published package set differs from release record")
+    manifest = json.loads(business.package_manifest(package))
+    if manifest.get("runtime_config", 0) != record.get("runtime_config", 0):
+        raise ValueError("Runtime configuration ownership differs from release record")
+    business.verify_runtime_config(package, record.get("runtime_config", 0))
     platform = manifest.get("platform", {})
     expected_platform = {
         "format": 1, "product": "aiden", "platform_id": "luckfox-rv1106", "architecture": "armhf",
@@ -88,6 +87,8 @@ def package_control(package, record, package_name="aiden-business"):
         "base_release": record["platform"]["base_release"],
         "system_fingerprint": record["fingerprints"]["system"],
     }
+    if record.get("runtime_config", 0):
+        expected_platform["runtime_config"] = record["runtime_config"]
     major = int(record["platform"]["contract"].split(".")[0])
     if (platform != expected_platform or manifest.get("business_release") != record["version"]
             or manifest.get("package_revision") != "1"
@@ -158,17 +159,13 @@ def build_site(records, repo, output, cache, public_key=PUBLIC_KEY, keep=3, now=
         for suite, items in suites.items():
             packages = []
             for record in sorted(items, key=lambda r: version_tuple(r["version"]), reverse=True):
-                downloaded = {"aiden-business": fetch_package(record, cache)}
-                if record.get("package_set", 1) == 2:
-                    downloaded["aiden-system-config"] = fetch_package(record, cache, "aiden-system-config")
-                    business.verify_pair(downloaded["aiden-business"], downloaded["aiden-system-config"], record["version"] + "-1")
-                for name, package in downloaded.items():
-                    control = package_control(package, record, name)
-                    relative = Path("pool") / suite / record["tag"] / package.name
-                    destination = apt / relative
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(package, destination)
-                    packages.append(control + f"Filename: {relative.as_posix()}\nSize: {package.stat().st_size}\nSHA256: {sha256(package)}\n")
+                package = fetch_package(record, cache)
+                control = package_control(package, record)
+                relative = Path("pool") / suite / record["tag"] / package.name
+                destination = apt / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(package, destination)
+                packages.append(control + f"Filename: {relative.as_posix()}\nSize: {package.stat().st_size}\nSHA256: {sha256(package)}\n")
             write_suite(apt / "dists" / suite, packages, items, now, key, keyring)
             published[suite] = [r["tag"] for r in items]
         shutil.copyfile(public_key, apt / "aiden-archive-keyring.asc")
@@ -176,7 +173,7 @@ def build_site(records, repo, output, cache, public_key=PUBLIC_KEY, keep=3, now=
         (apt / "repository.json").write_text(json.dumps({"repo": repo, "signing_key": key, "suites": published}, indent=2) + "\n")
         links = "".join(f'<li><a href="apt/dists/{suite}/Release">{suite}</a>: {html.escape(", ".join(tags))}</li>' for suite, tags in published.items())
         (site / "index.html").write_text('<!doctype html><html lang="en"><meta charset="utf-8"><title>Aiden APT</title>'
-                                       '<h1>Aiden packages</h1><p>Paired business and system configuration updates for each channel and platform contract.</p>'
+                                       '<h1>Aiden business packages</h1><p>Signed updates for each channel and platform contract.</p>'
                                        f'<ul>{links}</ul><p>Signing key: <code>{key}</code></p>'
                                        '<a href="apt/aiden-archive-keyring.asc">Repository public key</a></html>\n')
         if sum(p.stat().st_size for p in site.rglob("*") if p.is_file()) > PAGES_LIMIT:

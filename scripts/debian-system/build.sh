@@ -158,7 +158,6 @@ run_rootfs_container() {
 
     if [ "${script}" = scripts/debian-system/container-build-rootfs.sh ]; then
         platform_args=(-v "${OTA_PUBLIC_KEY_PATH}:/run/secrets/ota_pubkey.pem:ro"
-            -v "${OUTPUT_DIR}/aiden-system-config.deb:/aiden-system-config.deb:ro"
             -v "${OUTPUT_DIR}/aiden-business.deb:/aiden-business.deb:ro")
     fi
     docker run --rm --privileged \

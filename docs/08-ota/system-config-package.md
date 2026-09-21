@@ -1,115 +1,113 @@
-# 系统配置包与业务包
+# 业务包管理运行配置
 
-`aiden-system-config` 管理经过审核、可在当前基础契约内热更新的系统集成文件。
-`aiden-business` 管理程序和资源。二者使用同一发布版本，APT 一起升级，内核、驱动、
-分区、系统库、启动底座和平台契约继续通过完整 A/B OTA 更新。
+运行配置直接进入 `aiden-business`，不另发 `aiden-system-config`。每个版本只有一个
+`.deb`，程序、资源、配置和维护脚本一起升级或降级。配置即使只有几行，也可随业务包
+通过 APT 发布；是否需要重启与是否需要 OTA 是两个独立判断。
 
-## 文件归属
+## 一次定义范围，后续自动纳入新文件
 
-唯一配置文件清单是 `scripts/debian-system/config-package.json`。首批包含：
+`scripts/debian-system/config-package.json` 定义包与平台的边界，采用命名空间规则和
+平台排除项，不是逐个文件的白名单。`scripts/debian-package/system_config.py` 从
+`overlay-debian/` 自动生成本版本的实际文件清单，并供打包、rootfs 排除复制和镜像审计
+共同使用；发布分类使用同一规则。
 
-| 文件 | 权限 | 用途 |
-| --- | --- | --- |
-| `/etc/profile.d/aiden-env.sh` | 0644 | 登录终端的受管理环境 |
-| `/etc/sudoers.d/20-aiden-proxy` | 0440 | sudo 保留代理变量 |
-| `/usr/lib/aiden/aiden-managed-env-run` | 0755 | 业务服务的环境加载 |
+| 纳入业务包的范围 | 示例 / 用途 |
+| --- | --- |
+| `/etc/aiden/**`、`/etc/aiden_*.conf`、`/etc/default/aiden-*` | 新功能优先放入专属目录；兼容已有音频、BLE、启动、swap 配置 |
+| `/etc/default/locale` | 默认语言环境 |
+| `/etc/profile.d/aiden-*.sh`、`/etc/sudoers.d/*-aiden-*` | root/aiden 终端环境、sudo 代理保留规则 |
+| `/etc/ssh/sshd_config.d/*-aiden.conf` | Aiden SSH 设置 |
+| `/etc/systemd/system/aiden*.{service,path,timer}`、`aiden.target` | 业务和设备辅助服务，受平台排除项约束 |
+| `*.service.d/*-aiden.conf`、`*.device.d/*-aiden-optional.conf` | Aiden 服务与设备 drop-in |
+| `/etc/systemd/network/{20-wlan0,30-usb0}.network`、`*-aiden-*.network` | 网络配置 |
+| `/etc/dnsmasq.d/usb0.conf`、`aiden*.conf` | USB DHCP 设置 |
+| `/etc/systemd/journald.conf.d/*-aiden.conf` | 日志设置 |
+| `/etc/tmpfiles.d/aiden*.conf`、`/etc/udev/rules.d/*-aiden-*.rules` | 目录、设备权限规则 |
+| `/usr/lib/aiden/aiden-*` | Aiden 辅助脚本，受平台排除项约束 |
 
-文件所有者均为 root:root；`/etc` 下文件登记为 dpkg conffiles，保留管理员修改并遵循
-dpkg 的冲突处理，不强制覆盖。`/userdata`、密钥、`/run` 生成文件和平台契约不在包内。
-配置包是 `Architecture: all`，但其安装脚本和 manifest 仍检查 Luckfox armhf 平台绑定。
+例如以后新增 `overlay-debian/etc/aiden/camera.conf` 或
+`overlay-debian/usr/lib/aiden/aiden-new-helper`，无需改清单或契约，自动进入 `.deb`；
+新增服务应由 `aiden.target` 的依赖或已有服务依赖拉起。APT 不执行 `preset-all`，
+不会擅自改变管理员的启用状态。仅有 `[Install] WantedBy=` 不会自动启用新服务。
 
-清单同时驱动打包、发布分类、rootfs overlay 排除和镜像审计。rootfs 先安装两个包，
-再复制其余 overlay；配置包文件不能由 rsync 再覆盖。源码仍保留在 `overlay-debian`。
-不会把整个 overlay 自动划入配置包，也不会按目录通配接管未来新增文件。
+平台排除项包括 OTA、分区扩容/槽位、userdata 迁移、机器身份、SSH 身份、用户目录、
+环境准备、Wi-Fi 驱动、媒体模块等基础脚本和 unit。平台库、内核、驱动、挂载 unit、
+APT 源及公钥、OTA 信任根、EDID、VQE 基础配置也继续归平台。
+`/etc/bluetooth/main.conf` 已归 Debian `bluez` 包所有，不直接抢占；厂商配置应优先
+使用服务支持的 Aiden drop-in。目录属于 `/etc` 不代表任意文件都能被接管。
 
-增加或删除清单条目属于文件所有权及平台边界变化，当前要求通过新 OTA 生效。此后
-条目内容的兼容修改可以通过 APT 发布。修改如果依赖新系统库、驱动或改变底座要求，
-维护人员必须选择 `force_ota`；文件分类无法推断所有语义上的兼容性变化。
+修改边界规则本身或修改范围外的文件，仍按系统变更走 OTA；范围内的变更若实际依赖
+新的库、驱动、启动前提或 ABI，也必须选择 `force_ota`。自动路径分类不能证明语义兼容。
 
-## 两个包的关系
+## 安装、配置与生效
 
-同一发布例如 `dev-v0.0.8` 会同时产生：
+文件作为真实 dpkg payload 安装，hook 不以 `cp` 方式覆盖系统文件。包内
+`/usr/share/doc/aiden-business/runtime-config.json` 记录路径、权限、哈希和生效方式：
+
+- 所有者为 root；普通配置 `0644`，可执行辅助脚本 `0755`，sudoers `0440`。
+- `/etc` 文件登记为 conffiles：上游和本地同时修改时，dpkg 按交互选择处理。无人值守
+  安装可明确使用 `--force-confold`，但这意味着部分新设置不会覆盖本地修改。
+- 不打包 `/userdata`、`/run` 的运行状态、凭据或用户设置。
+- 删除源码文件会停止在新包中携带它；dpkg 可能保留 obsolete conffile。需要彻底删除或
+  改名时，应在该版本增加可回滚的 `dpkg-maintscript-helper` 迁移，并测试升降级，不能
+  把“从清单消失”当作删除管理员配置。
+
+`preinst/prerm` 保存原先运行的业务服务并停止它们，同时记录安装前的实际配置哈希。
+`postinst` 检查实际 sudo 配置、应用 Aiden tmpfiles、daemon-reload，然后恢复原先运行
+的业务服务，最后恢复代理重启监听器。原先停止的业务服务不会主动启动。
+校验或启动失败保留恢复记录；修复后执行 `sudo dpkg --configure -a` 可继续。
+离线构建 rootfs 时跳过在线停启和重启标记。
+
+规则中的 `live` 表示不要求整机重启：业务配置随业务服务恢复生效，终端 profile 和
+locale 在下一次登录/新建终端时生效。其余范围内文件默认要求稍后重启，包括新加入
+且尚未审核为 live 的配置。APT 不自动重启 SSH、systemd-networkd、USB 或整机。
+只有实际安装后的延迟生效文件内容发生变化，才写入：
 
 ```text
-aiden-business_0.0.8-1_armhf.deb
-aiden-system-config_0.0.8-1_all.deb
+/run/reboot-required
+/run/reboot-required.pkgs
+/run/aiden-business-reboot-required.json   # 需要重启生效的具体路径
 ```
 
-业务包 `Depends: aiden-system-config (= 0.0.8-1)`；配置包使用 `Breaks` 拒绝更老或
-更新的业务版本。没有循环 Depends。APT 负责解包排序、必要的暂时反配置和配置排序；
-不能仅把配置升级到新版本而保留不匹配的业务包。两个包的版本独立冻结/hold 会阻止
-配套升级。降级需要同时指定两个版本。
+只升级业务代码、只改 live 配置、相同配置重装、dpkg 保留本地配置均不会凭空要求重启。
+标记会保留到重启，不因后续安装覆盖。对已经运行的脚本进程，文件替换不等于立刻
+切换其执行内容；默认重启策略避免在远程安装中主动打断设备连接。
 
-每个包都嵌入平台契约、通道、底座标签、系统指纹及另一包的精确版本。在解包前校验
-平台，失败不会覆盖文件。两包的 manifest 必须匹配；发布附件和 APT 索引生成器均
-检查此约束及真实 Debian Depends/Breaks，不能发布或索引只有一半的配套版本。
+## 发布与首次接管
 
-即使只有业务代码或只有配置内容变化，也构建、发布同版本的两个包。第一版优先保证
-依赖和回滚简单可验证，不复用其他发布的业务包，也不分配独立配置版本。
+三个通道仍全部手动发布，主入口和 `build-backup.yml` 使用相同实现。
 
-## 安装与失败恢复
+| 对比本通道上次发布 | 产物 | 契约 |
+| --- | --- | --- |
+| 业务或范围内配置新增/修改/删除 | 一个 `aiden-business` 包 | 继承 |
+| 平台或边界变化、`force_ota` | OTA 镜像和配套业务包 | 递增 |
+| 首次采用配置归属机制 | OTA 镜像和配套业务包 | 递增一次 |
+| 仅文档/测试或无变化 | 不发布 | 不变 |
 
-两个包共用 `/var/lib/aiden-business/service-transition`。第一次进入维护脚本时保存
-正在运行的服务，先停代理变更监听器及任务，再停业务；后续 hook 保留最初的快照。
-只有配置完成且另一个包已经以相同版本配置成功，才 daemon-reload 并恢复原先运行的
-服务，最后恢复监听器。配置包还会运行 `visudo -c` 校验实际保留下来的 sudo 配置。
-新旧包混合或只解包一个时保持停服，恢复记录不删除。
+首次 OTA 将这些配置从 overlay 直接复制转为业务包所有，并在平台契约中声明
+`runtime_config: 1`。业务 manifest 和发布记录也记录该版本；缺少字段的旧发布按
+`0` 兼容读取。preinst 拒绝把新包装到没有该声明的旧平台，历史 Release 不改写。
+planner 自动分配新基础契约，后续范围内配置变化不再递增契约。
 
-APT 提供依赖约束，但两包升级不是文件系统原子事务。断电、磁盘错误或配置失败后：
-
-```bash
-sudo apt --fix-broken install
-sudo dpkg --configure -a
-sudo /usr/lib/aiden/ota --config /userdata/debian/ota/config.json self-check
-```
-
-修复前不要删除服务快照；这些命令不会自动回退到旧版本。若需要回退，选择当前
-契约源仍保留的同一版本，例如：
-
-```bash
-sudo apt install --allow-downgrades \
-  aiden-business=0.0.8-1 aiden-system-config=0.0.8-1
-```
-
-正常升级保持：
+发布器和 APT 索引生成器验证包清单、文件内容/模式、conffiles、通道和契约。发布成功
+后刷新 GitHub Pages 签名源；索引仍不设置 `Valid-Until`，每个通道/契约保留最新三个
+正式版本。业务更新只修改当前活动 rootfs，切回旧 OTA 槽会回到该槽自己的包与配置。
 
 ```bash
 sudo apt update && sudo apt upgrade
-dpkg-query -W aiden-business aiden-system-config
+dpkg-query -W aiden-business
+cat /run/aiden-business-reboot-required.json  # 无需重启时可能不存在
+
+# 同契约内降级（示例版本必须仍在源中）
+sudo apt install --allow-downgrades aiden-business=0.0.8-1
 ```
 
-离线安装须同时提供两个 `.deb`。只显式移除配置包时，APT 可能同时移除依赖它的业务包；
-不要将其作为独立可卸载组件。两个包只修改活动 rootfs，不同步 B 槽，回切旧 OTA 槽会
-回到该槽自身的包版本和配置。用户数据保留，原先停止的服务不会主动启动。
-
-## 发布流程与首次上线
-
-三个通道仍全部手动发布；`release.yml` 和 `build-backup.yml` 共用决策与发布实现。
-
-| 比较本通道上次发布的结果 | 构建内容 | 基础契约 |
-| --- | --- | --- |
-| 业务或清单内配置内容变化 | 两个配套 `.deb` | 继承 |
-| 清单边界、未列入清单的 overlay、内核等平台变化 | OTA 镜像和两个 `.deb` | 递增 |
-| 文档/测试变化或无变化 | 不发布 | 不变 |
-| 首次启用双包机制或 `force_ota` | OTA 镜像和两个 `.deb` | 递增 |
-
-发布记录保留 `format: 1`，新增 `package_set: 2`；缺少该字段的历史记录按单包处理。
-历史 Release 不改写，旧契约 APT 源继续提供原来的业务包。首次双包机制必须发一次
-新 OTA，建立文件归属、共享维护脚本和双包 APT pin；不能把新双包版本直接塞入旧契约。
-这次提交不手工修改契约数字，由手动发布时的 planner 分配新契约。
-
-先使用 `plan_only=true` 检查比较基线、`config` 变更列表和契约；构建验证后才手动选择
-发布。Release 包含两包、各自 manifest、平台契约和校验和，发布成功后刷新 GitHub
-Pages APT 源。每个通道/契约保留最新三个发布的完整配套包，索引没有 `Valid-Until`。
-
-构建入口不变：`scripts/debian-package/release.sh build` 产生配套包；`debian_build.sh`
-把两包一起安装到新 rootfs。独立配置打包可在 Linux 上使用：
+本地查看实际范围无需构建：
 
 ```bash
-AIDEN_BUSINESS_VERSION=0.0.8 AIDEN_BUSINESS_REVISION=1 \
-  python3 scripts/debian-package/system_config.py build output/system-config
+python3 scripts/debian-package/system_config.py inventory /tmp/runtime-config.json
 ```
 
-正式发布仍须使用发布计划提供完整环境绑定并通过 staging/verify；上述开发打包不构成
-发布。Linux 集成检查入口为 `bash scripts/test_system_config_package.sh`，它在可丢弃
-容器内以 root 执行真实 dpkg 升降级及恢复测试，不安装到构建机系统。
+Linux 验证：`bash scripts/test_system_config_package.sh` 在可丢弃容器内执行真实 dpkg
+升降级、conffile 保留、失败恢复和生产打包流程；其中程序为测试替身，不作为可发布的
+板端二进制。正式包仍通过 `scripts/debian-package/release.sh build` 或三通道流程构建。

@@ -169,9 +169,8 @@ EOF
         python3 "${REPO_ROOT}/scripts/release/contract.py" platform \
             "${ROOTFS_DIR}/usr/lib/aiden/platform/contract.json"
         install -m 0644 /aiden-business.deb "${ROOTFS_DIR}/tmp/aiden-business.deb"
-        install -m 0644 /aiden-system-config.deb "${ROOTFS_DIR}/tmp/aiden-system-config.deb"
-        chroot "${ROOTFS_DIR}" env SYSTEMD_OFFLINE=1 dpkg -i /tmp/aiden-business.deb /tmp/aiden-system-config.deb
-        rm -f "${ROOTFS_DIR}/tmp/aiden-business.deb" "${ROOTFS_DIR}/tmp/aiden-system-config.deb"
+        chroot "${ROOTFS_DIR}" dpkg -i /tmp/aiden-business.deb
+        rm -f "${ROOTFS_DIR}/tmp/aiden-business.deb"
     else
         echo 'Missing /aiden-business.deb; business package is required' >&2
         exit 1

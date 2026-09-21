@@ -23,6 +23,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/apt"))
 import repository
+sys.path.insert(0, str(ROOT / "scripts/debian-package"))
+import system_config
 
 loader = importlib.machinery.SourceFileLoader("apt_source", str(ROOT / "overlay-debian/usr/lib/aiden/aiden-apt-source"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -67,7 +69,7 @@ class RepositoryTests(unittest.TestCase):
         else:
             os.environ["GNUPGHOME"] = self.old_gpg
 
-    def release(self, version, channel="dev", kind="business", contract=None, paired=False):
+    def release(self, version, channel="dev", kind="business", contract=None, runtime_config=0):
         previous = next((r for r in reversed(self.history) if r["channel"] == channel), None)
         commit = hashlib.sha1(version.encode()).hexdigest()
         tag = f"{channel}-v{version}"
@@ -88,38 +90,23 @@ class RepositoryTests(unittest.TestCase):
         major = int(platform["contract"].split(".")[0])
         manifest = {"business_release": version, "package_revision": "1", "platform": declaration,
                     "required_platform_contract": {"min": f"{major}.0.0", "max_exclusive": f"{major+1}.0.0"}}
-        if paired:
-            record["package_set"] = 2
-            manifest.update(package="aiden-business", architecture="armhf", package_set=2,
-                            paired_package={"name": "aiden-system-config", "version": version + "-1"})
+        if runtime_config:
+            record["runtime_config"] = manifest["runtime_config"] = declaration["runtime_config"] = runtime_config
         package_root = self.root / tag
         (package_root / "DEBIAN").mkdir(parents=True)
         (package_root / "DEBIAN/control").write_text(
             f"Package: aiden-business\nVersion: {version}-1\nArchitecture: armhf\n"
-            "Maintainer: Test <apt@example.test>\nDescription: business fixture\n"
-            + (f"Depends: aiden-system-config (= {version}-1)\n" if paired else ""))
+            "Maintainer: Test <apt@example.test>\nDescription: business fixture\n")
         document = package_root / "usr/share/doc/aiden-business/release-manifest.json"
         document.parent.mkdir(parents=True)
         document.write_text(json.dumps(manifest))
+        if runtime_config:
+            system_config.stage(package_root)
         directory = self.cache / tag
         directory.mkdir(parents=True)
         path = directory / f"aiden-business_{version}-1_armhf.deb"
         run("dpkg-deb", "--build", "--root-owner-group", str(package_root), str(path))
         record["assets"] = {path.name: {"size": path.stat().st_size, "sha256": repository.sha256(path)}}
-        if paired:
-            config_root = self.root / (tag + "-config")
-            (config_root / "DEBIAN").mkdir(parents=True)
-            (config_root / "DEBIAN/control").write_text(
-                f"Package: aiden-system-config\nVersion: {version}-1\nArchitecture: all\n"
-                f"Breaks: aiden-business (<< {version}-1), aiden-business (>> {version}-1)\n"
-                "Maintainer: Test <apt@example.test>\nDescription: config fixture\n")
-            document = config_root / "usr/share/doc/aiden-system-config/release-manifest.json"
-            document.parent.mkdir(parents=True)
-            document.write_text(json.dumps({**manifest, "package": "aiden-system-config", "architecture": "all",
-                                           "paired_package": {"name": "aiden-business", "version": version + "-1"}}))
-            path = directory / f"aiden-system-config_{version}-1_all.deb"
-            run("dpkg-deb", "--build", "--root-owner-group", str(config_root), str(path))
-            record["assets"][path.name] = {"size": path.stat().st_size, "sha256": repository.sha256(path)}
         self.history.append(record)
         return declaration
 
@@ -154,14 +141,26 @@ class RepositoryTests(unittest.TestCase):
             "Package: aiden-business\nStatus: install ok installed\nArchitecture: armhf\nVersion: 0.0.2-1\nDescription: old business\n\n"
             "Package: system-fixture\nStatus: install ok installed\nArchitecture: armhf\nVersion: 1\nDescription: old system\n")
         self.apt_options = ["-o", f"Dir={root}", "-o", f"Dir::State::status={root}/var/lib/dpkg/status",
-                            "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=",
                             "-o", "Dir::Etc::sourcelist=-", "-o", "APT::Architecture=armhf",
                             "-o", "Acquire::Languages=none", "-o", "APT::Update::Error-Mode=any",
-                            "-o", f"APT::Sandbox::User={getpass.getuser()}", "-o", "Debug::NoLocking=true"]
+                            "-o", f"APT::Sandbox::User={getpass.getuser()}", "-o", "Debug::NoLocking=true",
+                            "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache="]
         return root
 
     def apt(self, program, *args, check=True):
         return subprocess.run([program, *self.apt_options, *args], capture_output=True, text=True, check=check)
+
+    def test_integrated_runtime_configs_upgrade_through_signed_apt(self):
+        self.release("0.0.2", kind="ota", contract="1.0.0")
+        device = self.release("0.0.3", kind="ota", contract="2.0.0", runtime_config=1)
+        self.release("0.0.4", runtime_config=1)
+        self.build()
+        with self.serve() as url:
+            self.apt_fixture(device, url)
+            self.apt("apt-get", "update")
+            upgrade = self.apt("apt-get", "--simulate", "upgrade").stdout
+            self.assertIn("Inst aiden-business", upgrade)
+            self.assertIn("0.0.4-1", upgrade)
 
     def test_contract_isolation_and_only_business_upgrades(self):
         device = self.release("0.0.2", kind="ota", contract="1.0.0")
@@ -200,39 +199,6 @@ class RepositoryTests(unittest.TestCase):
             self.apt_fixture(device, url)
             self.apt("apt-get", "update")
             self.assertIn("Candidate: 0.0.2-1", self.apt("apt-cache", "policy", "aiden-business").stdout)
-
-    def test_apt_upgrade_selects_exact_pair_and_allows_paired_downgrade(self):
-        device = self.release("0.0.2", kind="ota", contract="1.0.0", paired=True)
-        self.release("0.0.3", paired=True)
-        self.build()
-        with self.serve() as url:
-            root = self.apt_fixture(device, url)
-            status = root / "var/lib/dpkg/status"
-            status.write_text(status.read_text().replace("Description: old business", "Depends: aiden-system-config (= 0.0.2-1)\nDescription: old business")
-                              + "\nPackage: aiden-system-config\nStatus: install ok installed\nArchitecture: all\nVersion: 0.0.2-1\n"
-                              "Breaks: aiden-business (<< 0.0.2-1), aiden-business (>> 0.0.2-1)\nDescription: old config\n")
-            self.apt("apt-get", "update")
-            result = self.apt("apt", "--simulate", "upgrade").stdout
-            self.assertIn("Inst aiden-system-config", result)
-            self.assertIn("Inst aiden-business", result)
-            self.assertNotIn("Remv ", result)
-            self.assertNotIn("Inst system-fixture", result)
-            status.write_text(status.read_text().replace("0.0.2-1", "0.0.3-1"))
-            down = self.apt("apt-get", "--simulate", "--allow-downgrades", "install",
-                            "aiden-business=0.0.2-1", "aiden-system-config=0.0.2-1").stdout
-            self.assertIn("Inst aiden-business", down)
-            self.assertIn("Inst aiden-system-config", down)
-            # An explicit incompatible pair is rejected before installing anything.
-            bad = self.apt("apt-get", "--simulate", "install", "aiden-business=0.0.3-1",
-                           "aiden-system-config=0.0.2-1", check=False)
-            self.assertNotEqual(bad.returncode, 0)
-
-    def test_missing_config_asset_cannot_be_indexed_as_half_a_release(self):
-        self.release("0.0.2", kind="ota", contract="1.0.0", paired=True)
-        del self.history[0]["assets"]["aiden-system-config_0.0.2-1_all.deb"]
-        with self.assertRaises(KeyError):
-            self.build()
-        self.assertFalse(self.site.exists())
 
     def test_tampered_indexes_are_rejected(self):
         device = self.release("0.0.2", kind="ota", contract="1.0.0")

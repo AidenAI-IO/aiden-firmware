@@ -36,16 +36,17 @@ class LifecycleTests(unittest.TestCase):
         self.calls = self.root / 'calls.jsonl'
         self.transaction = self.root / 'package-state/service-transition'
         self.policy = self.root / 'policy-rc.d'
+        self.device = self.root / 'dpkg-root'
+        self.config_transaction = self.root / 'package-state/config-transition'
+        contract = self.device / 'usr/lib/aiden/platform/contract.json'
+        subprocess.run(['python3', str(ROOT / 'scripts/release/contract.py'), 'platform', str(contract)], check=True)
         self.set_states({unit: ('inactive' if unit == RESTART else 'active') for unit in UNITS})
         self.env = {**os.environ, 'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
                     'MOCK_STATE': str(self.state), 'MOCK_CALLS': str(self.calls),
                     'DPKG_ROOT': '', 'SYSTEMD_OFFLINE': '0'}
         subprocess.run(['bash', str(ROOT / 'scripts/debian-package/write-maintainer-scripts.sh'), str(self.scripts)], check=True)
         for script in self.scripts.iterdir():
-            text = script.read_text().replace('/var/lib/aiden-business', str(self.root / 'package-state'))
-            text = text.replace('/run/systemd/system', str(self.marker))
-            text = text.replace('/usr/sbin/policy-rc.d', str(self.policy))
-            script.write_text(text)
+            script.write_text(self.relocate(script.read_text()))
         mock = self.bin / 'systemctl'
         mock.write_text('''#!/usr/bin/env python3
 import json, os, sys
@@ -75,9 +76,19 @@ elif action != 'daemon-reload':
         detector = self.bin / 'systemd-detect-virt'
         detector.write_text('#!/bin/sh\n[ "${MOCK_CHROOT:-0}" = 1 ]\n')
         detector.chmod(0o755)
-        query = self.bin / 'dpkg-query'
-        query.write_text('#!/bin/sh\nprintf "install ok installed %s" "${MOCK_PEER_VERSION:-0.0.1-2}"\n')
-        query.chmod(0o755)
+        for name in ('systemd-tmpfiles', 'visudo'):
+            helper = self.bin / name
+            helper.write_text('#!/bin/sh\n[ "${MOCK_INVALID_SUDOERS:-0}" != 1 ]\n' if name == 'visudo' else '#!/bin/sh\nexit 0\n')
+            helper.chmod(0o755)
+
+    def relocate(self, text):
+        text = text.replace('/var/lib/aiden-business', str(self.root / 'package-state'))
+        text = text.replace('/run/systemd/system', str(self.marker))
+        text = text.replace('/usr/sbin/policy-rc.d', str(self.policy))
+        text = text.replace('ROOT = Path(os.environ.get("DPKG_ROOT") or "/")', 'ROOT = Path(' + repr(str(self.device)) + ')')
+        text = text.replace("path = os.environ.get('DPKG_ROOT', '') + '/usr/lib/aiden/platform/contract.json'",
+                            'path = ' + repr(str(self.device / 'usr/lib/aiden/platform/contract.json')))
+        return text
 
     def set_states(self, states):
         self.state.write_text(json.dumps(states))
@@ -167,17 +178,6 @@ elif action != 'daemon-reload':
         self.assertTrue(self.transaction.exists())
         self.assertEqual(self.states()[WATCHER], 'inactive')
         del self.env['MOCK_FAIL']
-        self.run_phase('postinst', 'configure')
-        self.assertEqual(self.states(), before)
-
-    def test_mismatched_peer_keeps_services_stopped_until_retry(self):
-        before = self.states()
-        self.run_phase('preinst', 'upgrade')
-        self.env['MOCK_PEER_VERSION'] = '0.0.0-1'
-        self.run_phase('postinst', 'configure')
-        self.assertTrue(self.transaction.exists())
-        self.assertTrue(all(value == 'inactive' for value in self.states().values()))
-        del self.env['MOCK_PEER_VERSION']
         self.run_phase('postinst', 'configure')
         self.assertEqual(self.states(), before)
 

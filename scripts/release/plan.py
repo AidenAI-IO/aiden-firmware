@@ -13,7 +13,7 @@ CHANNELS = ("dev", "staging", "prod")
 VERSION = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 TAG = re.compile(r"(dev|staging|prod)-v(" + VERSION + r")\Z")
 POLICY = Path(__file__).with_name("policy.json")
-CONFIG_FILES = json.loads((Path(__file__).resolve().parents[1] / "debian-system/config-package.json").read_text())["files"]
+CONFIG_BOUNDARY = json.loads((Path(__file__).resolve().parents[1] / "debian-system/config-package.json").read_text())
 
 
 def command(*args, cwd=None):
@@ -37,8 +37,8 @@ def version_tuple(value):
 def validate_record(record):
     if record["format"] != 1 or record["channel"] not in CHANNELS:
         raise ValueError("Unknown release record format/channel")
-    if record.get("package_set", 1) not in (1, 2):
-        raise ValueError("Unknown package set")
+    if record.get("runtime_config", 0) not in (0, 1):
+        raise ValueError("Unknown runtime configuration ownership version")
     version_tuple(record["version"])
     if record["tag"] != f"{record['channel']}-v{record['version']}":
         raise ValueError("Release tag/version mismatch")
@@ -91,7 +91,7 @@ def validate_history(records, repo):
                 raise ValueError("Business release has no valid OTA base")
             if base["fingerprints"]["system"] != record["fingerprints"]["system"]:
                 raise ValueError("Business release changed the system fingerprint")
-            if base.get("package_set", 1) != record.get("package_set", 1):
+            if base.get("runtime_config", 0) != record.get("runtime_config", 0):
                 raise ValueError("Package ownership changes require a new OTA base")
     ordered = sorted(records, key=lambda item: version_tuple(item["version"]))
     previous = {}
@@ -135,8 +135,11 @@ def history_digest(records):
 
 
 def classify(path, policy):
-    if path.startswith("overlay-debian/") and path.removeprefix("overlay-debian/") in CONFIG_FILES:
-        return "config"
+    if path.startswith("overlay-debian/"):
+        relative = path.removeprefix("overlay-debian/")
+        if (any(fnmatch.fnmatchcase(relative, p) for p in CONFIG_BOUNDARY["include"])
+                and not any(fnmatch.fnmatchcase(relative, p) for p in CONFIG_BOUNDARY["exclude"])):
+            return "config"
     for kind in ("ignore", "system", "business"):
         if any(fnmatch.fnmatchcase(path, pattern) for pattern in policy[kind]):
             return kind
@@ -177,7 +180,7 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
             kind = "business"
         if fingerprints["system"] != previous["fingerprints"]["system"]:
             kind = "ota"
-        if previous.get("package_set", 1) != 2:
+        if previous.get("runtime_config", 0) != 1:
             kind = "ota"
     else:
         raw = subprocess.check_output(["git", "ls-tree", "-rz", "--name-only", commit], cwd=root)
@@ -203,7 +206,7 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
                         for r in records)
         build_time = max(build_time, last_time + timedelta(seconds=1))
     plan = {
-        "format": 1, "package_set": 2, "repo": repo, "channel": channel, "version": next_version, "tag": tag,
+        "format": 1, "runtime_config": 1, "repo": repo, "channel": channel, "version": next_version, "tag": tag,
         "kind": kind, "source_commit": commit,
         "source_tree": command("git", "rev-parse", f"{commit}^{{tree}}", cwd=root),
         "build_time": build_time.strftime("%Y-%m-%dT%H:%M:%SZ"),

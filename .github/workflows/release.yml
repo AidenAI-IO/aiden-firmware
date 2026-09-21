@@ -134,7 +134,7 @@ jobs:
             .cache/debian-apps
           key: business-armhf-${{ runner.os }}-${{ hashFiles('src/agent/go.sum', 'scripts/debian-apps/Dockerfile', 'scripts/debian-apps/*patch') }}
           restore-keys: business-armhf-${{ runner.os }}-
-      - name: Build and verify paired business and configuration packages
+      - name: Build and verify business package with runtime configuration
         env:
           RK_JOBS: '4'
         run: |

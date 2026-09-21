@@ -5,6 +5,7 @@ set -eu
 
 state_parent=/var/lib/aiden-business
 state_dir=$state_parent/service-transition
+config_state=$state_parent/config-transition
 watcher=aiden-wifi-proxy-agent-restart.path
 restart_job=aiden-wifi-proxy-agent-restart.service
 services='aiden-wifi-proxy.service aiden-frame.service aiden-audio.service aiden-ble.service aiden-agent.service aiden-config-web.service aiden-ttyd.service'
@@ -15,32 +16,6 @@ live_systemd() {
     if command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt --quiet --chroot; then
         return 1
     fi
-}
-
-# dpkg may configure the config dependency while the old business payload is
-# still present. Keep the shared snapshot until a compatible peer is configured.
-# The package currently running postinst is itself half-configured at this point.
-peer_ready() {
-    # Abort hooks can come from the new archive after dpkg restored old files.
-    # Do not infer our installed version from the script's embedded version.
-    own_state=$(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null) || return 1
-    case "$own_state" in
-        "install ok installed $package_version"|"install ok half-configured $package_version") ;;
-        *) return 1 ;;
-    esac
-    case "$package" in
-        aiden-business) peer=aiden-system-config ;;
-        aiden-system-config) peer=aiden-business ;;
-    esac
-    peer_state=$(dpkg-query -W -f='${Status} ${Version}' "$peer" 2>/dev/null) || return 1
-    [ "$peer_state" = "install ok installed $package_version" ]
-}
-
-installed_pair_ready() {
-    installed_business=$(dpkg-query -W -f='${Status} ${Version}' aiden-business 2>/dev/null) || return 1
-    installed_config=$(dpkg-query -W -f='${Status} ${Version}' aiden-system-config 2>/dev/null) || return 1
-    case "$installed_business" in 'install ok installed '*) ;; *) return 1 ;; esac
-    [ "$installed_business" = "$installed_config" ]
 }
 
 # Use systemctl directly to also restore disabled units that the administrator
@@ -62,16 +37,6 @@ policy_allows() {
 
 restore_services() {
     [ -f "$state_dir/active" ] || return 0
-    ready=0
-    if [ "${1:-}" = before-unpack ]; then
-        installed_pair_ready && ready=1
-    else
-        peer_ready && ready=1
-    fi
-    if [ "$ready" != 1 ]; then
-        echo "$package: waiting for the matching $package_version package pair before restarting services" >&2
-        return 0
-    fi
     set --
     restore_watcher=0
     while IFS= read -r unit; do
@@ -122,10 +87,7 @@ stop_services() {
         esac
     done < "$state_dir/loaded"
     if [ "$#" -gt 0 ] && ! systemctl stop "$@"; then
-        # Restore the old pair only if both packages are still configured at
-        # the same version. An earlier unpack in this transaction must not be
-        # mistaken for a safe pre-upgrade state.
-        restore_services before-unpack || true
+        restore_services || true
         return 1
     fi
     set --
@@ -133,7 +95,7 @@ stop_services() {
         case " $services " in *" $unit "*) set -- "$@" "$unit" ;; esac
     done < "$state_dir/loaded"
     if [ "$#" -gt 0 ] && ! systemctl stop "$@"; then
-        restore_services before-unpack || true
+        restore_services || true
         return 1
     fi
 }
@@ -142,21 +104,22 @@ case "$phase:${1:-}" in
     preinst:install|preinst:upgrade|prerm:upgrade|prerm:remove|prerm:deconfigure|prerm:failed-upgrade)
         live_systemd || exit 0
         stop_services
+        runtime_config snapshot "$config_state"
         ;;
     postinst:configure|postinst:abort-upgrade|postinst:abort-remove|postinst:abort-deconfigure|postrm:abort-upgrade|postrm:abort-install)
-        if [ "$package:$phase:${1:-}" = aiden-system-config:postinst:configure ] && [ -z "${DPKG_ROOT:-}" ]; then
-            # Validate the installed conffile too: dpkg may have preserved an
-            # administrator's edit instead of using the packaged version.
-            visudo -c || exit 1
-        fi
         live_systemd || exit 0
+        if [ "$phase:${1:-}" = postinst:configure ]; then
+            runtime_config configure "$config_state"
+            systemd-tmpfiles --create /etc/tmpfiles.d/aiden.conf
+        fi
         restore_services
+        rm -rf "$config_state"
         ;;
     postrm:remove|postrm:purge)
-        # Leave services stopped when removing either half of the pair; never
+        # Leave services stopped when removing the business payload; never
         # change enablement or remove user data.
         if [ -z "${DPKG_ROOT:-}" ]; then
-            rm -rf "$state_dir"
+            rm -rf "$state_dir" "$config_state"
             rmdir "$state_parent" 2>/dev/null || true
         fi
         ;;

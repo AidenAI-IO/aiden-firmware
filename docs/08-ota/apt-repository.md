@@ -11,16 +11,18 @@ GitHub Pages 托管签名的 `InRelease`、`Release.gpg`、包索引和 `.deb`�
 
 ```bash
 sudo apt update && sudo apt upgrade
-dpkg-query -W aiden-business aiden-system-config
+dpkg-query -W aiden-business
 sudo /usr/lib/aiden/ota --config /userdata/debian/ota/config.json self-check
 ```
 
-APT/dpkg 自动停止并恢复原先运行的业务服务。用户配置和 userdata 保留，无需重启。
+APT/dpkg 自动停止并恢复原先运行的业务服务。用户配置和 userdata 保留。业务和 live
+配置升级无需整机重启；网络/SSH/USB 等配置写入后提示稍后重启，不主动中断连接。
+具体范围与标记见 [业务包管理运行配置](system-config-package.md)。
 新契约的软件包不会出现在旧契约的候选版本中；先安装新 OTA 后，设备才会切换到
 新基础契约的软件源。包的 preinst 仍会校验通道、契约、底座标签和系统指纹。
 
-`/etc/apt/preferences.d/aiden-business` 将匹配源中的业务包和配置包优先级设为 990，Debian
-源的包设为 1，低于已安装包的 100。因此普通 `apt upgrade` 升级这两个配套包，Debian
+`/etc/apt/preferences.d/aiden-business` 将匹配源中的业务包优先级设为 990，Debian
+源的包设为 1，低于已安装包的 100。因此普通 `apt upgrade` 只升级业务，Debian
 系统包随 OTA 更新，避免基础契约未变而系统库已经改变。显式安装此前未安装的
 Debian 工具仍然可用。自行添加第三方系统源时需另行设置其 pin。维护人员有意改变系统库时，可显式选择版本或调整 pin，随后
 应通过新的 OTA 建立基础契约。
@@ -28,7 +30,7 @@ Debian 工具仍然可用。自行添加第三方系统源时需另行设置其 
 已安装相同版本时 `apt upgrade` 不会重装。同版本构建包需要换成正式发布包时：
 
 ```bash
-sudo apt install --reinstall aiden-business aiden-system-config
+sudo apt install --reinstall aiden-business
 ```
 
 ## 现有托管设备首次接入
@@ -66,16 +68,13 @@ APT 刷新失败不会撤销已公开的 Release，修复后单独重跑 APT 流
 APT 仍会验证索引签名和包校验和，三个通道的新版本仍全部手动发布。
 Pages 的 `github-pages` Environment 必须允许运行发布流程的分支。
 
-每个“通道 + 契约”保留最新三个正式发布的完整配套包，旧契约的源继续可用。索引使用 APT
+每个“通道 + 契约”保留最新三个正式包，旧契约的源继续可用。索引使用 APT
 by-hash 下载，包路径按契约和发布标签固定；过旧缓存遇到已清理的包时重新执行
 `apt update`。站点超过 900 MiB 会停止部署，保留旧站点；届时应将不再支持的
 契约归档到其他静态存储并调整生成策略，不能直接删除仍有设备使用的契约源。
 
 源码记录、SHA256、包架构/版本与嵌入契约均通过验证后才签名并原子部署整个站点。
 私钥仅进入签名步骤的临时 GnuPG 目录，清理后只上传公开站点内容。
-
-双包机制首次启用须先升级到新的 OTA 基座；旧契约源继续保留单业务包，不会混入新机制。
-依赖关系、降级和失败恢复见 [系统配置包](system-config-package.md)。
 
 Linux 上本地验证：
 

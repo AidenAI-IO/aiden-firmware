@@ -40,33 +40,41 @@ def check_source(root, apps):
     return commit, sdk_commit
 
 
-def package_manifest(package, name="aiden-business"):
+def package_manifest(package):
     data = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-        return archive.extractfile(f"./usr/share/doc/{name}/release-manifest.json").read()
+        return archive.extractfile("./usr/share/doc/aiden-business/release-manifest.json").read()
 
 
-def verify_pair(business_package, config_package, version):
-    business_manifest = json.loads(package_manifest(business_package))
-    config_manifest = json.loads(package_manifest(config_package, "aiden-system-config"))
-    if (business_manifest.get("package_set") != 2
-            or business_manifest.get("package") != "aiden-business"
-            or business_manifest.get("paired_package") != {"name": "aiden-system-config", "version": version}):
-        raise ValueError("Business package does not declare the matching configuration package")
-    expected = {**business_manifest, "package": "aiden-system-config", "architecture": "all",
-                "paired_package": {"name": "aiden-business", "version": version}}
-    if config_manifest != expected:
-        raise ValueError("Configuration/business package manifests do not match")
-    for field, value in (("Package", "aiden-system-config"), ("Architecture", "all"), ("Version", version)):
-        if command("dpkg-deb", "--field", str(config_package), field) != value:
-            raise ValueError(f"Configuration package {field} mismatch")
-    dependencies = command("dpkg-deb", "--field", str(business_package), "Depends").split(",")
-    if f"aiden-system-config (= {version})" not in [d.strip() for d in dependencies]:
-        raise ValueError("Business package must depend on the exact configuration version")
-    breaks = command("dpkg-deb", "--field", str(config_package), "Breaks")
-    if {d.strip() for d in breaks.split(",")} != {f"aiden-business (<< {version})", f"aiden-business (>> {version})"}:
-        raise ValueError("Configuration package must reject mismatched business versions")
-    return config_manifest
+def verify_runtime_config(package, enabled):
+    if enabled not in (0, 1):
+        raise ValueError("Unknown runtime configuration ownership")
+    data = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
+    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+        name = "./usr/share/doc/aiden-business/runtime-config.json"
+        if not enabled:
+            if name in archive.getnames():
+                raise ValueError("Undeclared runtime configuration payload")
+            return
+        document = json.load(archive.extractfile(name))
+        if document["format"] != 1 or not document["files"]:
+            raise ValueError("Missing runtime configuration inventory")
+        expected_conffiles = set()
+        for path, record in document["files"].items():
+            if Path(path).is_absolute() or ".." in Path(path).parts or not path.startswith(("etc/", "usr/lib/aiden/")):
+                raise ValueError("Unsafe runtime configuration path")
+            member = archive.getmember("./" + path)
+            if (not member.isfile() or (member.uid, member.gid, member.mode) != (0, 0, int(record["mode"], 8))
+                    or hashlib.sha256(archive.extractfile(member).read()).hexdigest() != record["sha256"]
+                    or record["activation"] not in ("live", "reboot")):
+                raise ValueError("Runtime configuration payload differs from inventory")
+            if path.startswith("etc/"):
+                expected_conffiles.add("/" + path)
+    control = subprocess.check_output(["dpkg-deb", "--ctrl-tarfile", str(package)])
+    with tarfile.open(fileobj=io.BytesIO(control)) as archive:
+        actual = set(archive.extractfile("./conffiles").read().decode().splitlines())
+        if actual != expected_conffiles:
+            raise ValueError("Runtime configuration conffiles are incomplete")
 
 
 def stage(root, apps, output):
@@ -81,24 +89,17 @@ def stage(root, apps, output):
     shutil.copyfile(output / package_name, package)
     (release / "release-manifest.json").write_bytes(package_manifest(package))
     compatibility = json.loads(package_manifest(package))["required_platform_contract"]
-    paired = json.loads(package_manifest(package)).get("package_set", 1) == 2
-    if paired:
-        config_name = f"aiden-system-config_{version}_all.deb"
-        shutil.copyfile(output / config_name, release / config_name)
-        verify_pair(package, release / config_name, version)
-        (release / "system-config-manifest.json").write_bytes(package_manifest(release / config_name, "aiden-system-config"))
     metadata = {
         "format": 1, "package": "aiden-business", "version": version, "architecture": "armhf",
         "tag": f"business-v{version}", "source_commit": commit, "sdk_commit": sdk_commit,
         "package_file": package_name, "package_sha256": sha256(package),
-        "package_set": 2 if paired else 1,
     }
     (release / "build-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (release / "RELEASE-NOTES.md").write_text(
         f"Aiden business package {version} for armhf.\n\n"
         f"Source: `{commit}`\n\n"
         f"Requires Debian platform contract >={compatibility['min']} and <{compatibility['max_exclusive']}. "
-        "Contains the paired application and configuration packages; no boot, rootfs or partition changes.\n\n"
+        "Contains applications, resources and managed runtime configuration; no partition images.\n\n"
         "Verify SHA256SUMS before installing with apt. Package maintainer scripts "
         "stop and restore previously running Aiden services; then run the OTA self-check. "
         "See docs/08-ota/debian-package.md for the installation procedure.\n\n"
@@ -125,9 +126,6 @@ def verify(release):
     if metadata["package"] != "aiden-business" or metadata["architecture"] != "armhf":
         raise ValueError("Wrong package or architecture")
     expected_assets = {name, "release-manifest.json", "build-metadata.json", "RELEASE-NOTES.md", "SHA256SUMS"}
-    paired = metadata.get("package_set", 1) == 2
-    if paired:
-        expected_assets |= {f"aiden-system-config_{version}_all.deb", "system-config-manifest.json"}
     if {p.name for p in release.iterdir()} != expected_assets:
         raise ValueError("Release directory has missing or unexpected files")
     for name in expected_assets:
@@ -146,15 +144,9 @@ def verify(release):
     if package_manifest(package) != manifest_bytes:
         raise ValueError("Published manifest does not match the package")
     manifest = json.loads(manifest_bytes)
+    verify_runtime_config(package, manifest.get("runtime_config", 0))
     if f"{manifest['business_release']}-{manifest['package_revision']}" != version:
         raise ValueError("Business manifest version mismatch")
-    if paired:
-        config_package = release / f"aiden-system-config_{version}_all.deb"
-        verify_pair(package, config_package, version)
-        if package_manifest(config_package, "aiden-system-config") != (release / "system-config-manifest.json").read_bytes():
-            raise ValueError("Configuration manifest differs from release asset")
-    elif manifest.get("package_set", 1) != 1:
-        raise ValueError("Paired package release is missing its configuration package")
     return metadata
 
 

@@ -5,5 +5,6 @@
   "platform_contract": "1.0.0",
   "architecture": "armhf",
   "os_release": "debian-13",
-  "libc": "glibc"
+  "libc": "glibc",
+  "runtime_config": 1
 }

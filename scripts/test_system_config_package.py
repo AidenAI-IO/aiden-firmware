@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Real dpkg pair upgrades, partial transactions, conffiles and recovery."""
+"""Real single-package config upgrades in a disposable Debian container."""
+import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -14,160 +16,184 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/debian-package"))
 import system_config
-import importlib.util
+import test_debian_package_lifecycle as lifecycle
+from test_debian_package_lifecycle import UNITS, WATCHER, RESTART, TTYD
+
 spec = importlib.util.spec_from_file_location("standalone_release", ROOT / "scripts/debian-package/release.py")
 standalone_release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(standalone_release)
-import test_debian_package_lifecycle as lifecycle
-from test_debian_package_lifecycle import UNITS, RESTART, TTYD
 
 
 @unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg"), "Requires Linux dpkg")
-class PairTests(unittest.TestCase):
+class RuntimeConfigTests(unittest.TestCase):
     def setUp(self):
         self.fixture = lifecycle.LifecycleTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        self.root = self.fixture.root
-        self.device = self.root / "dpkg-root"
-        self.env = dict(self.fixture.env)
-        self.env.update(AIDEN_BUSINESS_REVISION="1", AIDEN_RELEASE_CHANNEL="",
-                        AIDEN_PLATFORM_BASE="", AIDEN_SYSTEM_FINGERPRINT="")
-        database = self.device / "var/lib/dpkg"
-        database.mkdir(parents=True)
-        (database / "status").write_text("\n".join(
-            f"Package: {name}\nStatus: install ok installed\nArchitecture: all\nVersion: 99\nDescription: platform fixture\n"
-            for name in ("python3-minimal", "systemd", "sudo")))
-        query = self.fixture.bin / "dpkg-query"
-        query.write_text(f'#!/bin/sh\nexec {shutil.which("dpkg-query")} --root="{self.device}" "$@"\n')
-        self.real_visudo = shutil.which("visudo")
-        visudo = self.fixture.bin / "visudo"
-        visudo.write_text('#!/bin/sh\n[ "${MOCK_INVALID_SUDOERS:-0}" != 1 ]\n')
-        visudo.chmod(0o755)
+        self.root, self.device = self.fixture.root, self.fixture.device
+        self.env = {**self.fixture.env, "AIDEN_BUSINESS_REVISION": "1", "AIDEN_RELEASE_CHANNEL": "",
+                    "AIDEN_PLATFORM_BASE": "", "AIDEN_SYSTEM_FINGERPRINT": ""}
+        self.source = self.root / "source"
+        for path in system_config.inventory():
+            target = self.source / "overlay-debian" / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "overlay-debian" / path, target)
         self.fixture.set_states({unit: "inactive" for unit in UNITS})
 
     def package(self, version, *, fail_preinst=False):
-        output = self.root / ("build-" + version)
-        env = {**self.env, "AIDEN_BUSINESS_VERSION": version}
-        with patch.dict(os.environ, env):
-            system_config.build(output)
-        config_root = output / "system-config-root"
-        business_root = output / "business-root"
-        (business_root / "DEBIAN").mkdir(parents=True)
-        (business_root / "DEBIAN/control").write_text(
+        package = self.root / ("package-" + version)
+        control = package / "DEBIAN"
+        control.mkdir(parents=True)
+        (control / "control").write_text(
             f"Package: aiden-business\nVersion: {version}-1\nArchitecture: all\n"
-            f"Depends: aiden-system-config (= {version}-1)\n"
-            "Maintainer: Test <test@example.test>\nDescription: business fixture\n")
-        subprocess.run(["bash", str(ROOT / "scripts/debian-package/write-maintainer-scripts.sh"),
-                        str(business_root / "DEBIAN")], env=env, check=True)
-        packages = {}
-        for name, root in (("aiden-business", business_root), ("aiden-system-config", config_root)):
-            for phase in ("preinst", "postinst", "prerm", "postrm"):
-                path = root / "DEBIAN" / phase
-                # Run actual package hooks against a real isolated dpkg DB,
-                # with only systemd and absolute runtime paths substituted.
-                text = path.read_text().replace("set -eu\n", "set -eu\nunset DPKG_ROOT\n", 1)
-                text = text.replace("/var/lib/aiden-business", str(self.root / "package-state"))
-                text = text.replace("/run/systemd/system", str(self.fixture.marker))
-                text = text.replace("/usr/sbin/policy-rc.d", str(self.fixture.policy))
-                if fail_preinst and name == "aiden-business" and phase == "preinst":
-                    text = text.removesuffix("exit 0\n") + "exit 42\n"
-                path.write_text(text)
-            package = output / f"{name}_{version}-1_all.deb"
-            subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(root), str(package)],
-                           check=True, stdout=subprocess.DEVNULL)
-            packages[name] = package
-        return packages
+            "Maintainer: Test <test@example.test>\nDescription: runtime config fixture\n")
+        with patch.object(system_config, "ROOT", self.source):
+            system_config.stage(package)
+            inventory = system_config.inventory()
+        for phase in ("preinst", "postinst", "prerm", "postrm"):
+            text = (self.fixture.scripts / phase).read_text()
+            text = re.sub(r"^NEW_FILES = .*", lambda _: "NEW_FILES = " + repr(inventory), text, flags=re.M)
+            text = text.replace("set -eu\n", "set -eu\nunset DPKG_ROOT\n", 1)
+            if fail_preinst and phase == "preinst":
+                text = text.removesuffix("exit 0\n") + "exit 42\n"
+            (control / phase).write_text(text)
+            (control / phase).chmod(0o755)
+        archive = self.root / f"aiden-business_{version}-1_all.deb"
+        subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(package), str(archive)],
+                       check=True, stdout=subprocess.DEVNULL)
+        standalone_release.verify_runtime_config(archive, 1)
+        return archive
 
     def dpkg(self, *args, success=True):
-        result = subprocess.run(["dpkg", "--force-not-root", "--force-script-chrootless", "--force-confold",
-                                 "--log=" + str(self.root / "dpkg.log"),
-                                 "--root=" + str(self.device), *map(str, args)],
-                                env=self.env, capture_output=True, text=True)
-        self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
-        return result
+        return self.fixture.dpkg("--force-confold", *args, success=success)
 
-    def installed_pair(self, version="0.0.2"):
-        packages = self.package(version)
-        self.dpkg("--install", *packages.values())
-        self.before = {unit: ("inactive" if unit in (RESTART, TTYD) else "active") for unit in UNITS}
-        self.fixture.set_states(self.before)
-        self.fixture.calls.unlink(missing_ok=True)
-        return packages
+    def boot(self):
+        for name in ("reboot-required", "reboot-required.pkgs", "aiden-business-reboot-required.json"):
+            (self.device / "run" / name).unlink(missing_ok=True)
+        self.fixture.set_states({unit: "inactive" if unit in (RESTART, TTYD) else "active" for unit in UNITS})
 
-    def assert_stopped(self):
-        self.assertTrue(all(state == "inactive" for state in self.fixture.states().values()))
-        self.assertTrue(self.fixture.transaction.exists())
+    def change(self, path, content):
+        target = self.source / "overlay-debian" / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
 
-    def test_upgrade_then_downgrade_resumes_only_after_both_configured(self):
-        old = self.installed_pair()
+    def changes(self):
+        path = self.device / "run/aiden-business-reboot-required.json"
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def test_ownership_modes_conffiles_and_rootfs_exclusion(self):
+        package = self.package("0.0.2")
+        self.dpkg("-i", package)
+        system_config.audit(self.device)
+        profile = "etc/profile.d/aiden-env.sh"
+        (self.device / profile).write_text((self.device / profile).read_text() + "\n# administrator setting\n")
+        original = (self.source / "overlay-debian" / profile).read_text()
+        self.change(profile, original + "\n# upstream change\n")
+        self.dpkg("-i", self.package("0.0.3"))
+        self.assertIn("administrator setting", (self.device / profile).read_text())
+        self.assertIn("upstream change", (self.device / (profile + ".dpkg-dist")).read_text())
+        self.assertEqual((self.device / "etc/sudoers.d/20-aiden-proxy").stat().st_mode & 0o777, 0o440)
+        subprocess.run([shutil.which("visudo"), "-cf", str(self.device / "etc/sudoers.d/20-aiden-proxy")], check=True)
+        overlay = self.root / "overlay"
+        exclude = self.root / "exclude"
+        subprocess.run([sys.executable, str(ROOT / "scripts/debian-package/system_config.py"), "exclude", str(exclude)], check=True)
+        subprocess.run(["rsync", "-a", "--exclude-from=" + str(exclude), str(ROOT / "overlay-debian") + "/", str(overlay)], check=True)
+        for path in system_config.inventory():
+            self.assertFalse((overlay / path).exists(), path)
+        self.assertTrue((overlay / "usr/lib/aiden/platform/contract.json").exists())
+
+    def test_upgrade_downgrade_and_reinstall_restart_only_previous_services(self):
+        old = self.package("0.0.2")
+        self.dpkg("-i", old)
+        self.boot()
+        before = self.fixture.states()
         new = self.package("0.0.3")
-        for packages in (new, old):
-            self.dpkg("--auto-deconfigure", "--unpack", packages["aiden-system-config"], packages["aiden-business"])
-            self.assert_stopped()
-            self.dpkg("--configure", "aiden-system-config")
-            self.assert_stopped()
-            self.dpkg("--configure", "aiden-business")
-            self.assertEqual(self.fixture.states(), self.before)
+        for package in (new, old, old):
+            self.dpkg("-i", package)
+            self.assertEqual(self.fixture.states(), before)
             self.assertFalse(self.fixture.transaction.exists())
+            self.assertFalse(self.fixture.config_transaction.exists())
+            self.assertEqual(self.changes(), [])
+        self.assertFalse(any(any(x in op for x in ("reboot", "ssh.service", "systemd-networkd.service"))
+                             for op in self.fixture.operations()))
 
-    def test_interrupted_business_upgrade_is_recoverable(self):
-        self.installed_pair()
-        new = self.package("0.0.3")
-        self.dpkg("--unpack", new["aiden-business"])
-        self.dpkg("--configure", "aiden-business", success=False)
-        self.assert_stopped()
-        self.dpkg("--install", new["aiden-system-config"])
-        self.assert_stopped()
+    def test_new_deferred_config_marks_reboot_but_live_config_does_not(self):
+        self.dpkg("-i", self.package("0.0.2"))
+        self.boot()
+        self.change("etc/profile.d/aiden-new.sh", "# new login setting\n")
+        self.dpkg("-i", self.package("0.0.3"))
+        self.assertEqual(self.changes(), [])
+        path = "etc/ssh/sshd_config.d/30-aiden.conf"
+        self.change(path, "# deferred SSH setting\n")
+        # This path was unknown to old prerm; new preinst must extend its snapshot.
+        target = self.device / path
+        target.write_text("# already supplied locally\n")
+        self.dpkg("-i", self.package("0.0.4"))
+        self.assertEqual(self.changes(), [])  # dpkg kept the administrator's file.
+        self.change("etc/aiden/new-feature.conf", "enabled=true\n")
+        self.dpkg("-i", self.package("0.0.5"))
+        self.assertEqual(self.changes(), ["etc/aiden/new-feature.conf"])
+        self.assertEqual((self.device / "run/reboot-required.pkgs").read_text(), "aiden-business\n")
+        self.boot()
+        self.dpkg("--configure", "aiden-business", success=False)  # already configured
+        self.fixture.run_phase("postinst", "configure")
+        self.assertEqual(self.changes(), [])
+
+    def test_changed_network_config_marks_reboot_and_local_conffile_is_preserved(self):
+        path = "etc/systemd/network/20-wlan0.network"
+        self.dpkg("-i", self.package("0.0.2"))
+        self.boot()
+        original = (self.source / "overlay-debian" / path).read_text()
+        self.change(path, original + "\n# new upstream setting\n")
+        self.dpkg("-i", self.package("0.0.3"))
+        self.assertEqual(self.changes(), [path])
+        self.boot()
+        local = self.device / path
+        local.write_text(local.read_text() + "\n# local override\n")
+        self.change(path, original + "\n# next upstream setting\n")
+        self.dpkg("-i", self.package("0.0.4"))
+        self.assertEqual(self.changes(), [])
+        self.assertIn("local override", local.read_text())
+
+    def test_configure_failure_keeps_services_stopped_until_retry(self):
+        self.dpkg("-i", self.package("0.0.2"))
+        self.boot()
+        before = self.fixture.states()
+        self.fixture.env["MOCK_INVALID_SUDOERS"] = "1"
+        self.dpkg("-i", self.package("0.0.3"), success=False)
+        self.assertTrue(self.fixture.transaction.exists())
+        self.assertTrue(all(state == "inactive" for state in self.fixture.states().values()))
+        del self.fixture.env["MOCK_INVALID_SUDOERS"]
         self.dpkg("--configure", "aiden-business")
-        self.assertEqual(self.fixture.states(), self.before)
+        self.assertEqual(self.fixture.states(), before)
 
-    def test_failed_preinst_restores_old_pair(self):
-        self.installed_pair()
-        new = self.package("0.0.3", fail_preinst=True)
-        self.dpkg("--install", new["aiden-business"], success=False)
-        self.assertEqual(self.fixture.states(), self.before)
-        self.assertFalse(self.fixture.transaction.exists())
+    def test_failed_preinst_restores_services_and_preserves_old_files(self):
+        self.dpkg("-i", self.package("0.0.2"))
+        self.boot()
+        before = self.fixture.states()
+        path = "etc/aiden_boot.conf"
+        original = (self.device / path).read_text()
+        self.change(path, "# update\n")
+        self.dpkg("-i", self.package("0.0.3", fail_preinst=True), success=False)
+        self.assertEqual(self.fixture.states(), before)
+        self.assertEqual((self.device / path).read_text(), original)
+        self.assertFalse(self.fixture.config_transaction.exists())
 
-    def test_invalid_installed_sudoers_blocks_service_restart_and_retry_recovers(self):
-        self.installed_pair()
-        new = self.package("0.0.3")
-        self.dpkg("--auto-deconfigure", "--unpack", *new.values())
-        self.env["MOCK_INVALID_SUDOERS"] = "1"
-        self.dpkg("--configure", "aiden-system-config", success=False)
-        self.assert_stopped()
-        self.env.pop("MOCK_INVALID_SUDOERS")
-        self.dpkg("--configure", "--pending")
-        self.assertEqual(self.fixture.states(), self.before)
+    def test_policy_denial_keeps_services_and_still_records_deferred_changes(self):
+        self.dpkg("-i", self.package("0.0.2"))
+        self.boot()
+        before = self.fixture.states()
+        self.fixture.policy.write_text("#!/bin/sh\nexit 101\n")
+        self.fixture.policy.chmod(0o755)
+        self.change("etc/aiden/new.conf", "new=true\n")
+        self.dpkg("-i", self.package("0.0.3"))
+        self.assertEqual(self.fixture.states(), before)
+        self.assertEqual(self.changes(), ["etc/aiden/new.conf"])
 
-    def test_payload_permissions_conffiles_and_local_edits(self):
-        old = self.installed_pair()
-        config = old["aiden-system-config"]
-        tar = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(config)])
-        with tarfile.open(fileobj=io.BytesIO(tar)) as archive:
-            for path, mode in system_config.files().items():
-                member = archive.getmember("./" + path)
-                self.assertEqual((member.uid, member.gid, member.mode), (0, 0, int(mode, 8)))
-        control = self.root / "extracted-control"
-        subprocess.run(["dpkg-deb", "-e", str(config), str(control)], check=True)
-        self.assertEqual((control / "conffiles").read_text().splitlines(),
-                         ["/etc/profile.d/aiden-env.sh", "/etc/sudoers.d/20-aiden-proxy"])
-        if self.real_visudo:
-            subprocess.run([self.real_visudo, "-cf", str(self.device / "etc/sudoers.d/20-aiden-proxy")], check=True)
-        profile = self.device / "etc/profile.d/aiden-env.sh"
-        profile.write_text(profile.read_text() + "\n# local administrator setting\n")
-        new = self.package("0.0.3")
-        self.dpkg("--auto-deconfigure", "--install", *new.values())
-        self.assertIn("local administrator setting", profile.read_text())
-        owners = subprocess.check_output([shutil.which("dpkg-query"), "--root=" + str(self.device),
-                                           "-S", "/etc/profile.d/aiden-env.sh"], text=True)
-        self.assertEqual(owners.strip(), "aiden-system-config: /etc/profile.d/aiden-env.sh")
-
-    def test_production_packager_creates_a_disjoint_verified_pair(self):
+    def test_production_packager_builds_one_verified_package(self):
         apps = self.root / "apps"
         (apps / "bin").mkdir(parents=True)
-        names = "agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd"
-        for name in names.split():
+        for name in "agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd".split():
             binary = apps / "bin" / name
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
@@ -178,22 +204,24 @@ class PairTests(unittest.TestCase):
                                 f'REPO_ROOT="{ROOT}" APPS_DIR="{apps}" OUTPUT_DIR="{output}"')
         env = {**self.env, "AIDEN_BUSINESS_VERSION": "0.0.9"}
         subprocess.run(["bash", "-c", script], env=env, check=True, stdout=subprocess.DEVNULL)
-        business = output / "aiden-business_0.0.9-1_armhf.deb"
-        config = output / "aiden-system-config_0.0.9-1_all.deb"
-        standalone_release.verify_pair(business, config, "0.0.9-1")
-        def payload(package):
-            data = subprocess.check_output(["dpkg-deb", "--fsys-tarfile", str(package)])
-            with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-                return {m.name for m in archive if m.isfile() or m.issym()}
-        self.assertFalse(payload(business) & payload(config))
-        # Exercise standalone staging using the real package bytes, isolating
-        # source provenance because the binaries above intentionally are fixtures.
+        package = output / "aiden-business_0.0.9-1_armhf.deb"
+        self.assertEqual(list(output.glob("*.deb")), [package])
+        standalone_release.verify_runtime_config(package, 1)
+        # Only binary provenance is mocked: the test binaries are explicit fixtures.
         with patch.object(standalone_release, "check_source", return_value=("a" * 40, "b" * 40)), patch.dict(os.environ, env):
             standalone_release.stage(ROOT, apps, output)
-        self.assertEqual(standalone_release.verify(output / "release")["package_set"], 2)
+        standalone_release.verify(output / "release")
+        self.assertEqual(json.loads(standalone_release.package_manifest(package))["runtime_config"], 1)
+        # Tampering with the manifest cannot conceal a changed file or conffile list.
+        staged = output / "package-root"
+        config = staged / "etc/aiden_boot.conf"
+        config.write_text(config.read_text() + "\n# tampered\n")
+        subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(staged), str(package)], check=True, stdout=subprocess.DEVNULL)
+        with self.assertRaisesRegex(ValueError, "differs from inventory"):
+            standalone_release.verify_runtime_config(package, 1)
 
 
 if __name__ == "__main__":
     if shutil.which("dpkg") and os.geteuid() != 0:
-        raise SystemExit("Run this integration test as root in the disposable package-builder container; dpkg must replace 0440 conffiles.")
+        raise SystemExit("Run as root inside the disposable test container; dpkg must replace 0440 conffiles.")
     unittest.main()
