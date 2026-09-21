@@ -1,0 +1,16 @@
+{
+  "raw_artifact": "runs/before-089-01/tasks/find_item_089/environment_state.json",
+  "raw_sha256": "a0652cbc1b3132ca975d7319a16a9f3a6813704784a5f365b45cc6db8f30dc93",
+  "route": {
+    "app": "scroll_lab",
+    "path": "/"
+  },
+  "apps": {
+    "scroll_lab": {
+      "selectedItemId": null,
+      "scrollTop": 8315,
+      "firstVisibleOrdinal": 86,
+      "maxFirstVisibleOrdinal": 86
+    }
+  }
+}

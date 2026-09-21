@@ -34,6 +34,10 @@ def main():
     parser.add_argument('directory', type=Path)
     args = parser.parse_args()
     root = args.directory.resolve()
+    manifest = json.loads((root/'manifest.json').read_text())
+    targets = manifest['targets']
+    geometry_path = root/'row-geometry.json'
+    geometry = json.loads(geometry_path.read_text()) if geometry_path.exists() else None
     rows = []
     for path in sorted((root/'runs').glob('*/results.jsonl')):
         run_id = path.parent.name
@@ -55,8 +59,21 @@ def main():
         coasts = [abs(record['metrics']['coast_px']) for record in hid]
         opened = lab.get('selectedItemId') == f'scroll-item-{target:03d}' and state['route']['path'] == f'/item/scroll-item-{target:03d}'
         overshoot = lab['maxFirstVisibleOrdinal'] > target
+        terminal_path = root/arm/'hid'/f'{run_id}.terminal.json'
+        terminal = json.loads(terminal_path.read_text()) if terminal_path.exists() else None
+        success = (terminal is not None and terminal['reason'] == 'target_visible') if manifest.get('visibility_goal') else (metrics.get('success') is True and terminal is None)
+        overshoot_phase = ''
+        if overshoot and hid and geometry:
+            target_bottom = geometry['rows'][target-1]['bottom']
+            overshoot_phase = 'inertia' if hid[-1]['metrics']['at_release'] < target_bottom else 'contact'
         rows.append({'run_id':run_id,'arm':arm,'target':target,'repeat':int(repeat),
-            'status':result['status'],'success':metrics.get('success') is True,
+            'status':('passed' if success else 'failed') if manifest.get('visibility_goal') else result['status'],
+            'success':success, 'runner_status':result['status'],
+            'terminal_reason':terminal['reason'] if terminal else '',
+            'first_visible':lab['firstVisibleOrdinal'],
+            'last_visible':terminal['evidence'].get('last') if terminal else None,
+            'target_visible_px':terminal['evidence'].get('target_visible_px') if terminal else None,
+            'overshoot_phase':overshoot_phase,
             'opened_target':opened,'overshoot':overshoot,'opened_after_overshoot':opened and overshoot,
             'max_first_visible':lab['maxFirstVisibleOrdinal'], 'selected_item':lab.get('selectedItemId'),
             'wall_sec':metrics['wall_ms']/1000, 'tool_calls':metrics['tool_calls'],
@@ -70,7 +87,7 @@ def main():
             'report':str(path.parent.relative_to(root)/'report.html')})
     summary = {}
     for arm in ('before','after'):
-        for target in (24,83,None):
+        for target in [*targets,None]:
             selected = [r for r in rows if r['arm'] == arm and (target is None or r['target'] == target)]
             if not selected:
                 continue
@@ -86,7 +103,7 @@ def main():
                 'median_swipes':statistics.median(r['swipes'] for r in selected if r['swipes'] is not None)
                     if any(r['swipes'] is not None for r in selected) else None}
     comparisons = {}
-    for target in (24,83,'all'):
+    for target in [*targets,'all']:
         before, after = summary.get(f'before-{target}'), summary.get(f'after-{target}')
         if before and after:
             comparisons[str(target)] = {'difference_percentage_points':100*(after['rate']-before['rate']),
@@ -96,7 +113,7 @@ def main():
     for arm in ('before','after'):
         valid_ids = {r['run_id'] for r in rows if r['arm'] == arm}
         records = [json.loads(p.read_text()) for p in (root/arm/'hid').glob('*.json')]
-        records = [r for r in records if r.get('task_id') in valid_ids]
+        records = [r for r in records if r.get('task_id') in valid_ids and 'metrics' in r]
         coasts = [abs(r['metrics']['coast_px']) for r in records]
         if coasts:
             mechanical[arm] = {'swipes':len(coasts),'nonzero_coasts':sum(c>0 for c in coasts),
@@ -112,15 +129,22 @@ def main():
     lines = ['# PR #715 Scroll Comparison','',
         '| Target | Before | After | Difference | Fisher two-sided p |',
         '| --- | ---: | ---: | ---: | ---: |']
-    for target in (24,83,'all'):
+    for target in [*targets,'all']:
         before, after = summary.get(f'before-{target}'), summary.get(f'after-{target}')
         if before and after:
             value = comparisons[str(target)]
             lines.append(f'| {target} | {before["successes"]}/{before["n"]} ({before["rate"]:.0%}) | '
                          f'{after["successes"]}/{after["n"]} ({after["rate"]:.0%}) | '
                          f'{value["difference_percentage_points"]:+.1f} pp | {value["fisher_two_sided_p"]:.4f} |')
-    lines.extend(['','Success uses the unchanged suite: correct selected item and route, no target overshoot, '
-                  'at most 40 tool calls, and at most 240 seconds. Returning to a passed target cannot undo failure.',
+    for arm in manifest.get('arms', ['before','after']):
+        total = summary.get(f'{arm}-all')
+        if total:
+            lines.extend(['',f'{arm}: {total["successes"]}/{total["n"]} ({total["rate"]:.0%}).'])
+    criterion = ('Primary success: target intersects the viewport after a fully settled swipe. Stop immediately on success or overshoot; no detail click required. Raw runner scores still evaluate the original detail-page task and are secondary diagnostics.' if manifest.get('visibility_goal') else
+        'Success uses the unchanged suite: correct selected item and route, no target overshoot, '
+                  'at most 40 tool calls, and at most 240 seconds. Returning to a passed target cannot undo failure.'
+    )
+    lines.extend(['',criterion,
                   '', 'These are simulated HID-report replay results with DeepSeek, not real-device success rates.',
                   '', '| Trial | Success | Target Opened | Overshoot | Maximum First Row | Seconds | Tool Calls |',
                   '| --- | --- | --- | --- | ---: | ---: | ---: |'])

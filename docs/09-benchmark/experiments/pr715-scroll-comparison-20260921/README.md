@@ -1,5 +1,11 @@
 # PR #715: DeepSeek Scroll Lab comparison
 
+> Historical fixed-target experiment. This did not implement the user's later
+> clarified ten-random-target, immediate-stop protocol. See the
+> [corrected baseline](../pr715-visible10-before-20260921/README.md), which is kept
+> separate and currently has no after-version counterpart. Reverse scrolling
+> was possible here, although an overshoot could never be scored as success.
+
 **The existing target-search suite did not show a success-rate improvement.**
 Before #715, 19/20 trials passed (95%); with #715, 18/20 passed (90%). The
 simulation did show a substantial reduction in release inertia and missing

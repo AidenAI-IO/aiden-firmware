@@ -1,0 +1,249 @@
+{
+  "episode_id": "reset-e75646c8c8c64eeca3eb6187dd6ed245",
+  "task_id": "before-058-01",
+  "request": {
+    "operation": "swipe",
+    "swipe": {
+      "path": [
+        [
+          500,
+          850
+        ],
+        [
+          500,
+          150
+        ]
+      ],
+      "button": "left",
+      "duration_ms": 233
+    }
+  },
+  "samples": [
+    {
+      "time_ms": 0.002959,
+      "x": 500.015259254738,
+      "y": 850.0015259254739,
+      "down": true,
+      "report": "AwEAQMxs"
+    },
+    {
+      "time_ms": 0.00325,
+      "x": 500.015259254738,
+      "y": 820.8258308664205,
+      "down": true,
+      "report": "AwEAQBBp"
+    },
+    {
+      "time_ms": 10.025167,
+      "x": 500.015259254738,
+      "y": 791.6806543168432,
+      "down": true,
+      "report": "AwEAQFVl"
+    },
+    {
+      "time_ms": 20.05675,
+      "x": 500.015259254738,
+      "y": 762.5049592577899,
+      "down": true,
+      "report": "AwEAQJlh"
+    },
+    {
+      "time_ms": 30.08925,
+      "x": 500.015259254738,
+      "y": 733.3292641987365,
+      "down": true,
+      "report": "AwEAQN1d"
+    },
+    {
+      "time_ms": 39.605167,
+      "x": 500.015259254738,
+      "y": 704.1535691396832,
+      "down": true,
+      "report": "AwEAQCFa"
+    },
+    {
+      "time_ms": 49.613792,
+      "x": 500.015259254738,
+      "y": 675.0083925901059,
+      "down": true,
+      "report": "AwEAQGZW"
+    },
+    {
+      "time_ms": 59.621417,
+      "x": 500.015259254738,
+      "y": 645.8326975310525,
+      "down": true,
+      "report": "AwEAQKpS"
+    },
+    {
+      "time_ms": 69.058542,
+      "x": 500.015259254738,
+      "y": 616.6570024719992,
+      "down": true,
+      "report": "AwEAQO5O"
+    },
+    {
+      "time_ms": 79.107042,
+      "x": 500.015259254738,
+      "y": 587.511825922422,
+      "down": true,
+      "report": "AwEAQDNL"
+    },
+    {
+      "time_ms": 89.114542,
+      "x": 500.015259254738,
+      "y": 558.3361308633687,
+      "down": true,
+      "report": "AwEAQHdH"
+    },
+    {
+      "time_ms": 99.144292,
+      "x": 500.015259254738,
+      "y": 529.1604358043153,
+      "down": true,
+      "report": "AwEAQLtD"
+    },
+    {
+      "time_ms": 109.177209,
+      "x": 500.015259254738,
+      "y": 499.984740745262,
+      "down": true,
+      "report": "AwEAQP8/"
+    },
+    {
+      "time_ms": 119.157542,
+      "x": 500.015259254738,
+      "y": 470.83956419568466,
+      "down": true,
+      "report": "AwEAQEQ8"
+    },
+    {
+      "time_ms": 128.619834,
+      "x": 500.015259254738,
+      "y": 441.6638691366314,
+      "down": true,
+      "report": "AwEAQIg4"
+    },
+    {
+      "time_ms": 138.180667,
+      "x": 500.015259254738,
+      "y": 412.48817407757804,
+      "down": true,
+      "report": "AwEAQMw0"
+    },
+    {
+      "time_ms": 148.190875,
+      "x": 500.015259254738,
+      "y": 383.34299752800075,
+      "down": true,
+      "report": "AwEAQBEx"
+    },
+    {
+      "time_ms": 158.225167,
+      "x": 500.015259254738,
+      "y": 354.1673024689474,
+      "down": true,
+      "report": "AwEAQFUt"
+    },
+    {
+      "time_ms": 168.267209,
+      "x": 500.015259254738,
+      "y": 324.9916074098941,
+      "down": true,
+      "report": "AwEAQJkp"
+    },
+    {
+      "time_ms": 177.455042,
+      "x": 500.015259254738,
+      "y": 295.8464308603168,
+      "down": true,
+      "report": "AwEAQN4l"
+    },
+    {
+      "time_ms": 187.487375,
+      "x": 500.015259254738,
+      "y": 266.67073580126345,
+      "down": true,
+      "report": "AwEAQCIi"
+    },
+    {
+      "time_ms": 197.522542,
+      "x": 500.015259254738,
+      "y": 237.49504074221014,
+      "down": true,
+      "report": "AwEAQGYe"
+    },
+    {
+      "time_ms": 207.553167,
+      "x": 500.015259254738,
+      "y": 208.31934568315683,
+      "down": true,
+      "report": "AwEAQKoa"
+    },
+    {
+      "time_ms": 217.580625,
+      "x": 500.015259254738,
+      "y": 179.1741691335795,
+      "down": true,
+      "report": "AwEAQO8W"
+    },
+    {
+      "time_ms": 227.60325,
+      "x": 500.015259254738,
+      "y": 149.9984740745262,
+      "down": true,
+      "report": "AwEAQDMT"
+    },
+    {
+      "time_ms": 227.60475,
+      "x": 500.015259254738,
+      "y": 149.9984740745262,
+      "down": false,
+      "report": "AAEAQDMT"
+    },
+    {
+      "time_ms": 243.124584,
+      "x": 500.015259254738,
+      "y": 149.9984740745262,
+      "down": false,
+      "report": "AAEAQDMT"
+    },
+    {
+      "time_ms": 259.154625,
+      "x": 500.015259254738,
+      "y": 149.9984740745262,
+      "down": false,
+      "report": "AAEAQDMT"
+    }
+  ],
+  "metrics": {
+    "before": 3935,
+    "at_release": 4495,
+    "after": 5357,
+    "coast_px": 862,
+    "release_velocity_css_px_s": 2358.3621521012637,
+    "predicted_coast_px": 861.895831869169,
+    "motion_ms": 227.601791,
+    "velocity_window_ms": 100,
+    "sample_count": 26,
+    "crossing": null,
+    "visibility": {
+      "first": 55,
+      "last": 62,
+      "target_visible": true,
+      "target_visible_px": 98.078125
+    }
+  },
+  "state": {
+    "apps": {
+      "scroll_lab": {
+        "selectedItemId": null,
+        "scrollTop": 5357,
+        "firstVisibleOrdinal": 55,
+        "maxFirstVisibleOrdinal": 55
+      }
+    }
+  },
+  "raw_artifact": "before/hid/before-058-01-0021.json",
+  "raw_sha256": "fd64fa2ece4f739f1626c9b9bcc9542f746b13ac34bdf84e19300ea3c157c807"
+}

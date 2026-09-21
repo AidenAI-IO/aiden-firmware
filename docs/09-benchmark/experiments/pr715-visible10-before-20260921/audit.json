@@ -1,0 +1,17 @@
+{
+  "trials_checked": 10,
+  "swipes_checked": 47,
+  "hid_reports_checked": 1316,
+  "tools": [
+    "screenshot",
+    "shell",
+    "skill_read",
+    "touch_gesture"
+  ],
+  "geometry_first_visible_checks": 47,
+  "terminal_cancellations_checked": 10,
+  "shell_commands_checked": 64,
+  "shell_commands_outside_tool_result_reads": [],
+  "credential_scan_performed": true,
+  "credential_match_files": []
+}

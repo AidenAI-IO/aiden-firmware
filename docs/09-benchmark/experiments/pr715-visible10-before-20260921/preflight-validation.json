@@ -1,0 +1,32 @@
+{
+  "visibility_failure": {
+    "target": 5,
+    "settled_visible_range": [
+      24,
+      31
+    ],
+    "reason": "target_overshoot"
+  },
+  "visibility_success": {
+    "target": 12,
+    "settled_visible_range": [
+      10,
+      16
+    ],
+    "target_visible_px": 98.078125,
+    "detail_not_opened": true
+  },
+  "mutation_gate": {
+    "blocked": [
+      "reverse swipe",
+      "click",
+      "same-trial reset",
+      "direct tool"
+    ],
+    "response_status": 409,
+    "route_and_scroll_lab_state_unchanged": true
+  },
+  "pytest": {
+    "passed": 48
+  }
+}

@@ -1,6 +1,59 @@
 # PR #715 Scroll Comparison
 
-This experiment compares the original two tasks from
+## Random ten-target protocol (current)
+
+The user's corrected protocol samples ten distinct targets uniformly from all
+100 Scroll Lab items, once before either arm runs. Preserve the seed and ordered
+sample in `manifest.json`; never choose a replacement sample after seeing results.
+Run each selected task once, with its existing prompt and 240-second timeout.
+The primary outcome is visibility after a settled swipe; the original runner's
+detail-page assertions are retained as secondary diagnostics only.
+Only the **before** arm is currently authorized; wait for the user before the
+after experiment. The frozen sample is 45, 89, 24, 58, 56, 87, 61, 76, 30, 11
+(seed `11570657923826534781`).
+
+```bash
+.venv/bin/python scripts/pr715/run.py \
+  --mobilegym-root /path/to/pinned-mobilegym \
+  --out /path/to/new-results-directory \
+  --arms before --random-count 10 --seed 11570657923826534781 \
+  --repeats 1 --visibility-goal
+```
+
+After the full contact and inertial motion has settled, the visibility mode
+checks the rendered list viewport. Any positive intersection with the target
+row is success; a first visible ordinal beyond the target is failure. A target
+that flashed past during motion but is gone at rest fails. Both outcomes are
+terminal: all subsequent mutations (including rollback, clicks and same-trial
+reset) return HTTP 409. State/screenshot reads remain available for evidence.
+Reverse swipe attempts before a terminal outcome are also blocked and fail.
+An experiment-local runner hook observes the terminal file and cancels the
+specific Agent request, preserving its trace and the frozen final state. The
+Agent need not open the detail page. Cancellation therefore makes the original
+runner's final-response/detail-page checks fail even on primary visibility
+success; use the derived visibility result, not that raw score.
+Internal target/crossing data is saved only as judge evidence, never returned
+to the Agent. The model receives the unchanged task prompt.
+
+Before formal trials, verify termination with `--arms before
+--visibility-goal --probe-only`: a 120 ms old-version swipe passes target 5 during
+the fling and fails after settling, then rollback, click, direct tool and reset all return 409
+without changing the route or Scroll Lab state. These probes are excluded from
+the ten-trial denominator. A 300 ms swipe leaves item 12 visible and immediately
+passes without a detail click. Unit tests also verify request-specific cancellation
+and normal completion. No after-version probes run in this baseline-only phase.
+
+All sampled targets stay in the denominator, including overshoots, blocked
+rollback attempts, timeouts and other failures. The earlier fixed-target run
+below remains historical evidence and is not pooled with this protocol.
+An intervening random-target batch was stopped when the user clarified that
+visibility alone suffices. Its four completed trials and interrupted fifth
+trial are preserved as superseded, excluded from this baseline. The entire
+same ten-target sample is run afresh; no failures are selectively rerun.
+
+## Original fixed-target protocol (historical)
+
+The original experiment compares the two tasks from
 `benchmark/suites/mobilegym_scroll_regression.json` using the active DeepSeek
 account/model configuration read from `ssh luckfox`. Credentials are kept in
 temporary directories with mode 0700 and configuration files with mode 0600;

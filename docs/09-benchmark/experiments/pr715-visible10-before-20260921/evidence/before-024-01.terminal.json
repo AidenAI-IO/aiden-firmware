@@ -1,0 +1,13 @@
+{
+  "task_id": "before-024-01",
+  "reason": "target_visible",
+  "evidence": {
+    "record": "before-024-01-0017.json",
+    "target": 24,
+    "scroll_top": 2040,
+    "first": 21,
+    "last": 28,
+    "target_visible": true,
+    "target_visible_px": 84
+  }
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "arm": "before",
+    "duration_ms": 120,
+    "before": 0,
+    "at_release": 480,
+    "after": 2241,
+    "coast_px": 1761,
+    "release_velocity_css_px_s": 3559.063380852758,
+    "predicted_coast_px": 1761.0415392604184,
+    "motion_ms": 128.962709,
+    "velocity_window_ms": 100,
+    "sample_count": 26,
+    "crossing": null,
+    "visibility": {
+      "first": 23,
+      "last": 30,
+      "target_visible": false,
+      "target_visible_px": 0
+    }
+  },
+  {
+    "arm": "before",
+    "duration_ms": 300,
+    "before": 0,
+    "at_release": 480,
+    "after": 902,
+    "coast_px": 422,
+    "release_velocity_css_px_s": 1562.1460902105227,
+    "predicted_coast_px": 421.55657218564056,
+    "motion_ms": 296.489208,
+    "velocity_window_ms": 100,
+    "sample_count": 26,
+    "crossing": null,
+    "visibility": {
+      "first": 10,
+      "last": 16,
+      "target_visible": false,
+      "target_visible_px": 0
+    }
+  },
+  {
+    "arm": "before",
+    "duration_ms": 600,
+    "before": 0,
+    "at_release": 480,
+    "after": 604,
+    "coast_px": 124,
+    "release_velocity_css_px_s": 771.9773330307231,
+    "predicted_coast_px": 123.98086561424925,
+    "motion_ms": 597.5264999999999,
+    "velocity_window_ms": 100,
+    "sample_count": 26,
+    "crossing": null,
+    "visibility": {
+      "first": 7,
+      "last": 13,
+      "target_visible": false,
+      "target_visible_px": 0
+    }
+  }
+]

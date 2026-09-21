@@ -1,0 +1,13 @@
+{
+  "task_id": "before-061-01",
+  "reason": "target_overshoot",
+  "evidence": {
+    "record": "before-061-01-0039.json",
+    "target": 61,
+    "scroll_top": 6234,
+    "first": 64,
+    "last": 71,
+    "target_visible": false,
+    "target_visible_px": 0
+  }
+}

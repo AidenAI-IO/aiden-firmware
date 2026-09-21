@@ -5,6 +5,7 @@ import argparse
 import base64
 import hashlib
 import json
+import random
 from pathlib import Path
 import struct
 import subprocess
@@ -20,18 +21,22 @@ def main():
     manifest = json.loads((root/'manifest.json').read_text())
     for name, expected in manifest['sha256'].items():
         assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == expected, name
-    suite = Path(__file__).resolve().parents[2]/'suites/mobilegym_scroll_regression.json'
+    suite = Path(__file__).resolve().parents[2]/manifest.get('suite_path','suites/mobilegym_scroll_regression.json')
     assert hashlib.sha256(suite.read_bytes()).hexdigest() == manifest['suite_sha256']
-    expected_ids = {f'{arm}-{target:03d}-{repeat:02d}' for arm in ('before','after')
+    expected_ids = {f'{arm}-{target:03d}-{repeat:02d}' for arm in manifest.get('arms',['before','after'])
                     for target in manifest['targets']
                     for repeat in range(1,manifest['repeats_per_target_per_arm']+1)}
     actual_ids = {p.parent.name for p in (root/'runs').glob('*/results.jsonl')}
     assert actual_ids == expected_ids, {'missing':sorted(expected_ids-actual_ids),'extra':sorted(actual_ids-expected_ids)}
+    sampling = manifest.get('sampling',{})
+    if sampling.get('count'):
+        assert random.Random(sampling['seed']).sample(range(1,101),sampling['count']) == manifest['targets']
     samples_checked = 0
     swipes_checked = 0
     geometry = json.loads((root/'row-geometry.json').read_text())
     shell_commands = []
     tools = set()
+    terminals_checked = 0
     for run_id in sorted(expected_ids):
         arm, target, _ = run_id.split('-')
         result = json.loads((root/'runs'/run_id/'results.jsonl').read_text())
@@ -41,9 +46,38 @@ def main():
         lab = snapshot['apps']['scroll_lab']
         highwater = 1
         records = sorted((root/arm/'hid').glob(f'{run_id}-*.json'))
+        terminal_path = root/arm/'hid'/f'{run_id}.terminal.json'
+        terminal = json.loads(terminal_path.read_text()) if terminal_path.exists() else None
+        if terminal:
+            assert manifest['strict_stop'] and result['metrics'].get('success') is not True
+            cancel = json.loads(terminal_path.with_suffix('.cancel.json').read_text())
+            assert cancel['status'] == 'canceled'
+            assert lab['selectedItemId'] is None and snapshot['route']['path'] == '/'
+            if manifest.get('visibility_goal'):
+                evidence = terminal['evidence']
+                if terminal['reason'] in ('target_overshoot','target_visible'):
+                    assert records[-1].name == evidence['record']
+                    assert lab['scrollTop'] == evidence['scroll_top']
+                    assert lab['firstVisibleOrdinal'] == evidence['first']
+                    target_geom = next(row for row in geometry['rows'] if row['ordinal'] == int(target))
+                    visible_px = max(0,min(target_geom['bottom'],lab['scrollTop']+geometry['container_height'])-max(target_geom['top'],lab['scrollTop']))
+                    assert abs(visible_px-evidence['target_visible_px']) < 1e-6
+                    assert (terminal['reason'] == 'target_visible') == (visible_px > 0)
+                    if terminal['reason'] == 'target_overshoot':
+                        assert evidence['first'] > int(target)
+            elif terminal['reason'] == 'target_overshoot':
+                evidence = terminal['evidence']
+                assert evidence['first_visible'] > int(target)
+                assert records[-1].name == evidence['record']
+                assert lab['scrollTop'] == evidence['scroll_top']
+                assert lab['firstVisibleOrdinal'] == evidence['first_visible']
+            terminals_checked += 1
         for index, path in enumerate(records):
             record = json.loads(path.read_text())
             assert record['task_id'] == run_id
+            if manifest.get('strict_stop'):
+                path_points = record['request']['swipe']['path']
+                assert all(b[1] <= a[1] for a,b in zip(path_points,path_points[1:]))
             if index == 0:
                 assert record['metrics']['before'] == 0, f'{run_id}: nonzero reset'
             previous_time = -1
@@ -99,6 +133,7 @@ def main():
     output = {'trials_checked':len(expected_ids),'swipes_checked':swipes_checked,
               'hid_reports_checked':samples_checked,'tools':sorted(tools),
               'geometry_first_visible_checks':swipes_checked,
+              'terminal_cancellations_checked':terminals_checked,
               'shell_commands_checked':len(shell_commands),
               'shell_commands_outside_tool_result_reads':suspicious,
               'credential_scan_performed':args.check_board_credentials,

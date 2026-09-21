@@ -1,0 +1,8 @@
+{
+  "before_binaries_match_previous_frozen_build": {
+    "/tmp/pr715-before-agent": true,
+    "/tmp/pr715-before-hid": true
+  },
+  "production_source_matches_before_commit": true,
+  "source_files_checked": 615
+}
