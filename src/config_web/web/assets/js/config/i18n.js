@@ -10,7 +10,7 @@ const DEFAULT_LOCALE = 'en-US';
 const messages = {
   'en-US': {
     'document.title': 'Aiden Setup',
-    'page.title': 'Configuration',
+    'page.title': 'Device Settings',
     'page.language': 'Language',
     'page.timezone': 'Time zone',
     'page.llm_logs': 'LLM Logs',
@@ -528,7 +528,7 @@ const messages = {
   },
   'zh-CN': {
     'document.title': 'Aiden 设置',
-    'page.title': '配置',
+    'page.title': '设备设置',
     'page.language': '语言',
     'page.timezone': '时区',
     'page.llm_logs': 'LLM 日志',
