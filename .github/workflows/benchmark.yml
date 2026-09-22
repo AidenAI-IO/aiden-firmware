@@ -89,6 +89,7 @@ jobs:
     timeout-minutes: 60
     env:
       MATRIX: ${{ needs.plan.outputs.matrix }}
+      DOCKER_BUILDKIT: 1
       DAEMON_IMAGE: ${{ vars.DAEMON_IMAGE || 'aiden-agent-daemon:local' }}
       DAEMON_DOCKERFILE: benchmark/docker/Dockerfile.agent-daemon.cn
       MOBILEGYM_IMAGE: aiden-mobilegym-simulator:py311
@@ -138,6 +139,10 @@ jobs:
 
           # Verify installation
           docker compose version
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
       - name: Validate Docker runtime
         run: |
           set -euo pipefail
@@ -175,6 +180,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
+      DOCKER_BUILDKIT: 1
       BENCHMARK_AGENT_MODEL: ${{ vars.BENCHMARK_AGENT_MODEL }}
       BENCHMARK_AGENT_BASE_URL: ${{ vars.BENCHMARK_AGENT_BASE_URL }}
       BENCHMARK_AGENT_API_KEY: ${{ secrets.BENCHMARK_AGENT_API_KEY }}
@@ -239,6 +245,10 @@ jobs:
 
           # Verify installation
           docker compose version
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
       - name: Validate benchmark credentials
         env:
           REQUIRED_VALUES: >-
