@@ -46,6 +46,18 @@ const (
 	apiLLMLogs
 	apiLLMLogExport
 	apiLLMLogImport
+	apiMaintenanceSession
+	apiMaintenanceCurrent
+	apiBackupCapabilities
+	apiBackupJobs
+	apiBackupJob
+	apiBackupArchive
+	apiRestoreJobs
+	apiRestoreJob
+	apiRestoreChunk
+	apiRestorePlan
+	apiRestoreValidate
+	apiRestoreApply
 )
 
 type routeVariant struct{ method, path string }
@@ -87,6 +99,11 @@ var apiRoutes = []apiRoute{
 	{apiUSBReenumerate, routeVariant{http.MethodPost, apiPrefix + "/device/usb/reenumerate"}},
 	{apiSupportArchive, routeVariant{http.MethodGet, apiPrefix + "/logs/support"}},
 	{apiLLMLogs, routeVariant{http.MethodGet, apiPrefix + "/logs/llm"}},
+	{apiMaintenanceSession, routeVariant{http.MethodPost, apiPrefix + "/maintenance/sessions"}},
+	{apiMaintenanceCurrent, routeVariant{http.MethodGet, apiPrefix + "/maintenance/current"}},
+	{apiBackupCapabilities, routeVariant{http.MethodGet, apiPrefix + "/backup/capabilities"}},
+	{apiBackupJobs, routeVariant{http.MethodPost, apiPrefix + "/backup/jobs"}},
+	{apiRestoreJobs, routeVariant{http.MethodPost, apiPrefix + "/restore/jobs"}},
 }
 
 type apiMatch struct {
@@ -100,6 +117,48 @@ func matchAPIRequest(r *http.Request) apiMatch {
 	for _, route := range apiRoutes {
 		if r.Method == route.canonical.method && r.URL.Path == route.canonical.path {
 			return apiMatch{endpoint: route.endpoint}
+		}
+	}
+	const backupJobPrefix = apiPrefix + "/backup/jobs/"
+	if strings.HasPrefix(r.URL.Path, backupJobPrefix) {
+		suffix := strings.TrimPrefix(r.URL.Path, backupJobPrefix)
+		if suffix != "" && !strings.Contains(suffix, "/") {
+			switch r.Method {
+			case http.MethodGet, http.MethodDelete:
+				return apiMatch{endpoint: apiBackupJob, suffix: suffix}
+			}
+		}
+		if jobID, ok := strings.CutSuffix(suffix, "/archive"); ok && jobID != "" && !strings.Contains(jobID, "/") && r.Method == http.MethodGet {
+			return apiMatch{endpoint: apiBackupArchive, suffix: jobID}
+		}
+	}
+	const restoreJobPrefix = apiPrefix + "/restore/jobs/"
+	if strings.HasPrefix(r.URL.Path, restoreJobPrefix) {
+		suffix := strings.TrimPrefix(r.URL.Path, restoreJobPrefix)
+		parts := strings.Split(suffix, "/")
+		if len(parts) == 1 && parts[0] != "" {
+			switch r.Method {
+			case http.MethodGet, http.MethodDelete:
+				return apiMatch{endpoint: apiRestoreJob, suffix: parts[0]}
+			}
+		}
+		if len(parts) == 3 && parts[0] != "" {
+			switch parts[1] {
+			case "chunks":
+				if r.Method == http.MethodPut && parts[2] != "" {
+					return apiMatch{endpoint: apiRestoreChunk, suffix: parts[0] + "/" + parts[2]}
+				}
+			}
+		}
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" && r.Method == http.MethodPost {
+			switch parts[1] {
+			case "plan":
+				return apiMatch{endpoint: apiRestorePlan, suffix: parts[0]}
+			case "validate":
+				return apiMatch{endpoint: apiRestoreValidate, suffix: parts[0]}
+			case "apply":
+				return apiMatch{endpoint: apiRestoreApply, suffix: parts[0]}
+			}
 		}
 	}
 	escapedPath := r.URL.EscapedPath()
@@ -117,12 +176,16 @@ func matchAPIRequest(r *http.Request) apiMatch {
 }
 
 func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
-	s.startDeferredRestartIfIdle()
 	match := matchAPIRequest(r)
 	if match.endpoint == apiUnknown {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
+	if s.maintenance != nil && s.maintenance.active() && endpointConflictsWithMaintenance(match.endpoint) {
+		s.writeMaintenanceLocked(w)
+		return
+	}
+	s.startDeferredRestartIfIdle()
 	w.Header().Set("X-Aiden-API-Version", "1")
 	switch match.endpoint {
 	case apiDeviceSnapshot:
@@ -191,5 +254,42 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleLLMLogExportName(w, match.suffix)
 	case apiLLMLogImport:
 		s.handleLLMLogImportName(w, r, match.suffix)
+	case apiMaintenanceSession:
+		s.handleMaintenanceSession(w, r)
+	case apiMaintenanceCurrent:
+		s.handleMaintenanceCurrent(w, r)
+	case apiBackupCapabilities:
+		s.handleBackupCapabilities(w, r)
+	case apiBackupJobs:
+		s.handleCreateBackupJob(w, r)
+	case apiBackupJob:
+		s.handleBackupJob(w, r, match.suffix)
+	case apiBackupArchive:
+		s.handleBackupArchive(w, r, match.suffix)
+	case apiRestoreJobs:
+		s.handleCreateRestoreJob(w, r)
+	case apiRestoreJob:
+		s.handleRestoreJob(w, r, match.suffix)
+	case apiRestoreChunk:
+		s.handleRestoreChunk(w, r, match.suffix)
+	case apiRestorePlan:
+		s.handleRestorePlan(w, r, match.suffix)
+	case apiRestoreValidate:
+		s.handleRestoreValidate(w, r, match.suffix)
+	case apiRestoreApply:
+		s.handleRestoreApply(w, r, match.suffix)
+	}
+}
+
+func endpointConflictsWithMaintenance(endpoint apiEndpoint) bool {
+	switch endpoint {
+	case apiConfigUpdate, apiConfigLocale, apiConfigTest, apiMemoryReset,
+		apiSTTTestStart, apiSTTTestStop, apiStorageFormat, apiStorageEject,
+		apiConfigBackupImport, apiWiFiScan, apiWiFiConnect, apiWiFiForget,
+		apiSystemEnvironmentPut, apiSystemEnvironmentApply, apiOTAUpdate,
+		apiDeviceReboot, apiUSBReenumerate, apiLLMLogImport:
+		return true
+	default:
+		return false
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/backup"
 	"aiden-agent/internal/configweb"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/wifiproxy"
@@ -61,6 +62,8 @@ func main() {
 			os.Exit(runConfigTest(os.Args[2:]))
 		case "config-web":
 			os.Exit(configweb.Run(os.Args[2:]))
+		case "backup-recover":
+			os.Exit(backup.RunRecover(os.Args[2:], os.Stdout, os.Stderr))
 		case "wifi-proxy":
 			os.Exit(wifiproxy.Run(os.Args[2:]))
 		}
