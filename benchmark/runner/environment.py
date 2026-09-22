@@ -735,16 +735,20 @@ def ensure_mobilegym_image(
     """Ensure the MobileGym image matches the commit pinned by the firmware tree."""
     repo_root = repo_root or Path(__file__).resolve().parents[2]
     source = resolve_mobilegym_source(repo_root)
+    build_args = {
+        "MOBILEGYM_REPO": source.repo,
+        "MOBILEGYM_COMMIT": source.commit,
+    }
+    for name in ("MOBILEGYM_NODE_IMAGE", "MOBILEGYM_DEBIAN_MIRROR"):
+        if value := os.environ.get(name):
+            build_args[name] = value
     ensure_docker_image(
         image,
         build_missing,
         log_path,
         "mobilegym-base",
         repo_root=repo_root,
-        build_args={
-            "MOBILEGYM_REPO": source.repo,
-            "MOBILEGYM_COMMIT": source.commit,
-        },
+        build_args=build_args,
         required_labels={MOBILEGYM_COMMIT_LABEL: source.commit},
     )
 

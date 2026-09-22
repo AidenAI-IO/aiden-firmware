@@ -162,6 +162,8 @@ def test_ensure_mobilegym_image_builds_missing_or_stale_image(
         "resolve_mobilegym_source",
         lambda repo_root: environment.MobileGymSource(MOBILEGYM_REPO, MOBILEGYM_COMMIT),
     )
+    monkeypatch.setenv("MOBILEGYM_NODE_IMAGE", "mirror.example/node:22-bookworm")
+    monkeypatch.setenv("MOBILEGYM_DEBIAN_MIRROR", "mirror.example")
 
     def fake_run(cmd, **kwargs):
         return environment.subprocess.CompletedProcess(
@@ -204,6 +206,10 @@ def test_ensure_mobilegym_image_builds_missing_or_stale_image(
         f"MOBILEGYM_REPO={MOBILEGYM_REPO}",
         "--build-arg",
         f"MOBILEGYM_COMMIT={MOBILEGYM_COMMIT}",
+        "--build-arg",
+        "MOBILEGYM_NODE_IMAGE=mirror.example/node:22-bookworm",
+        "--build-arg",
+        "MOBILEGYM_DEBIAN_MIRROR=mirror.example",
         "-t",
         "aiden-mobilegym-simulator:test",
         str(tmp_path),

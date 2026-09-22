@@ -12,11 +12,53 @@ from typing import Any, Mapping
 from ci.plan import BENCHMARK_ROOT, CatalogError, SuiteCase, load_catalog
 
 
-def _run_json(command: list[str]) -> dict[str, Any]:
+ACTION_ENVIRONMENT_ALIASES = {
+    "BENCHMARK_AGENT_PROVIDER": "AIDEN_BENCHMARK_AGENT_PROVIDER",
+    "BENCHMARK_AGENT_MODEL": "AIDEN_BENCHMARK_AGENT_MODEL",
+    "BENCHMARK_AGENT_BASE_URL": "AIDEN_BENCHMARK_AGENT_BASE_URL",
+    "BENCHMARK_AGENT_API_KEY": "AIDEN_BENCHMARK_AGENT_API_KEY",
+    "BENCHMARK_JUDGE_MODEL": "AIDEN_BENCHMARK_JUDGE_MODEL",
+    "BENCHMARK_JUDGE_BASE_URL": "AIDEN_BENCHMARK_JUDGE_BASE_URL",
+    "BENCHMARK_JUDGE_API_KEY": "AIDEN_BENCHMARK_JUDGE_API_KEY",
+    "DAEMON_IMAGE": "AIDEN_DAEMON_IMAGE",
+    "BENCHMARK_PHONE_ENVIRONMENT_URL": "AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL",
+    "BENCHMARK_IOS_ENVIRONMENT_URL": "AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL",
+    "BENCHMARK_MAC_ENVIRONMENT_URL": "AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL",
+    "BENCHMARK_VPHONE_ENVIRONMENT_URL": "AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL",
+    "BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL": (
+        "AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL"
+    ),
+    "BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL": (
+        "AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL"
+    ),
+}
+IMAGES_PREPARED_ENV = "BENCHMARK_CI_IMAGES_PREPARED"
+
+
+def _runtime_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    runtime = dict(environment)
+    for action_name, runtime_name in ACTION_ENVIRONMENT_ALIASES.items():
+        if action_name in environment:
+            runtime[runtime_name] = environment[action_name]
+    return runtime
+
+
+def _images_prepared(environment: Mapping[str, str]) -> bool:
+    return environment.get(IMAGES_PREPARED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _run_json(
+    command: list[str], *, environment: Mapping[str, str]
+) -> dict[str, Any]:
     completed = subprocess.run(
         command,
         cwd=BENCHMARK_ROOT,
         check=True,
+        env=environment,
         text=True,
         stdout=subprocess.PIPE,
     )
@@ -41,19 +83,20 @@ def _environment_url(
     if case.environment == "isolated":
         return "", None
     if case.environment == "mobilegym":
-        payload = _run_json(
-            [
-                python,
-                "-m",
-                "runner",
-                "start-mobilegym-env",
-                "--name",
-                run_id,
-                "--envs",
-                str(case.max_concurrency),
-                "--json",
-            ]
-        )
+        command = [
+            python,
+            "-m",
+            "runner",
+            "start-mobilegym-env",
+            "--name",
+            run_id,
+            "--envs",
+            str(case.max_concurrency),
+            "--json",
+        ]
+        if _images_prepared(environment):
+            command.append("--no-build-mobilegym-image")
+        payload = _run_json(command, environment=environment)
         return str(payload["environment_url"]), payload
     if case.environment == "adb":
         serial = environment.get("ANDROID_SERIAL", "").strip()
@@ -70,7 +113,8 @@ def _environment_url(
                 "--adb-serial",
                 serial,
                 "--json",
-            ]
+            ],
+            environment=environment,
         )
         return str(payload["environment_url"]), payload
     variable = case.environment_variable
@@ -131,13 +175,14 @@ def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
 
 
 def run_case(case: SuiteCase, *, run_id: str, environment: Mapping[str, str]) -> int:
+    runtime_environment = _runtime_environment(environment)
     environment_url = ""
     service: dict[str, Any] | None = None
     try:
         environment_url, service = _environment_url(
             case,
             run_id=run_id,
-            environment=environment,
+            environment=runtime_environment,
         )
         command = [
             sys.executable,
@@ -157,7 +202,14 @@ def run_case(case: SuiteCase, *, run_id: str, environment: Mapping[str, str]) ->
             command.extend(["--environment-url", environment_url])
         if case.target_platform != "auto":
             command.extend(["--target-platform", case.target_platform])
-        returncode = subprocess.run(command, cwd=BENCHMARK_ROOT, check=False).returncode
+        if _images_prepared(runtime_environment):
+            command.append("--no-build-daemon-image")
+        returncode = subprocess.run(
+            command,
+            cwd=BENCHMARK_ROOT,
+            env=runtime_environment,
+            check=False,
+        ).returncode
         return _effective_exit_code(returncode, BENCHMARK_ROOT / "runs" / run_id / "manifest.json")
     finally:
         _stop_service(service)

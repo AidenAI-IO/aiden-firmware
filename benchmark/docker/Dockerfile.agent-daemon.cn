@@ -2,8 +2,8 @@
 
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.23 AS agent-daemon-builder
 
-# China-mirror image: reaches the Huawei registry / goproxy.cn / Tsinghua apt
-# mirror directly, so it never uses an HTTP proxy.
+# China-mirror image: reaches the Huawei registry and goproxy.cn directly, so
+# it never uses an HTTP proxy.
 WORKDIR /build
 ENV GOPROXY=https://goproxy.cn,direct \
     GOTOOLCHAIN=auto
@@ -16,10 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
 
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/debian:bullseye-slim AS agent-daemon-runtime
 
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
-    rm -rf /var/lib/apt/lists/*
-
+COPY --from=agent-daemon-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=agent-daemon-builder /build/daemon /usr/local/bin/daemon
 COPY benchmark/docker/agent-daemon-entrypoint.sh /usr/local/bin/agent-daemon-entrypoint
 RUN chmod +x /usr/local/bin/agent-daemon-entrypoint

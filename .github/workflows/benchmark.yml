@@ -82,9 +82,73 @@ jobs:
           print(f"\n{len(cases)} case(s): " + ", ".join(case["id"] for case in cases))
           PY
 
-  run:
+  prepare-images:
     needs: plan
-    if: ${{ startsWith(github.ref, 'refs/heads/') }}
+    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    runs-on: aiden-hosted-01
+    timeout-minutes: 60
+    env:
+      MATRIX: ${{ needs.plan.outputs.matrix }}
+      DAEMON_IMAGE: ${{ vars.DAEMON_IMAGE || 'aiden-agent-daemon:local' }}
+      DAEMON_DOCKERFILE: benchmark/docker/Dockerfile.agent-daemon.cn
+      MOBILEGYM_IMAGE: aiden-mobilegym-simulator:py311
+      MOBILEGYM_NODE_IMAGE: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:22-bookworm
+      MOBILEGYM_DEBIAN_MIRROR: repo.huaweicloud.com
+      PREPARE_LOG: runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-prepare-images/mobilegym-image.log
+    steps:
+      - name: Reclaim persistent runner workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${GITHUB_WORKSPACE:-}" && -d "$GITHUB_WORKSPACE" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1; then
+              sudo chown -R "$owner" "$GITHUB_WORKSPACE"
+            elif [[ "$(id -u)" == "0" ]]; then
+              chown -R "$owner" "$GITHUB_WORKSPACE"
+            fi
+          fi
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: benchmark/uv.lock
+      - name: Install Python and benchmark dependencies
+        working-directory: benchmark
+        run: |
+          uv python install 3.12
+          uv sync --frozen --python 3.12
+      - name: Validate Docker runtime
+        run: |
+          set -euo pipefail
+          docker version
+          docker compose version
+          docker info
+      - name: Prepare benchmark images
+        working-directory: benchmark
+        run: >-
+          uv run python -m ci.prepare_images
+          --matrix-json "$MATRIX"
+          --daemon-image "$DAEMON_IMAGE"
+          --daemon-dockerfile "$DAEMON_DOCKERFILE"
+          --mobilegym-image "$MOBILEGYM_IMAGE"
+          --mobilegym-log "$PREPARE_LOG"
+      - name: Upload image build log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: benchmark/${{ env.PREPARE_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+  run:
+    needs:
+      - plan
+      - prepare-images
+    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     runs-on: aiden-hosted-01
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
@@ -92,24 +156,28 @@ jobs:
       max-parallel: 1
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      AIDEN_BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
-      AIDEN_BENCHMARK_AGENT_MODEL: ${{ vars.BENCHMARK_AGENT_MODEL }}
-      AIDEN_BENCHMARK_AGENT_BASE_URL: ${{ vars.BENCHMARK_AGENT_BASE_URL }}
-      AIDEN_BENCHMARK_AGENT_API_KEY: ${{ secrets.BENCHMARK_AGENT_API_KEY }}
-      AIDEN_BENCHMARK_JUDGE_MODEL: ${{ vars.BENCHMARK_JUDGE_MODEL || 'anthropic/claude-sonnet-4-6' }}
-      AIDEN_BENCHMARK_JUDGE_BASE_URL: ${{ vars.BENCHMARK_JUDGE_BASE_URL || 'https://openrouter.ai/api/v1' }}
-      AIDEN_BENCHMARK_JUDGE_API_KEY: ${{ secrets.BENCHMARK_JUDGE_API_KEY }}
-      AIDEN_DAEMON_IMAGE: ${{ vars.DAEMON_IMAGE || 'aiden-agent-daemon:local' }}
+      BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
+      BENCHMARK_AGENT_MODEL: ${{ vars.BENCHMARK_AGENT_MODEL }}
+      BENCHMARK_AGENT_BASE_URL: ${{ vars.BENCHMARK_AGENT_BASE_URL }}
+      BENCHMARK_AGENT_API_KEY: ${{ secrets.BENCHMARK_AGENT_API_KEY }}
+      BENCHMARK_JUDGE_MODEL: ${{ vars.BENCHMARK_JUDGE_MODEL || 'anthropic/claude-sonnet-4-6' }}
+      BENCHMARK_JUDGE_BASE_URL: ${{ vars.BENCHMARK_JUDGE_BASE_URL || 'https://openrouter.ai/api/v1' }}
+      BENCHMARK_JUDGE_API_KEY: ${{ secrets.BENCHMARK_JUDGE_API_KEY }}
+      DAEMON_IMAGE: ${{ vars.DAEMON_IMAGE || 'aiden-agent-daemon:local' }}
+      DAEMON_DOCKERFILE: benchmark/docker/Dockerfile.agent-daemon.cn
+      MOBILEGYM_NODE_IMAGE: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:22-bookworm
+      MOBILEGYM_DEBIAN_MIRROR: repo.huaweicloud.com
+      BENCHMARK_CI_IMAGES_PREPARED: '1'
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
       ANDROID_SERIAL: ${{ vars.ANDROID_SERIAL }}
-      AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL: ${{ vars.BENCHMARK_PHONE_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL: ${{ vars.BENCHMARK_IOS_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL: ${{ vars.BENCHMARK_MAC_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL: ${{ vars.BENCHMARK_VPHONE_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL: ${{ vars.BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL: ${{ vars.BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL }}
+      BENCHMARK_PHONE_ENVIRONMENT_URL: ${{ vars.BENCHMARK_PHONE_ENVIRONMENT_URL }}
+      BENCHMARK_IOS_ENVIRONMENT_URL: ${{ vars.BENCHMARK_IOS_ENVIRONMENT_URL }}
+      BENCHMARK_MAC_ENVIRONMENT_URL: ${{ vars.BENCHMARK_MAC_ENVIRONMENT_URL }}
+      BENCHMARK_VPHONE_ENVIRONMENT_URL: ${{ vars.BENCHMARK_VPHONE_ENVIRONMENT_URL }}
+      BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL: ${{ vars.BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL }}
+      BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL: ${{ vars.BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL }}
     steps:
       - name: Reclaim persistent runner workspace
         shell: bash
@@ -138,11 +206,11 @@ jobs:
       - name: Validate benchmark credentials
         env:
           REQUIRED_VALUES: >-
-            AIDEN_BENCHMARK_AGENT_PROVIDER
-            AIDEN_BENCHMARK_AGENT_MODEL
-            AIDEN_BENCHMARK_AGENT_BASE_URL
-            AIDEN_BENCHMARK_AGENT_API_KEY
-            AIDEN_BENCHMARK_JUDGE_API_KEY
+            BENCHMARK_AGENT_PROVIDER
+            BENCHMARK_AGENT_MODEL
+            BENCHMARK_AGENT_BASE_URL
+            BENCHMARK_AGENT_API_KEY
+            BENCHMARK_JUDGE_API_KEY
             LANGFUSE_PUBLIC_KEY
             LANGFUSE_SECRET_KEY
             LANGFUSE_BASE_URL
@@ -158,11 +226,31 @@ jobs:
             echo "Missing benchmark configuration: ${missing[*]}" >&2
             exit 1
           fi
+      - name: Validate Docker runtime
+        run: |
+          set -euo pipefail
+          docker version
+          docker compose version
+          docker info
       - name: Run benchmark case
         working-directory: benchmark
         env:
           RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
         run: uv run python -m ci.run_case --case-id "${{ matrix.id }}" --run-id "$RUN_ID"
+      - name: Show benchmark setup log
+        if: ${{ failure() }}
+        working-directory: benchmark
+        env:
+          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+        run: |
+          log="runs/$RUN_ID/auto-agent-setup.log"
+          if [[ -f "$log" ]]; then
+            echo "::group::auto-agent-setup.log"
+            tail -n 400 "$log"
+            echo "::endgroup::"
+          else
+            echo "::warning::No auto-agent setup log found for $RUN_ID"
+          fi
       - name: Clean up benchmark services
         if: ${{ always() }}
         env:
@@ -214,6 +302,7 @@ jobs:
             benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/summary.md
             benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/report.html
             benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/suite.json
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/auto-agent-setup.log
             benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/tasks/**
           if-no-files-found: warn
           retention-days: 14
