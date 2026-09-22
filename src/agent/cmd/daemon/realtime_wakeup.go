@@ -615,15 +615,16 @@ func realtimeProviderSessionConfigWithTools(cfg agent.Config, runtime *agent.Run
 	} else if turnType == "" {
 		turnType = "server_vad"
 	}
-	instructions := strings.TrimSpace(cfg.VoiceModel.Instructions)
-	if instructions == "" || instructions == agent.DefaultRealtimeVoiceInstructions {
-		if usesBackendAgent {
-			instructions = agent.DefaultRealtimeVoiceInstructions
-		} else {
-			instructions = agent.DefaultRealtimeToolExecutionInstructions
-		}
+	baseInstructions := agent.DefaultRealtimeToolExecutionInstructions
+	if usesBackendAgent {
+		baseInstructions = agent.DefaultRealtimeVoiceInstructions
 	}
-	instructions = strings.TrimSpace(strings.Join([]string{instructions, agent.ResponseLanguageGuidance(cfg.LocaleOrDefault())}, "\n\n"))
+	instructionParts := []string{baseInstructions}
+	if prompt := strings.TrimSpace(cfg.Prompt); prompt != "" {
+		instructionParts = append(instructionParts, prompt)
+	}
+	instructionParts = append(instructionParts, agent.ResponseLanguageGuidance(cfg.LocaleOrDefault()))
+	instructions := strings.TrimSpace(strings.Join(instructionParts, "\n\n"))
 	enableEmotion := cfg.VoiceModel.EnableSpeechEmotion
 	if enableEmotion == nil {
 		v := true

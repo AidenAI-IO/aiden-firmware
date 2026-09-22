@@ -1352,7 +1352,7 @@ provider = "fake"
 	}
 }
 
-func TestLoadRuntimeConfigMigratesLegacyAdditionalPrompt(t *testing.T) {
+func TestLoadRuntimeConfigIgnoresLegacyAdditionalPrompt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
@@ -1369,31 +1369,8 @@ provider = "fake"
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig() error = %v", err)
 	}
-	if cfg.Prompt != "Legacy prompt spelling." {
-		t.Fatalf("Prompt = %q, want legacy additional_prompt value", cfg.Prompt)
-	}
-}
-
-func TestLoadRuntimeConfigPrefersPromptOverLegacyAdditionalPrompt(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte(`
-[conversation_settings.agent]
-prompt = "Canonical prompt."
-additional_prompt = "Legacy prompt spelling."
-
-[model_settings.model]
-provider = "fake"
-`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := LoadRuntimeConfig(path)
-	if err != nil {
-		t.Fatalf("LoadRuntimeConfig() error = %v", err)
-	}
-	if cfg.Prompt != "Canonical prompt." {
-		t.Fatalf("Prompt = %q, want canonical prompt value", cfg.Prompt)
+	if cfg.Prompt != "" {
+		t.Fatalf("Prompt = %q, want legacy additional_prompt to be ignored", cfg.Prompt)
 	}
 }
 
