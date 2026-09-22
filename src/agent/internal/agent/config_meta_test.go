@@ -191,14 +191,9 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		},
 		"agent.vad_model_path":  {layout: "wide"},
 		"agent.vad_helper_path": {layout: "wide"},
-		"agent.custom_instruction": {
-			label:  "Primary instruction",
-			help:   "Replaces the built-in Agent instruction when set. Leave empty to use the built-in instruction.",
-			layout: "wide",
-		},
-		"agent.additional_prompt": {
-			label:  "Additional prompt",
-			help:   "Appended after the primary instruction. Use it for device, project, or environment-specific requirements.",
+		"agent.prompt": {
+			label:  "Prompt",
+			help:   "Appended after the built-in Agent instruction. Use it for device, project, or environment-specific requirements.",
 			layout: "wide",
 		},
 		"agent.max_iterations": {
@@ -323,6 +318,23 @@ func TestConfigMeta_SpecialRendererFieldsRemainAddressable(t *testing.T) {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("special renderer field %s is missing from metadata", path)
 		}
+	}
+}
+
+// TestConfigMeta_OmitsCustomInstruction pins the removal of the
+// custom_instruction control. The built-in Agent instruction is not user
+// configurable, so the form must offer only prompt; a leftover
+// metadata entry would render a dead control that config-update rejects.
+func TestConfigMeta_OmitsCustomInstruction(t *testing.T) {
+	idx := fieldIndex(t)
+	if _, ok := idx["agent.custom_instruction"]; ok {
+		t.Error("agent.custom_instruction must not be exposed in metadata")
+	}
+	if _, ok := idx["agent.additional_prompt"]; ok {
+		t.Error("agent.additional_prompt must not be exposed after the prompt rename")
+	}
+	if _, ok := idx["agent.prompt"]; !ok {
+		t.Error("agent.prompt metadata is missing")
 	}
 }
 

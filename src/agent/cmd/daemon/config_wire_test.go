@@ -159,15 +159,33 @@ func TestConfigCheck_WireSearchHasAPIKey(t *testing.T) {
 	}
 }
 
-func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
+// TestConfigCheck_WirePromptRoundTrip covers the only editable prompt
+// field: prompt reaches agent.Config and survives the DTO round trip,
+// while the removed custom_instruction has no wire field at all.
+func TestConfigCheck_WirePromptRoundTrip(t *testing.T) {
 	dto := webConfigDTO{
 		Model:  modelDTO{Provider: "openai", Model: "gpt-4"},
 		Search: searchDTO{Provider: "duckduckgo"},
-		Agent:  agentDTO{CustomInstruction: "Use custom behavior."},
+		Agent:  agentDTO{Prompt: "Use a deployment-specific persona."},
 	}
 	cfg := dto.ToAgentConfig()
-	if cfg.Instruction != "Use custom behavior." {
-		t.Fatalf("Instruction = %q, want custom instruction", cfg.Instruction)
+	if cfg.Prompt != "Use a deployment-specific persona." {
+		t.Fatalf("Prompt = %q, want the wire value", cfg.Prompt)
+	}
+	if got := webConfigDTOFromAgentConfig(cfg).Agent.Prompt; got != "Use a deployment-specific persona." {
+		t.Fatalf("round-trip prompt = %q, want the wire value", got)
+	}
+
+	encoded, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal DTO: %v", err)
+	}
+	var sections map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &sections); err != nil {
+		t.Fatalf("decode DTO: %v", err)
+	}
+	if _, ok := sections["agent"]["custom_instruction"]; ok {
+		t.Fatalf("wire config still exposes custom_instruction: %s", encoded)
 	}
 }
 
