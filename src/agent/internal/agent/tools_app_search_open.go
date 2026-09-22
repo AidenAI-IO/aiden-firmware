@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -282,11 +283,32 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 }
 
 func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) error {
+	if cfg.platform == "" {
+		cfg.platform = cfg.entryTool.platform()
+	}
+	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 	if clearFirst {
-		engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
-		if err := engine.clearField(ctx, cfg.platform); err != nil {
+		if err := clearSearchQuery(ctx, engine, cfg.platform); err != nil {
 			return err
 		}
+	}
+	clipboardResult := pasteSearchQuery(ctx, cfg, engine, term)
+	if clipboardResult.Committed {
+		logging.Infof("agent", "app_search", "search query input route=clipboard_paste verified=true")
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if clipboardResult.Attempted {
+		logging.Infof("agent", "app_search", "search query input route=local_hid reason=clipboard_failed error=%v", clipboardResult.Err)
+		// The paste may have inserted partial or stale text. Replace it before
+		// falling back, while the system search field still owns keyboard focus.
+		if err := clearSearchQuery(ctx, engine, cfg.platform); err != nil {
+			return err
+		}
+	} else {
+		logging.Infof("agent", "app_search", "search query input route=local_hid reason=background_clipboard_unavailable")
 	}
 	input := map[string]any{
 		"text":  term,
@@ -304,6 +326,79 @@ func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term str
 		return fmt.Errorf("enter search query: %s", strings.TrimSpace(result.Suggestion))
 	}
 	return nil
+}
+
+func clearSearchQuery(ctx context.Context, engine *textInputEngine, platform string) error {
+	keys, err := textInputKeyboardKeysForSelectAll(platform)
+	if err != nil {
+		return err
+	}
+	if err := engine.tapKeys(ctx, keys); err != nil {
+		return err
+	}
+	if err := engine.sleepFor(ctx, textInputKeystrokeGap); err != nil {
+		return err
+	}
+	return engine.tapKeys(ctx, []string{"backspace"})
+}
+
+// System search already owns keyboard focus. Only use clipboard transports
+// that preserve this UI: restoring Aiden or tapping a guessed field position
+// can dismiss Spotlight. Always write fresh text and verify the pasted query.
+func pasteSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, engine *textInputEngine, term string) textViaBridgeResult {
+	if cfg.entryTool == nil || cfg.entryTool.bridgeTool == nil {
+		return textViaBridgeResult{}
+	}
+	bridgeTool := cfg.entryTool.bridgeTool
+	bridge := bridgeTool.currentBridge()
+	if bridge == nil {
+		return textViaBridgeResult{}
+	}
+	platform := cfg.platform
+	status := bridge.getStatus()
+	switch platform {
+	case "ios":
+		if !phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
+			return textViaBridgeResult{}
+		}
+	case "android":
+		if !phoneBridgeReadyForCommand(status, "clipboard_write") && !phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
+			return textViaBridgeResult{}
+		}
+	default:
+		return textViaBridgeResult{}
+	}
+	result := textViaBridgeResult{Attempted: true}
+	if result.Err = bridgeTool.writeClipboard(ctx, bridge, term); result.Err != nil {
+		return result
+	}
+	if result.Err = bridgeTool.sleepAfterClipboardWrite(ctx); result.Err != nil {
+		return result
+	}
+	if _, _, result.Err = bridgeTool.pasteClipboard(ctx, platform); result.Err != nil {
+		return result
+	}
+	if result.Err = bridgeTool.sleepAfterPaste(ctx); result.Err != nil {
+		return result
+	}
+	shot, err := engine.captureScreenshot(ctx)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	analysis, err := cfg.vision.AnalyzeScreen(ctx, shot, textInputScreenAnalysisRequest{
+		Platform:            platform,
+		TargetText:          term,
+		FocusedSystemSearch: true,
+	})
+	result.Err = err
+	if err == nil {
+		result.Committed, result.FieldText = evaluateFieldCommit(analysis)
+		if !result.Committed {
+			result.Err = fmt.Errorf("pasted search query did not match target")
+		}
+	}
+	return result
 }
 
 func appSearchFallbackTerms(searchTerm string) []string {

@@ -103,6 +103,14 @@ Android: Intent launch package name
 
 ## Key Boundaries
 
+When `open_app` falls back to system search, query entry prefers a fresh
+clipboard write through iOS PiP or an available Android background bridge,
+then pastes into the already-focused search field and verifies the query in
+a screenshot. This path never restores Aiden or taps a guessed field position.
+If the background clipboard route is unavailable, query entry uses local
+HID/IME. If a clipboard attempt fails or the pasted query does not match, it
+clears the search field before the local fallback to avoid duplicated text.
+
 On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor; Dynamic Island can be used as the automatic entry point back to the Aiden App, while lock-screen Live Activity cards need visual confirmation:
 
 ```text
