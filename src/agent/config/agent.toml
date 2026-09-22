@@ -224,8 +224,8 @@ input_mode = "stt"
 # Only used when input_mode is "stt"
 [voice_settings.classic.runtime]
 # vad_backend = "rknn" # "rknn" (NPU encoder + CPU LSTM/decoder) or "cpu"
-# vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-# vad_helper_path = "/oem/usr/bin/rknn_vad"
+# vad_model_path = "/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+# vad_helper_path = "/usr/lib/aiden/rknn_vad"
 # vad_speech_threshold = 0.5
 # silence_ms = 550          # Silence duration to end utterance (ms)
 # min_speech_ms = 300       # Minimum speech duration to accept (ms)

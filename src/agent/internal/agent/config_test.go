@@ -854,8 +854,8 @@ func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
 	}
 }
 
-func TestBundledSkillsDirCandidatesUseOEMOnly(t *testing.T) {
-	want := []string{"/oem/usr/share/aiden/skills"}
+func TestBundledSkillsDirCandidatesUseBusinessPackage(t *testing.T) {
+	want := []string{"/usr/share/aiden/skills"}
 	if got := bundledSkillsDirCandidates(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("bundledSkillsDirCandidates() = %#v, want %#v", got, want)
 	}
@@ -1858,10 +1858,10 @@ func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
 	if got := cfg.VADBackendOrDefault(); got != "cpu" {
 		t.Fatalf("VADBackendOrDefault() = %q, want cpu", got)
 	}
-	if got := DefaultVADHelperPathForBackend("cpu"); got != "/oem/usr/bin/cpu_vad" {
+	if got := DefaultVADHelperPathForBackend("cpu"); got != "/usr/lib/aiden/cpu_vad" {
 		t.Fatalf("DefaultVADHelperPathForBackend(cpu) = %q", got)
 	}
-	if got := ResolveVADHelperPath("cpu", DefaultVADHelperPath()); got != "/oem/usr/bin/cpu_vad" {
+	if got := ResolveVADHelperPath("cpu", DefaultVADHelperPath()); got != "/usr/lib/aiden/cpu_vad" {
 		t.Fatalf("ResolveVADHelperPath(cpu, rknn default) = %q", got)
 	}
 	if got := ResolveVADHelperPath("cpu", "/custom/vad"); got != "/custom/vad" {

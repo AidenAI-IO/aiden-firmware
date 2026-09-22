@@ -67,7 +67,7 @@ grep -qx -- '--config' "${TEST_ROOT}/ota.log"
 grep -qx "${TEST_ROOT}/debian-config.json" "${TEST_ROOT}/ota.log"
 grep -qx 'mark-health' "${TEST_ROOT}/ota.log"
 for service in \
-    oem.mount userdata.mount userdata-ota.mount \
+    userdata.mount userdata-ota.mount \
     aiden-userdata-migrate.service aiden-environment.service \
     systemd-networkd.service; do
     grep -qx "${service}" "${TEST_ROOT}/systemctl.log" \

@@ -1,7 +1,7 @@
 [Unit]
 Description=Recover interrupted Aiden data restore transactions
-Requires=oem.mount userdata.mount userdata-ota.mount
-After=oem.mount userdata.mount userdata-ota.mount
+Requires=userdata.mount userdata-ota.mount
+After=userdata.mount userdata-ota.mount
 Before=aiden-userdata-migrate.service aiden-root-home.service aiden-bluetooth-state.service
 Before=aiden-machine-id.service aiden-config-web.service aiden-agent.service
 
