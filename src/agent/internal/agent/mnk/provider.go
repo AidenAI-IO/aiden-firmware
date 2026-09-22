@@ -14,7 +14,8 @@ const (
 // SwipeOptions controls the timing and interpolation of a swipe. A zero
 // duration uses the provider's default swipe duration; a zero Steps uses the
 // provider's default interpolation step count. Hold durations are optional
-// and default to zero.
+// and default to zero; HID content swipes use an internal
+// low-speed release tail when HoldAfterMs is zero.
 type SwipeOptions struct {
 	DurationMs   int
 	HoldBeforeMs int

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"aiden-agent/internal/agent/langfuse"
 	"aiden-agent/internal/agent/messages"
 	"bytes"
 	"context"
@@ -9,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -426,23 +426,28 @@ func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
 }
 
 func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
-	ingestCh := make(chan langfuse.IngestionRequest, 1)
+	exportedCh := make(chan struct{}, 1)
+	var otlpBody []byte
+	var scoreBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/public/ingestion" {
-			http.NotFound(w, r)
-			return
-		}
-		var req langfuse.IngestionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		select {
-		case ingestCh <- req:
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/otel/v1/traces":
+			otlpBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/scores":
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &scoreBody); err != nil {
+				t.Errorf("decode score body: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+			select {
+			case exportedCh <- struct{}{}:
+			default:
+			}
 		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"successes":[]}`))
 	}))
 	defer server.Close()
 
@@ -470,35 +475,23 @@ func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 		t.Fatalf("Run() error = %v, want %v", err, buildErr)
 	}
 
-	var ingest langfuse.IngestionRequest
 	select {
-	case ingest = <-ingestCh:
+	case <-exportedCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("expected Langfuse ingestion for failed chat")
+		t.Fatal("expected Langfuse export for failed chat")
 	}
 
-	var traceBody map[string]any
-	for _, event := range ingest.Batch {
-		if event.Type != "trace-create" {
-			continue
-		}
-		if err := json.Unmarshal(event.Body, &traceBody); err != nil {
-			t.Fatalf("decode trace body: %v", err)
-		}
-		break
+	spans := decodeOTLPSpans(t, otlpBody)
+	root := otlpSpanByName(t, spans, langfuseRunSpanName)
+	wantInput, _ := json.Marshal("turn that should be traced")
+	if got := root.attributeString(t, "langfuse.observation.input"); got != string(wantInput) {
+		t.Fatalf("trace input = %s, want original user input", got)
 	}
-	if traceBody == nil {
-		t.Fatalf("ingestion batch missing trace-create: %#v", ingest.Batch)
+	if got := root.attributeString(t, "langfuse.trace.metadata.failure_reason"); got != buildErr.Error() {
+		t.Fatalf("failure_reason = %q, want %q", got, buildErr.Error())
 	}
-	if got := traceBody["input"]; got != "turn that should be traced" {
-		t.Fatalf("trace input = %#v, want original user input", got)
-	}
-	metadata, ok := traceBody["metadata"].(map[string]any)
-	if !ok {
-		t.Fatalf("trace metadata missing or invalid: %#v", traceBody["metadata"])
-	}
-	if got := metadata["failure_reason"]; got != buildErr.Error() {
-		t.Fatalf("failure_reason = %#v, want %q", got, buildErr.Error())
+	if scoreBody["value"] != float64(0) {
+		t.Fatalf("score value = %v, want 0", scoreBody["value"])
 	}
 }
 

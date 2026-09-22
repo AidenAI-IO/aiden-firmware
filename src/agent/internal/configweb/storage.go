@@ -1,6 +1,7 @@
 package configweb
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ type storageController interface {
 	Reconfigure(agent.StorageConfig) error
 	SafeEject() error
 	StartFormat(fs, confirm string) error
+	AcquireSnapshotLease(context.Context) (agent.StorageSnapshotLease, error)
 	Stop()
 }
 
