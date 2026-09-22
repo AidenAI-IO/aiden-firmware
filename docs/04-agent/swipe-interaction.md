@@ -132,6 +132,13 @@ The iOS `app_switch` shortcut uses 80ms after pressing, a 350ms upward move,
 and 200ms before release: 630ms of programmed contact time instead of 1750ms.
 Stable-screen observation and HID overhead are additional.
 
+The iOS `close_app_from_recents` shortcut starts near the bottom of the centered
+card at `(500,780)` and moves to `(500,50)` over a 300ms main segment, keeping
+the shared low-speed release profile. This longer path moves the card far enough
+to dismiss without depending on release inertia. The previous `(500,500)` to
+`(500,120)` path left the card in place in the local iPhone check; verify the
+card disappears in the returned screenshot rather than relying on tool `ok`.
+
 ## Ordinary Scrolling
 
 ### Lists
