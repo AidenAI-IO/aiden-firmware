@@ -228,7 +228,9 @@ stage_platform() {
     install -m 0644 "${OTA_PUBLIC_KEY}" "${ROOTFS_DIR}/usr/share/keyrings/aiden-ota.pem"
     # Local/unmanaged images have no release channel and cannot select an APT suite.
     if [ -n "${AIDEN_RELEASE_CHANNEL:-}" ]; then
-        python3 "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-apt-source" --root "${ROOTFS_DIR}"
+        python3 "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-apt-source" \
+            --root "${ROOTFS_DIR}" \
+            --public-key "${REPO_ROOT}/overlay-debian/usr/share/keyrings/aiden-archive-keyring.asc"
     fi
     find "${platform}" -type d -exec chmod 0755 {} +
     find "${platform}" -type f -exec chmod 0644 {} +

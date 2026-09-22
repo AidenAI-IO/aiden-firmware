@@ -93,6 +93,7 @@ printf '%s\n' \
     'HTTP_PROXY="socks5h://127.0.0.1:18080"' \
     'HTTPS_PROXY="socks5h://127.0.0.1:18080"' \
     'ALL_PROXY="socks5h://127.0.0.1:18080"' \
+    'NO_PROXY="localhost,127.0.0.1,::1"' \
     >"${proxy_environment}"
 managed_output=$(env -i AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
     HTTP_PROXY=http://upstream.example:8080 "${managed_env_run}" /usr/bin/env)
@@ -101,6 +102,7 @@ printf '%s\n' "${managed_output}" \
 for proxy_key in http_proxy https_proxy all_proxy; do
     printf '%s\n' "${managed_output}" | grep -qx "${proxy_key}=socks5h://127.0.0.1:18080"
 done
+printf '%s\n' "${managed_output}" | grep -qx 'no_proxy=localhost,127.0.0.1,::1'
 login_output=$(env -i PATH="$PATH" \
     AIDEN_SYSTEM_ENVIRONMENT="${TEST_ROOT}/missing-system-env" \
     AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
@@ -108,6 +110,9 @@ login_output=$(env -i PATH="$PATH" \
     sh -c '. "$1"; /usr/bin/env' sh "${OVERLAY}/etc/profile.d/aiden-env.sh")
 for proxy_key in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
     printf '%s\n' "${login_output}" | grep -qx "${proxy_key}=socks5h://127.0.0.1:18080"
+done
+for proxy_key in NO_PROXY no_proxy; do
+    printf '%s\n' "${login_output}" | grep -qx "${proxy_key}=localhost,127.0.0.1,::1"
 done
 login_disabled_output=$(env -i PATH="$PATH" AIDEN_WIFI_PROXY_ENABLED=0 \
     AIDEN_SYSTEM_ENVIRONMENT="${TEST_ROOT}/missing-system-env" \
@@ -335,6 +340,10 @@ run_ecm_watchdog() {
         "${watchdog}" watch >/dev/null 2>&1 &
     watchdog_pid=$!
     sleep "${seconds}"
+    if ! kill -0 "${watchdog_pid}" 2>/dev/null; then
+        wait "${watchdog_pid}" 2>/dev/null || true
+        fail "ECM watchdog exited before the liveness interval"
+    fi
     kill "${watchdog_pid}" 2>/dev/null || true
     wait "${watchdog_pid}" 2>/dev/null || true
 }
