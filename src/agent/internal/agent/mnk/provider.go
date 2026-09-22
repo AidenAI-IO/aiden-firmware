@@ -107,6 +107,12 @@ type TouchAction struct {
 	Point      *Point `json:"point,omitempty"`
 	DurationMs int    `json:"ms,omitempty"`
 	Button     string `json:"button,omitempty"`
+	// steps is set internally by ADB SwipeWithOptions; atomic callers use the
+	// provider default. It does not add a field to the public atomic protocol.
+	steps int
+	// releaseTail is internal: this move must remain slow and linear, rather
+	// than starting another acceleration/braking cycle.
+	releaseTail bool
 }
 
 // TouchActionProvider executes a validated sequence of atomic touch actions

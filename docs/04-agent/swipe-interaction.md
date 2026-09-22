@@ -86,51 +86,51 @@ Use `type:"swipe"` for ordinary lists, carousels, maps, and other free-scrolling
 
 Normalized coordinates use a `0..1000` range on each axis. HID action tools return a post-action screenshot after the screen settles.
 
-Do not use `touch_gesture`, mouse clicks, or keyboard input to change an active picker wheel. Use `wheel_nudge` for the entire picker interaction.
-
-### `wheel_nudge`
-
-`wheel_nudge` performs one bounded interaction inside a visible numeric picker column. It requires a fresh screenshot from the current Agent run.
-
-```json
-{
-  "picker_id": "alarm-create",
-  "column_x": 393,
-  "current_value": 10,
-  "target_value": 16,
-  "cycle_size": 24,
-  "cycle_start": 0,
-  "row_spacing": 39,
-  "value_step": 1,
-  "center_y": 253
-}
-```
-
-All geometry uses normalized `0..1000` coordinates:
-
-- Normalize `column_x` using screenshot width.
-- Normalize `center_y`, `row_spacing`, and `visible_target_y` using screenshot height.
-- `cycle_size` is the numeric modulus, not the number of visible rows. A `00..59` minute wheel stepping by five still uses `cycle_size: 60` and `value_step: 5`.
-- `value_step` is the signed numeric change represented by one visible row downward.
-- Use `visible_target_y` only when the target is visibly one adjacent row above or below the selected row.
-
-The runtime derives the shortest reachable row gap and gesture direction. It also measures repeated row geometry from the latest screenshot and may replace an inaccurate `row_spacing` estimate when confidence is sufficient.
-
 ## Picker Workflow
 
-1. Capture a screenshot and identify the picker, active column, selected value, target value, and selected-row center.
-2. Read the visible row order to determine `value_step`. If the order is genuinely unknown, omit `value_step` for one probe.
-3. Call `wheel_nudge` with the latest values and geometry.
-4. Read the returned screenshot and update `current_value` from what is visibly centered.
-5. Continue from the new observation until the target is centered or the safety policy stops the run.
+Picker columns use the standard `touch_gesture` swipe. The specialized
+`wheel_nudge` tool, row-spacing detector and picker-only execution policy
+have been removed.
 
-The run-scoped safety policy:
+1. Read the selected center value and adjacent row order from the latest
+   screenshot. A visible value outside the center is not selected.
+2. Move the desired row toward the center: a row above it needs finger-down;
+   a row below it needs finger-up. Keep the final requested target fixed.
+3. Start inside the intended column near its appropriate inner edge. Many
+   controls retain the contact after the pointer leaves their bounds, so the
+   endpoint may extend outside the column while remaining inside the screen
+   with a margin from physical edges.
+4. Estimate travel from visible row spacing and calibrate from the observed
+   value change. Use longer travel when far away and shorter corrections near
+   the target. Leave timing at defaults and omit `hold_after_ms`.
+5. Verify the centered value in every returned screenshot. A changed readable
+   value is progress even when `screen_changed=false`. If moving outside the
+   region cancels the gesture, shorten the next path for that control.
+6. Verify all requested columns before saving. Do not tap picker rows or use
+   text entry to expose an editor. Stop if values are unreadable or repeated
+   shorter corrections do not converge.
 
-- requires fresh screenshot evidence;
-- limits per-column and total wheel actions;
-- checks that observed movement agrees with the declared `value_step`;
-- blocks generic taps or drags on a picker column once `wheel_nudge` owns it;
-- stops repeated attempts that make no progress.
+## Shared Motion Profile
+
+`src/agent/internal/agent/mnk/motion_profile.go` owns the quintic acceleration/
+braking curve, release eligibility and the normalized endpoint split. Standard
+HID swipes, timed HID atomic contact moves, and ADB touch programs reuse it.
+New gesture tools should call `SwipeWithOptions` or `TouchActions` instead of
+implementing their own report trajectories. Backends retain event encoding and
+scheduling: HID uses a monotonic clock; ADB preserves requested sleep intervals
+but process/injection overhead can increase elapsed time.
+
+An eligible content gesture uses at least 180ms of main motion followed by
+100ms of real low-speed movement over the last two normalized units (bounded
+to half the final segment). This approaches the exact endpoint rather than
+holding a stationary coordinate. Screen-edge origins and explicit end holds
+are excluded from the release tail. Atomic immediate moves and releases that
+change the endpoint keep their existing semantics. Mouse-wheel events and the
+dedicated two-call drag API are separate operations.
+
+The iOS `app_switch` shortcut uses 80ms after pressing, a 350ms upward move,
+and 200ms before release: 630ms of programmed contact time instead of 1750ms.
+Stable-screen observation and HID overhead are additional.
 
 ## Ordinary Scrolling
 

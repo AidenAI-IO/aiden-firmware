@@ -91,9 +91,9 @@
           "input": {
             "actions": [
               { "action": "touch_down", "point": { "x": 500, "y": 1000 } },
-              { "action": "wait", "ms": 250 },
-              { "action": "move_to", "point": { "x": 500, "y": 500 }, "duration_ms": 900 },
-              { "action": "wait", "ms": 600 },
+              { "action": "wait", "ms": 80 },
+              { "action": "move_to", "point": { "x": 500, "y": 500 }, "duration_ms": 350 },
+              { "action": "wait", "ms": 200 },
               { "action": "touch_up" }
             ]
           },

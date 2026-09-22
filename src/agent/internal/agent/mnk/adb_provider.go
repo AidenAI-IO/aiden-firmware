@@ -203,29 +203,71 @@ func (p *ADBProvider) SwipeWithDuration(ctx context.Context, path [][2]float64, 
 	return p.SwipeWithOptions(ctx, path, button, SwipeOptions{DurationMs: durationMs})
 }
 
-// SwipeWithOptions performs a swipe using the caller-selected timing. ADB's
-// input primitive has no interpolation-step control; Steps is accepted for
-// protocol compatibility and is used by the HID provider.
+// SwipeWithOptions keeps one contact down across a smooth path, using raw
+// touch events when available and input motionevent as a fallback.
 func (p *ADBProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
 	if err := p.rejectActiveDrag("swipe"); err != nil {
 		return err
 	}
-	if options.HoldBeforeMs < 0 || options.HoldAfterMs < 0 || options.Steps < 0 {
-		return InvalidArguments("swipe timing values must not be negative")
-	}
-	durationMs := p.clampDuration(options.DurationMs, defaultSwipeGestureDurationMs, 1)
-	if options.HoldBeforeMs > 0 {
-		if err := waitContext(ctx, options.HoldBeforeMs); err != nil {
-			return err
-		}
-	}
-	if err := p.swipePathWithDuration(ctx, path, button, durationMs); err != nil {
+	options.DurationMs = p.clampDuration(options.DurationMs, defaultSwipeGestureDurationMs, defaultSwipeSmoothMotionMinMs)
+	actions, err := adbSwipeActions(path, button, options)
+	if err != nil {
 		return err
 	}
-	if options.HoldAfterMs > 0 {
-		return waitContext(ctx, options.HoldAfterMs)
+	return p.TouchActions(ctx, actions)
+}
+
+func adbSwipeActions(path [][2]float64, button string, options SwipeOptions) ([]TouchAction, error) {
+	if len(path) < 2 || len(path) > 125 {
+		return nil, InvalidArguments("swipe path must contain 2 to 125 points")
 	}
-	return nil
+	if button != "" && button != ButtonLeft {
+		return nil, InvalidArgumentsf("adb only supports left-button touch semantics, got %q", button)
+	}
+	if options.HoldBeforeMs < 0 || options.HoldBeforeMs > MaxSwipeHoldMs || options.HoldAfterMs < 0 || options.HoldAfterMs > MaxSwipeHoldMs || options.Steps < 0 || options.Steps > MaxSwipeSteps {
+		return nil, InvalidArguments("swipe holds or steps are outside supported limits")
+	}
+	lengths := make([]float64, len(path))
+	total := 0.0
+	for i, point := range path {
+		if err := validateADBTouchPoint(Point{X: point[0], Y: point[1]}); err != nil {
+			return nil, InvalidArgumentsf("invalid point %d: %v", i, err)
+		}
+		if i > 0 {
+			lengths[i] = math.Hypot(point[0]-path[i-1][0], point[1]-path[i-1][1])
+			total += lengths[i]
+		}
+	}
+	if total == 0 {
+		return nil, InvalidArguments("swipe requires distinct start and end points")
+	}
+	actions := []TouchAction{{Type: "touch_down", Point: &Point{X: path[0][0], Y: path[0][1]}}}
+	if options.HoldBeforeMs > 0 {
+		actions = append(actions, TouchAction{Type: "wait", DurationMs: options.HoldBeforeMs})
+	}
+	steps := options.Steps
+	if steps == 0 {
+		steps = adbTouchMoveSteps
+	}
+	completed, elapsed := 0.0, 0
+	for i := 1; i < len(path); i++ {
+		if lengths[i] == 0 {
+			continue
+		}
+		completed += lengths[i]
+		due := int(math.Round(float64(options.DurationMs) * completed / total))
+		actions = append(actions, TouchAction{
+			Type: "move_to", Point: &Point{X: path[i][0], Y: path[i][1]},
+			DurationMs: due - elapsed,
+			steps:      max(1, int(math.Round(float64(steps)*lengths[i]/total))),
+		})
+		elapsed = due
+	}
+	if options.HoldAfterMs > 0 {
+		actions = append(actions, TouchAction{Type: "wait", DurationMs: options.HoldAfterMs})
+	}
+	actions = append(actions, TouchAction{Type: "touch_up"})
+	return actions, nil
 }
 
 // DragStart starts a persistent Android touch contact. Raw sendevent is used
@@ -346,6 +388,7 @@ func (p *ADBProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 	if err := validateADBTouchActions(actions); err != nil {
 		return err
 	}
+	actions = withTouchReleaseTails(actions)
 
 	p.touchMu.Lock()
 	defer p.touchMu.Unlock()
@@ -393,6 +436,9 @@ func (p *ADBProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 				return ModuleUnavailablef("adb atomic touch actions are not permitted via sendevent (%v); input motionevent fallback failed: %v", err, fallbackErr)
 			}
 			return nil
+		}
+		if cleanupErr := p.bestEffortRawTouchUp(ctx, device); cleanupErr != nil {
+			err = fmt.Errorf("%w; touch_up cleanup failed: %v", err, cleanupErr)
 		}
 		p.cachedTouchDevice = adbTouchDevice{}
 		p.touchDeviceExpires = time.Time{}
@@ -637,6 +683,9 @@ func adbInputDeviceBlocks(output string) []adbInputDeviceBlock {
 func buildADBTouchScript(device adbTouchDevice, actions []TouchAction, trackingID int) (string, int, error) {
 	var script strings.Builder
 	script.WriteString("set -e\n")
+	var cleanup strings.Builder
+	appendADBTouchUp(&cleanup, device)
+	fmt.Fprintf(&script, "trap %s EXIT\n", shellSingleQuote(cleanup.String()))
 	active := false
 	currentX, currentY := device.xMin, device.yMin
 	totalDurationMs := 0
@@ -650,23 +699,9 @@ func buildADBTouchScript(device adbTouchDevice, actions []TouchAction, trackingI
 			x, y := adbTouchPointToDevice(device, *action.Point)
 			duration := action.DurationMs
 			if duration > 0 {
-				steps := adbTouchMoveSteps
-				distance := math.Hypot(float64(x-currentX), float64(y-currentY))
-				if distance < float64(steps) {
-					steps = int(math.Max(1, math.Round(distance)))
-				}
-				if steps < 1 {
-					steps = 1
-				}
-				for step := 1; step <= steps; step++ {
-					progress := float64(step) / float64(steps)
-					stepX := int(math.Round(float64(currentX) + float64(x-currentX)*progress))
-					stepY := int(math.Round(float64(currentY) + float64(y-currentY)*progress))
+				appendADBMotion(&script, currentX, currentY, x, y, duration, action.steps, active && !action.releaseTail, func(stepX, stepY int) {
 					appendADBTouchPosition(&script, device, stepX, stepY, active)
-					if step < steps {
-						appendADBSleep(&script, duration/steps)
-					}
-				}
+				})
 				totalDurationMs += duration
 			} else {
 				appendADBTouchPosition(&script, device, x, y, active)
@@ -698,6 +733,7 @@ func buildADBTouchScript(device adbTouchDevice, actions []TouchAction, trackingI
 	if active {
 		return "", 0, InvalidArguments("touch action sequence must end with touch_up")
 	}
+	script.WriteString("trap - EXIT\n")
 	return script.String(), totalDurationMs, nil
 }
 
@@ -833,6 +869,27 @@ func appendADBSleep(script *strings.Builder, durationMs int) {
 	fmt.Fprintf(script, "sleep %d.%03d\n", durationMs/1000, durationMs%1000)
 }
 
+// appendADBMotion shares trajectory generation between raw and framework
+// injection. Cumulative intervals preserve the requested duration even when it
+// is not divisible by steps. Android process/injection overhead is additional.
+func appendADBMotion(script *strings.Builder, fromX, fromY, toX, toY, duration, steps int, smooth bool, emit func(int, int)) {
+	if steps <= 0 {
+		steps = adbTouchMoveSteps
+	}
+	distance := math.Hypot(float64(toX-fromX), float64(toY-fromY))
+	steps = min(steps, max(1, int(math.Round(distance))))
+	for step := 1; step <= steps; step++ {
+		appendADBSleep(script, duration*step/steps-duration*(step-1)/steps)
+		progress := float64(step) / float64(steps)
+		if smooth {
+			progress = quinticSmoothStep(progress)
+		}
+		x := int(math.Round(float64(fromX) + float64(toX-fromX)*progress))
+		y := int(math.Round(float64(fromY) + float64(toY-fromY)*progress))
+		emit(x, y)
+	}
+}
+
 func buildADBInputMotionScript(actions []TouchAction, size adbInputScreenSize) (string, int, error) {
 	if size.width <= 1 || size.height <= 1 {
 		return "", 0, ModuleUnavailable("adb input motionevent fallback requires known screen dimensions")
@@ -840,6 +897,18 @@ func buildADBInputMotionScript(actions []TouchAction, size adbInputScreenSize) (
 
 	var script strings.Builder
 	script.WriteString("set -e\n")
+	script.WriteString("aiden_touch_active=0\naiden_touch_x=0\naiden_touch_y=0\n")
+	script.WriteString("trap 'if [ \"$aiden_touch_active\" = 1 ]; then input touchscreen motionevent UP \"$aiden_touch_x\" \"$aiden_touch_y\"; fi' EXIT\n")
+	emit := func(kind string, x, y int) {
+		fmt.Fprintf(&script, "aiden_touch_x=%d\naiden_touch_y=%d\n", x, y)
+		if kind == "DOWN" {
+			script.WriteString("aiden_touch_active=1\n")
+		}
+		appendADBInputMotionEvent(&script, kind, x, y)
+		if kind == "UP" {
+			script.WriteString("aiden_touch_active=0\n")
+		}
+	}
 	currentX, currentY := 0, 0
 	active := false
 	totalDurationMs := 0
@@ -851,36 +920,25 @@ func buildADBInputMotionScript(actions []TouchAction, size adbInputScreenSize) (
 			totalDurationMs += action.DurationMs
 		case "touch_down":
 			currentX, currentY = adbInputPointToPixel(*action.Point, size)
-			appendADBInputMotionEvent(&script, "DOWN", currentX, currentY)
+			emit("DOWN", currentX, currentY)
 			active = true
 		case "move_to":
 			x, y := adbInputPointToPixel(*action.Point, size)
 			duration := action.DurationMs
 			if duration > 0 && active {
-				steps := adbTouchMoveSteps
-				distance := math.Hypot(float64(x-currentX), float64(y-currentY))
-				if distance < float64(steps) {
-					steps = int(math.Max(1, math.Round(distance)))
-				}
-				for step := 1; step <= steps; step++ {
-					progress := float64(step) / float64(steps)
-					stepX := int(math.Round(float64(currentX) + float64(x-currentX)*progress))
-					stepY := int(math.Round(float64(currentY) + float64(y-currentY)*progress))
-					appendADBInputMotionEvent(&script, "MOVE", stepX, stepY)
-					if step < steps {
-						appendADBSleep(&script, duration/steps)
-					}
-				}
+				appendADBMotion(&script, currentX, currentY, x, y, duration, action.steps, !action.releaseTail, func(stepX, stepY int) {
+					emit("MOVE", stepX, stepY)
+				})
 				totalDurationMs += duration
 			} else {
-				appendADBInputMotionEvent(&script, "MOVE", x, y)
+				emit("MOVE", x, y)
 			}
 			currentX, currentY = x, y
 		case "touch_up":
 			if action.Point != nil {
 				currentX, currentY = adbInputPointToPixel(*action.Point, size)
 			}
-			appendADBInputMotionEvent(&script, "UP", currentX, currentY)
+			emit("UP", currentX, currentY)
 			active = false
 		default:
 			return "", 0, InvalidArgumentsf("touch action %d has unsupported action %q", index, action.Type)
@@ -889,6 +947,7 @@ func buildADBInputMotionScript(actions []TouchAction, size adbInputScreenSize) (
 	if active {
 		return "", 0, InvalidArguments("touch action sequence must end with touch_up")
 	}
+	script.WriteString("trap - EXIT\n")
 	return script.String(), totalDurationMs, nil
 }
 
