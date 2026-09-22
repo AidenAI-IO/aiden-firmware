@@ -701,9 +701,8 @@ The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, a
 | `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
-| `turn_detection` | `server_vad` | Qwen server turn detector: `server_vad` or `smart_turn`. Provider-direct Speko sessions use the selected provider VAD and do not use this selector. |
-| `turn_detection_threshold` | empty | Optional Qwen server VAD threshold; ignored by Speko S2S. |
-| `turn_detection_silence_ms` | `800` | Qwen silence duration before a response is generated. Ignored by provider-direct Speko sessions, which use the selected provider VAD. |
+
+Legacy Qwen `turn_detection*` fields under this section are migrated to the selected Qwen provider record when the configuration is loaded or next saved.
 
 ## `[voice_settings.realtime.providers.<name>]`
 
@@ -718,6 +717,9 @@ api_key = "$DASHSCOPE_API_KEY"
 model = "qwen-audio-3.0-realtime-plus"
 region = "cn-beijing"
 voice = "longanqian"
+turn_detection = "server_vad"
+turn_detection_threshold = 0.5
+turn_detection_silence_ms = 800
 
 [voice_settings.realtime.providers.speko-main]
 type = "speko"
@@ -753,10 +755,15 @@ provider = "speko-main"
 | `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. For Gemini Vertex, this is an OAuth access token. |
 | `model` / `voice` | all | Provider-specific model and voice. Speko requires an explicit model; voice may stay empty for the selected upstream default. |
 | `workspace_id` / `region` | Qwen | Optional DashScope routing settings. |
+| `turn_detection` | Qwen | Qwen turn detector: `server_vad` (default) or `smart_turn`. Config Web exposes this under the provider's Advanced Settings. |
+| `turn_detection_threshold` | Qwen `server_vad` | Optional Qwen VAD threshold; leave unset to use the service default. Ignored by `smart_turn`. |
+| `turn_detection_silence_ms` | Qwen `server_vad` | Optional silence duration before Qwen completes a turn; leave unset to use the service default. Ignored by `smart_turn`. |
 | `auth_mode` | Gemini | `api_key` (default) for the Gemini Developer API, or `vertex` for Vertex OAuth. |
 | `project_id` / `location` | Gemini Vertex | Required Google Cloud project and Vertex region, for example `us-central1`. |
 | `endpoint` | Qwen, OpenAI, Gemini, xAI | Optional WebSocket endpoint override, primarily for regional gateways and protocol tests. |
 | `realtime_protocol` | OpenAI | OpenAI Realtime wire schema: empty or `ga` (default) uses the current GA session payload; `legacy` (alias `beta`) uses the older `modalities`, `input_audio_format`, and `output_audio_format` fields required by some compatible gateways. Set this explicitly; the endpoint URL is never used to infer the protocol. |
+| `use_backend_agent` | realtime mode (`[voice_settings.realtime]`) | Controls tool ownership: omitted/`false` (default) disables agent communication tools and exposes the runtime tools that the backend agent would otherwise use directly to the realtime model; `true` enables the backend agent and exposes its communication tools (`*_agent_task`). This setting does not control provider reasoning, which remains a provider/model capability. |
+| `thinking_level` | Gemini | Thinking depth for Live Extended Thinking models: `LOW` (default), `MINIMAL`, `MEDIUM`, or `HIGH`. Only applies to models that support thinking; other models ignore it. |
 | `upstream_provider` | Speko | Required S2S upstream: `google` (or `gemini`) or `xai`, paired with `model`. Automatic routing is disabled because it may select an unsupported WebRTC route. OpenAI is not a supported Speko route in Aiden; use the top-level `openai` provider instead. |
 | `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 

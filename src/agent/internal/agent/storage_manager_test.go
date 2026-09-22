@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -43,6 +44,10 @@ type fakeStorageOps struct {
 	lastUnmountPoint string
 	formats          int
 	lastFormatFS     string
+	snapshotUUID     string
+	snapshotMountID  string
+	snapshotErr      error
+	snapshotContext  context.Context
 }
 
 func (f *fakeStorageOps) CardDevice() (string, bool) {
@@ -117,6 +122,87 @@ func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 }
 
 func (f *fakeStorageOps) CardIsBlank() bool { return f.blank }
+
+func (f *fakeStorageOps) SnapshotIdentity(ctx context.Context, _, _ string) (string, string, error) {
+	f.snapshotContext = ctx
+	if f.snapshotErr != nil {
+		return "", "", f.snapshotErr
+	}
+	uuid := f.snapshotUUID
+	if uuid == "" {
+		uuid = "test-sd-uuid"
+	}
+	mountID := f.snapshotMountID
+	if mountID == "" {
+		mountID = "42:179:1"
+	}
+	return uuid, mountID, nil
+}
+
+func TestStorageSnapshotLeasePinsCardAndBlocksMutations(t *testing.T) {
+	ops := &fakeStorageOps{present: true, mounted: true, healthy: true, free: 1 << 30, total: 1 << 31}
+	m := newTestStorageManager(t, ops)
+	m.card = StorageCardStatus{Present: true, Mounted: true, Device: "/dev/mmcblk2p1"}
+	m.lastEffective = StorageModeDual
+
+	type snapshotContextKey struct{}
+	acquireCtx := context.WithValue(context.Background(), snapshotContextKey{}, "acquire")
+	lease, err := m.AcquireSnapshotLease(acquireCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ops.snapshotContext != acquireCtx {
+		t.Fatal("snapshot acquisition did not propagate its context")
+	}
+	snapshot := lease.Snapshot()
+	if snapshot.DevicePath != "/dev/mmcblk2p1" || snapshot.FilesystemUUID != "test-sd-uuid" || snapshot.MountID == "" {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	validateCtx := context.WithValue(context.Background(), snapshotContextKey{}, "validate")
+	if err := lease.Validate(validateCtx); err != nil {
+		t.Fatalf("fresh lease validation = %v", err)
+	}
+	if ops.snapshotContext != validateCtx {
+		t.Fatal("snapshot validation did not propagate its context")
+	}
+	if err := m.SafeEject(); err == nil || !strings.Contains(err.Error(), "snapshot lease") {
+		t.Fatalf("SafeEject during lease = %v", err)
+	}
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err == nil || !strings.Contains(err.Error(), "snapshot lease") {
+		t.Fatalf("StartFormat during lease = %v", err)
+	}
+	changed := m.cfg
+	changed.MinCardFreeMB++
+	if err := m.Reconfigure(changed); err == nil || !strings.Contains(err.Error(), "snapshot lease") {
+		t.Fatalf("Reconfigure during lease = %v", err)
+	}
+
+	ops.snapshotMountID = "99:179:1"
+	if err := lease.Validate(context.Background()); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("changed mount validation = %v", err)
+	}
+	ops.snapshotMountID = "42:179:1"
+	lease.Release()
+	lease.Release()
+	if err := m.SafeEject(); err != nil {
+		t.Fatalf("SafeEject after release = %v", err)
+	}
+}
+
+func TestStorageSnapshotLeaseRejectsMissingOrBusyCard(t *testing.T) {
+	ops := &fakeStorageOps{healthy: true}
+	m := newTestStorageManager(t, ops)
+	if _, err := m.AcquireSnapshotLease(context.Background()); err == nil {
+		t.Fatal("lease acquired without a mounted card")
+	}
+	m.card = StorageCardStatus{Present: true, Mounted: true, Device: "/dev/mmcblk2p1"}
+	ops.present = true
+	ops.mounted = true
+	m.formatJob.Status = StorageFormatRunning
+	if _, err := m.AcquireSnapshotLease(context.Background()); err == nil || !strings.Contains(err.Error(), "format") {
+		t.Fatalf("lease during format = %v", err)
+	}
+}
 
 func newTestStorageManager(t *testing.T, ops *fakeStorageOps) *StorageManager {
 	return newTestStorageManagerWithWatermarks(t, ops, 0, 0)

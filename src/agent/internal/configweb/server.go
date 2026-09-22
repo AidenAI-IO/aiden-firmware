@@ -6,16 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"aiden-agent/internal/agent"
+	"aiden-agent/internal/backup"
 	"aiden-agent/internal/logging"
 	"aiden-agent/internal/wifiproxy"
 )
@@ -29,6 +31,9 @@ const (
 type Server struct {
 	options                  Options
 	http                     *http.Server
+	usbHTTP                  *http.Server
+	usbRetryStop             chan struct{}
+	usbRetryOnce             sync.Once
 	storage                  storageController
 	sttTest                  *agent.STTConfigTestAPI
 	closeMu                  sync.Once
@@ -45,6 +50,13 @@ type Server struct {
 	wifiOpMu                 sync.Mutex
 	wifiMu                   sync.Mutex
 	wifiJob                  *wifiConnectionJob
+	maintenance              *maintenanceController
+	maintenanceSessions      *maintenanceSessionStore
+	backupJobs               *backupJobStore
+	restoreJobs              *restoreJobStore
+	services                 serviceController
+	mounts                   backup.MountController
+	restoreRecovery          []backup.RecoveryResult
 
 	restartMu               sync.Mutex
 	restartCommand          *exec.Cmd
@@ -55,6 +67,9 @@ type Server struct {
 }
 
 func NewServer(options Options) (*Server, error) {
+	if strings.TrimSpace(options.USBInterface) == "" {
+		options.USBInterface = "usb0"
+	}
 	if strings.TrimSpace(options.WiFiProxyConfigPath) == "" {
 		options.WiFiProxyConfigPath = wifiproxy.DefaultConfigPath
 	}
@@ -77,6 +92,13 @@ func NewServer(options Options) (*Server, error) {
 		options: options,
 		sttTest: agent.NewSTTConfigTestAPI(options.AgentConfigPath),
 	}
+	s.services = &systemdServiceController{binary: options.SystemctlBinary}
+	s.maintenance = newMaintenanceController(options.MaintenanceLockPath)
+	s.maintenanceSessions = newMaintenanceSessionStore(options.USBAddress, options.USBSubnet)
+	s.maintenanceSessions.busy = s.maintenance.active
+	s.backupJobs = newBackupJobStore(s, options.BackupJobStateDir)
+	s.restoreJobs = newRestoreJobStore(s, options.BackupJobStateDir)
+	s.mounts = backup.SystemMountController{}
 	if _, err := os.Stat(options.AgentConfigPath); err == nil {
 		if err := s.initializeStorageManager(); err != nil {
 			return nil, err
@@ -84,13 +106,11 @@ func NewServer(options Options) (*Server, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("stat Agent config: %w", err)
 	}
-	s.http = &http.Server{
-		Addr:              options.Addr(),
-		Handler:           s,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       65 * time.Second,
-		WriteTimeout:      65 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	usbOnly := options.BindAddress == options.USBAddress
+	s.http = configHTTPServer(options.Addr(), s, usbOnly)
+	if options.BindAddress == "0.0.0.0" {
+		s.usbHTTP = configHTTPServer(net.JoinHostPort(options.USBAddress, strconv.Itoa(options.Port)), s, true)
+		s.usbRetryStop = make(chan struct{})
 	}
 	return s, nil
 }
@@ -102,16 +122,88 @@ func (s *Server) ListenAndServe() error {
 		}
 	}
 	s.logAgentRecoveryState()
+	// A Config Web crash mid-restore leaves staging or a half-committed
+	// transaction behind; finish or discard it before serving requests.
+	s.recoverRestoreTransactions()
 	logging.Infof("config_web", "config_web", "listening on %s", s.options.Addr())
-	err := s.http.ListenAndServe()
+	// A separate SO_BINDTODEVICE socket establishes the USB ingress boundary.
+	// The wildcard portal remains available on Wi-Fi, but its connections are
+	// never maintenance-authorized, even when addressed to the USB IP.
+	errorsCh := make(chan error, 2)
+	if s.usbHTTP != nil {
+		// The USB gadget can come up after Config Web (a Wants= dependency);
+		// keep retrying the interface-bound socket in the background so USB
+		// maintenance becomes available without a service restart.
+		go s.serveUSBListener(errorsCh)
+	}
+	device := ""
+	if s.options.BindAddress == s.options.USBAddress {
+		device = s.options.USBInterface
+	}
+	listener, err := listenConfigWeb(s.http.Addr, device)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	go func() { errorsCh <- s.http.Serve(listener) }()
+	err = <-errorsCh
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
 }
 
+// serveUSBListener binds the SO_BINDTODEVICE maintenance socket, retrying
+// with backoff until it succeeds or the server shuts down.  Failures are
+// fail-closed: no USB listener means no maintenance authorization.
+func (s *Server) serveUSBListener(errorsCh chan<- error) {
+	listener, err := retryListen(func() (net.Listener, error) {
+		return listenConfigWeb(s.usbHTTP.Addr, s.options.USBInterface)
+	}, s.usbRetryStop, usbListenRetrySchedule, func(attempt int, err error) {
+		if attempt == 1 {
+			logging.Warnf("config_web", "config_web", "USB maintenance listener unavailable (fail closed), retrying: %v", err)
+		}
+	})
+	if err != nil {
+		return
+	}
+	logging.Infof("config_web", "config_web", "USB maintenance listener ready on %s (%s)", s.usbHTTP.Addr, s.options.USBInterface)
+	select {
+	case <-s.usbRetryStop:
+		// Shutdown raced the successful bind; Serve would return immediately.
+		_ = listener.Close()
+		return
+	default:
+	}
+	errorsCh <- s.usbHTTP.Serve(listener)
+}
+
+func (s *Server) stopUSBRetry() {
+	if s.usbRetryStop == nil {
+		return
+	}
+	s.usbRetryOnce.Do(func() { close(s.usbRetryStop) })
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
-	err := s.http.Shutdown(ctx)
+	s.stopUSBRetry()
+	if s.backupJobs != nil {
+		s.backupJobs.cancelAll()
+	}
+	if s.restoreJobs != nil {
+		s.restoreJobs.cancelAll()
+	}
+	shutdownErrors := make(chan error, 2)
+	go func() { shutdownErrors <- s.http.Shutdown(ctx) }()
+	count := 1
+	if s.usbHTTP != nil {
+		count++
+		go func() { shutdownErrors <- s.usbHTTP.Shutdown(ctx) }()
+	}
+	var err error
+	for index := 0; index < count; index++ {
+		err = errors.Join(err, <-shutdownErrors)
+	}
 	s.closeMu.Do(func() {
 		if storage := s.currentStorage(); storage != nil {
 			storage.Stop()

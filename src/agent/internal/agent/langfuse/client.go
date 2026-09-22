@@ -42,74 +42,51 @@ func (c *Client) Configured() bool {
 	return c != nil && c.baseURL != "" && c.publicKey != "" && c.secretKey != ""
 }
 
-type IngestionRequest struct {
-	Batch []IngestionEvent `json:"batch"`
+// Score is a Langfuse score. Scores are written through the dedicated scores
+// API rather than the trace ingestion path.
+type Score struct {
+	ID          string
+	TraceID     string
+	Name        string
+	Value       float64
+	DataType    string
+	Comment     string
+	Environment string
+	Metadata    map[string]interface{}
 }
 
-type IngestionEvent struct {
-	ID        string          `json:"id"`
-	Timestamp string          `json:"timestamp"`
-	Type      string          `json:"type"`
-	Body      json.RawMessage `json:"body"`
-}
-
-type IngestionResponse struct {
-	Successes []struct {
-		ID     string `json:"id"`
-		Status int    `json:"status"`
-	} `json:"successes"`
-	Errors []struct {
-		ID      string `json:"id"`
-		Status  int    `json:"status"`
-		Message string `json:"message"`
-		Error   string `json:"error"`
-	} `json:"errors"`
-}
-
-func (c *Client) Ingest(ctx context.Context, batch []IngestionEvent) error {
-	if len(batch) == 0 {
-		return nil
-	}
+func (c *Client) CreateScore(ctx context.Context, score Score) error {
 	if !c.Configured() {
 		return fmt.Errorf("langfuse client is not configured")
 	}
-	payload, err := json.Marshal(IngestionRequest{Batch: batch})
+	payload, err := json.Marshal(map[string]interface{}{
+		"id":          strings.TrimSpace(score.ID),
+		"traceId":     strings.TrimSpace(score.TraceID),
+		"name":        score.Name,
+		"value":       score.Value,
+		"dataType":    score.DataType,
+		"comment":     score.Comment,
+		"environment": score.Environment,
+		"metadata":    score.Metadata,
+	})
 	if err != nil {
-		return fmt.Errorf("marshal ingestion batch: %w", err)
+		return fmt.Errorf("marshal score: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/public/ingestion", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/public/scores", bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("create ingestion request: %w", err)
+		return fmt.Errorf("create score request: %w", err)
 	}
 	req.SetBasicAuth(c.publicKey, c.secretKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("ingestion request failed: %w", err)
+		return fmt.Errorf("score request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("ingestion HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var parsed IngestionResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return fmt.Errorf("decode ingestion response: %w", err)
-	}
-	if len(parsed.Errors) > 0 {
-		parts := make([]string, 0, len(parsed.Errors))
-		for _, item := range parsed.Errors {
-			msg := strings.TrimSpace(item.Message)
-			if msg == "" {
-				msg = strings.TrimSpace(item.Error)
-			}
-			if msg == "" {
-				msg = "unknown error"
-			}
-			parts = append(parts, fmt.Sprintf("%s: %s", item.ID, msg))
-		}
-		return fmt.Errorf("ingestion errors: %s", strings.Join(parts, "; "))
+		return fmt.Errorf("score HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }

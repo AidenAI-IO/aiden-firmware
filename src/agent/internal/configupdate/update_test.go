@@ -550,6 +550,80 @@ realtime_protocol = "legacy"
 	}
 }
 
+func TestUpdateMigratesLegacyQwenTurnDetectionToProviderRecord(t *testing.T) {
+	source := `[voice_settings.realtime]
+provider = "qwen"
+api_key = "qwen-secret"
+turn_detection = "smart_turn"
+turn_detection_threshold = 0.35
+turn_detection_silence_ms = 900
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewService().Update(path, []byte(`{"config":{"agent":{"locale":"zh-CN"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`[voice_settings.realtime.providers.qwen]`, `turn_detection = "smart_turn"`,
+		`turn_detection_threshold = 0.35`, `turn_detection_silence_ms = 900`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("legacy Qwen migration lost %q:\n%s", want, text)
+		}
+	}
+	start := strings.Index(text, "[voice_settings.realtime]")
+	if start < 0 {
+		t.Fatalf("missing [voice_settings.realtime] after migration:\n%s", text)
+	}
+	voiceModelTable := text[start:]
+	if next := strings.Index(voiceModelTable[1:], "\n["); next >= 0 {
+		voiceModelTable = voiceModelTable[:next+1]
+	}
+	if strings.Contains(voiceModelTable, "turn_detection") {
+		t.Fatalf("legacy turn detection remains in [voice_settings.realtime]:\n%s", text)
+	}
+}
+
+func TestUpdateWritesQwenProviderTurnDetectionNumbers(t *testing.T) {
+	source := `[voice_settings.realtime.providers.qwen-main]
+type = "qwen"
+
+[voice_settings.realtime]
+provider = "qwen-main"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"voice_model_providers":{"qwen-main":{"type":"qwen","turn_detection":"smart_turn","turn_detection_threshold":0.45,"turn_detection_silence_ms":850}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := result.Config.VoiceModelProviders["qwen-main"]
+	if record.TurnDetection != "smart_turn" || record.TurnDetectionThreshold == nil || *record.TurnDetectionThreshold != 0.45 || record.TurnDetectionSilenceMs != 850 {
+		t.Fatalf("saved Qwen provider = %+v", record)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{`turn_detection = "smart_turn"`, `turn_detection_threshold = 0.45`, `turn_detection_silence_ms = 850`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Qwen provider update lost %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestUpdateConfigFileRenamesProviderWithoutLosingCredentials(t *testing.T) {
 	source := `[model_settings.providers.old]
 type = "openai"
@@ -1443,6 +1517,7 @@ func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *test
 		TurnDetection:          "smart_turn",
 		TurnDetectionThreshold: &threshold,
 		TurnDetectionSilenceMs: 900,
+		UseBackendAgent:        true,
 	}}
 	dto := FromAgentConfig(want)
 	if dto.VoiceModel.APIKey != "" || !dto.VoiceModel.HasAPIKey {
@@ -1455,6 +1530,24 @@ func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *test
 	got.APIKey = want.VoiceModel.APIKey
 	if !reflect.DeepEqual(got, want.VoiceModel) {
 		t.Fatalf("voice model round-trip = %+v, want %+v", got, want.VoiceModel)
+	}
+}
+
+func TestVoiceModelProviderSettingsRoundTrip(t *testing.T) {
+	threshold := 0.4
+	want := map[string]agent.VoiceModelProvider{
+		"qwen-main": {
+			Type: "qwen", TurnDetection: "smart_turn",
+			TurnDetectionThreshold: &threshold, TurnDetectionSilenceMs: 875,
+		},
+		"gemini-main": {Type: "gemini", ThinkingLevel: "HIGH"},
+	}
+	dto := FromAgentConfig(agent.Config{
+		VoiceModelProviders: want,
+	})
+	got := dto.ToAgentConfig().VoiceModelProviders
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("voice model provider round-trip = %+v, want %+v", got, want)
 	}
 }
 
