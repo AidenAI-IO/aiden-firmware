@@ -24,7 +24,7 @@ assert not (root/'overlay-debian/oem').exists()
 assert not (root/'overlay-debian/etc/systemd/system/oem.mount').exists()
 assert read('overlay-debian/etc/locale.conf') == 'LANG=C.UTF-8\n'
 contract = json.loads(read('overlay-debian/usr/lib/aiden/platform/contract.json'))
-assert contract['platform_contract'] == '1.0.0'
+assert type(contract['platform_contract']) is int and contract['platform_contract'] == 1
 assert contract['architecture'] == 'armhf'
 for line in read('overlay-debian/etc/systemd/system-preset/90-aiden.preset').splitlines():
     line = line.strip()

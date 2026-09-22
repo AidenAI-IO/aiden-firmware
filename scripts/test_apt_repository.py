@@ -81,15 +81,15 @@ class RepositoryTests(unittest.TestCase):
             "platform": platform, "previous_tag": previous["tag"] if previous else None,
             "previous_commit": previous["source_commit"] if previous else None,
             "fingerprints": {"business": hashlib.sha256(version.encode()).hexdigest(),
-                             "system": hashlib.sha256(platform["contract"].encode()).hexdigest()},
+                             "system": hashlib.sha256(str(platform["contract"]).encode()).hexdigest()},
         }
         declaration = {"format": 1, "product": "aiden", "platform_id": "luckfox-rv1106", "architecture": "armhf",
                        "os_release": "debian-13", "libc": "glibc", "channel": channel,
                        "platform_contract": platform["contract"], "base_release": platform["base_release"],
                        "system_fingerprint": record["fingerprints"]["system"]}
-        major = int(platform["contract"].split(".")[0])
+        number = platform["contract"]
         manifest = {"business_release": version, "package_revision": "1", "platform": declaration,
-                    "required_platform_contract": {"min": f"{major}.0.0", "max_exclusive": f"{major+1}.0.0"}}
+                    "required_platform_contract": {"min": number, "max_exclusive": number + 1}}
         if runtime_config:
             record["runtime_config"] = manifest["runtime_config"] = declaration["runtime_config"] = runtime_config
         package_root = self.root / tag
@@ -151,8 +151,8 @@ class RepositoryTests(unittest.TestCase):
         return subprocess.run([program, *self.apt_options, *args], capture_output=True, text=True, check=check)
 
     def test_integrated_runtime_configs_upgrade_through_signed_apt(self):
-        self.release("0.0.2", kind="ota", contract="1.0.0")
-        device = self.release("0.0.3", kind="ota", contract="2.0.0", runtime_config=1)
+        self.release("0.0.2", kind="ota", contract=1)
+        device = self.release("0.0.3", kind="ota", contract=2, runtime_config=1)
         self.release("0.0.4", runtime_config=1)
         self.build()
         with self.serve() as url:
@@ -163,10 +163,10 @@ class RepositoryTests(unittest.TestCase):
             self.assertIn("0.0.4-1", upgrade)
 
     def test_contract_isolation_and_only_business_upgrades(self):
-        device = self.release("0.0.2", kind="ota", contract="1.0.0")
+        device = self.release("0.0.2", kind="ota", contract=1)
         self.release("0.0.3")
-        self.release("0.0.4", "staging", "ota", "2.0.0")
-        self.release("0.0.5", kind="ota", contract="3.0.0")
+        self.release("0.0.4", "staging", "ota", 2)
+        self.release("0.0.5", kind="ota", contract=3)
         self.release("0.0.6")
         suites = self.build()
         self.assertEqual(set(suites), {"dev-c1", "staging-c2", "dev-c3"})
@@ -191,7 +191,7 @@ class RepositoryTests(unittest.TestCase):
             self.assertIn("pool/dev-c1/dev-v0.0.3/aiden-business_0.0.3-1_armhf.deb", downloaded)
 
     def test_signed_metadata_has_no_expiry(self):
-        device = self.release("0.0.2", kind="ota", contract="1.0.0")
+        device = self.release("0.0.2", kind="ota", contract=1)
         self.build(now=datetime(2020, 1, 1, tzinfo=timezone.utc))
         for name in ("Release", "InRelease"):
             self.assertNotIn("Valid-Until:", (self.site / "apt/dists/dev-c1" / name).read_text())
@@ -201,7 +201,7 @@ class RepositoryTests(unittest.TestCase):
             self.assertIn("Candidate: 0.0.2-1", self.apt("apt-cache", "policy", "aiden-business").stdout)
 
     def test_tampered_indexes_are_rejected(self):
-        device = self.release("0.0.2", kind="ota", contract="1.0.0")
+        device = self.release("0.0.2", kind="ota", contract=1)
         self.build()
         for path in (self.site / "apt/dists/dev-c1/main/binary-armhf").rglob("*"):
             if path.is_file():
@@ -214,7 +214,7 @@ class RepositoryTests(unittest.TestCase):
             self.assertIn("mismatch", (result.stdout + result.stderr).lower())
 
     def test_untrusted_signature_is_rejected(self):
-        device = self.release("0.0.2", kind="ota", contract="1.0.0")
+        device = self.release("0.0.2", kind="ota", contract=1)
         self.build()
         run("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key",
             "Other <other@example.test>", "ed25519", "sign", "0")
@@ -226,7 +226,7 @@ class RepositoryTests(unittest.TestCase):
             self.assertTrue(any(word in result.stderr for word in ("NO_PUBKEY", "Missing key", "signature")))
 
     def test_corrupt_published_asset_is_rejected_before_signing(self):
-        self.release("0.0.2", kind="ota", contract="1.0.0")
+        self.release("0.0.2", kind="ota", contract=1)
         package = next(self.cache.rglob("*.deb"))
         package.write_bytes(package.read_bytes() + b"modified")
         with self.assertRaisesRegex(ValueError, "checksum/size"):
@@ -234,25 +234,33 @@ class RepositoryTests(unittest.TestCase):
         self.assertFalse(self.site.exists())
 
     def test_manifest_contract_mismatch_is_rejected(self):
-        self.release("0.0.2", kind="ota", contract="1.0.0")
-        self.history[0]["platform"]["contract"] = "2.0.0"
+        self.release("0.0.2", kind="ota", contract=1)
+        self.history[0]["platform"]["contract"] = 2
         with self.assertRaisesRegex(ValueError, "manifest"):
             self.build()
         self.assertFalse(self.site.exists())
 
     def test_retention_preserves_old_contract_suites(self):
-        self.release("0.0.2", kind="ota", contract="1.0.0")
+        self.release("0.0.2", kind="ota", contract=1)
         for version in ("0.0.3", "0.0.4", "0.0.5"):
             self.release(version)
-        self.release("0.0.6", kind="ota", contract="2.0.0")
+        self.release("0.0.6", kind="ota", contract=2)
         selected = repository.select_records(self.history, REPO)
         self.assertEqual([r["version"] for r in selected["dev-c1"]], ["0.0.3", "0.0.4", "0.0.5"])
         self.assertEqual([r["version"] for r in selected["dev-c2"]], ["0.0.6"])
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_contract_is_a_positive_json_integer(self):
+        platform = {"product": "aiden", "platform_id": "luckfox-rv1106", "architecture": "armhf",
+                    "channel": "dev", "base_release": "dev-v0.0.2", "system_fingerprint": "a" * 64}
+        self.assertEqual(apt_source.suite_for({**platform, "platform_contract": 1}), "dev-c1")
+        for value in (0, -1, True, False, 1.0, "1", "1.0.0", None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "positive integer"):
+                apt_source.suite_for({**platform, "platform_contract": value})
+
     def test_unmanaged_or_invalid_platform_does_not_write_sources(self):
-        for platform in ({}, {"channel": "unknown"}, {"channel": "dev", "platform_contract": "0.0.0"}):
+        for platform in ({}, {"channel": "unknown"}, {"channel": "dev", "platform_contract": 0}):
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 path = root / "usr/lib/aiden/platform/contract.json"
