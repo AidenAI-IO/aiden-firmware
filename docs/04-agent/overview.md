@@ -21,7 +21,7 @@ output/debian-apps/apps/bin/agent
 In the firmware, it is installed by default to:
 
 ```text
-/oem/usr/bin/agent
+/usr/lib/aiden/agent
 ```
 
 ## Current Capabilities
@@ -61,7 +61,7 @@ go run ./cmd/daemon -dir ./config -addr :8080
 Device service:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -dir /userdata/agent -addr :8080
+/usr/lib/aiden/aiden-managed-env-run /usr/lib/aiden/agent -dir /userdata/agent -addr :8080
 ```
 
 ## Built-in Tools

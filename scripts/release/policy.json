@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "ignore": [
+    "docs/**", "tests/**", "benchmark/**", "**/*_test.go", "**/testdata/**",
+    "scripts/test_*", "README*", "AGENTS.md", "LICENSE*", ".github/ISSUE_TEMPLATE/**"
+  ],
+  "system": [
+    "src/agent/internal/ota/**", "src/agent/cmd/ota/**", "src/agent/cmd/abctl/**",
+    "src/agent/cmd/environment/**", "src/agent/config/agent.toml", "**/CMakeLists.txt",
+    "src/agent/go.mod", "src/agent/go.sum"
+  ],
+  "business": ["src/**", "assets/business/**", "scripts/debian-package/**"],
+  "default": "system"
+}

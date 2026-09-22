@@ -93,7 +93,7 @@ run_warn_check() {
 
 find_bin() {
     aiden_bin_name="$1"
-    for aiden_bin_path in "/oem/usr/bin/$aiden_bin_name" "/usr/local/bin/$aiden_bin_name" "/usr/bin/$aiden_bin_name" "/bin/$aiden_bin_name"; do
+    for aiden_bin_path in "/usr/lib/aiden/$aiden_bin_name" "/usr/local/bin/$aiden_bin_name" "/usr/bin/$aiden_bin_name" "/bin/$aiden_bin_name"; do
         if [ -x "$aiden_bin_path" ]; then
             printf '%s\n' "$aiden_bin_path"
             return 0

@@ -11,7 +11,7 @@ Before enabling production OTA rollout, the following acceptance tests should be
 - The production image is built with the production Ed25519 public key.
 - A local or self-hosted HTTP(S) endpoint contains the signed `manifest.json`
   and compressed image archives: `boot_a.img.tar.gz`, `boot_b.img.tar.gz`,
-  `oem.img.tar.gz`, `rootfs.img.tar.gz`, and `update.img.tar.gz`.
+  `rootfs.img.tar.gz`, and `update.img.tar.gz`.
 - The `update.img` inside `update.img.tar.gz` contains the dedicated empty `ota` partition and the factory baseline in userdata at `/debian/ota/config.json`.
 - When UART is available, it is recommended to record SPL rollback logs simultaneously.
 
@@ -39,7 +39,7 @@ After device boots, check:
 
 ```bash
 cat /proc/cmdline
-mount | grep ' /oem '
+findmnt /
 ota_device="$(readlink -f /dev/disk/by-partlabel/ota)"
 ota_mount_device="$(awk '$2 == "/userdata/ota" && $3 == "ext4" { print $1 }' /proc/mounts)"
 userdata_mount_device="$(awk '$2 == "/userdata" { print $1 }' /proc/mounts)"
@@ -48,15 +48,15 @@ test "$(readlink -f "$ota_mount_device")" = "$ota_device"
 test -n "$userdata_mount_device"
 test "$(readlink -f "$userdata_mount_device")" != "$ota_device"
 df -h /userdata /userdata/ota
-/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
-/oem/usr/bin/ota status
+/usr/lib/aiden/abctl read /dev/disk/by-partlabel/misc
+/usr/lib/aiden/ota status
 ```
 
 Expected:
 
 - Factory boot is in slot A.
 - `/proc/cmdline` contains `aiden.slot_suffix=_a` and `root=PARTLABEL=rootfs_a`.
-- `/oem` is mounted from `/dev/disk/by-partlabel/oem_a`.
+- `/` is mounted from `rootfs_a` (`/dev/mmcblk0p7`); `/oem` is absent.
 - `/userdata/ota` is an ext4 mount whose source resolves to `/dev/disk/by-partlabel/ota`, and it reports an independent filesystem from `/userdata`.
 - `misc` metadata can be parsed normally from byte offset `2048`, slot A is successful.
 - `/userdata/debian/ota/config.json` exists, `ota status` does not report missing factory baseline.
@@ -66,7 +66,7 @@ Expected:
 Switch to inactive slot:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc b --tries 3
+/usr/lib/aiden/abctl set-active /dev/disk/by-partlabel/misc b --tries 3
 sync
 reboot
 ```
@@ -75,14 +75,14 @@ After reboot, check:
 
 ```bash
 cat /proc/cmdline
-mount | grep ' /oem '
-/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
+findmnt /
+/usr/lib/aiden/abctl read /dev/disk/by-partlabel/misc
 ```
 
 Expected:
 
 - `/proc/cmdline` contains `aiden.slot_suffix=_b` and `root=PARTLABEL=rootfs_b`.
-- `/oem` is mounted from `/dev/disk/by-partlabel/oem_b`.
+- `/` is mounted from `rootfs_b` (`/dev/mmcblk0p8`); `/oem` is absent.
 - Slot B has remaining tries before mark successful.
 
 ## 3. Mark Successful
@@ -90,9 +90,9 @@ Expected:
 After confirming the new slot is usable, commit:
 
 ```bash
-/oem/usr/bin/abctl mark-successful /dev/disk/by-partlabel/misc b
+/usr/lib/aiden/abctl mark-successful /dev/disk/by-partlabel/misc b
 sync
-/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
+/usr/lib/aiden/abctl read /dev/disk/by-partlabel/misc
 ```
 
 Expected: slot B successful with tries 0; previous slot is still retained as a fallback slot.
@@ -102,7 +102,7 @@ Expected: slot B successful with tries 0; previous slot is still retained as a f
 Force trial boot to another slot, but do not mark successful:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc a --tries 1
+/usr/lib/aiden/abctl set-active /dev/disk/by-partlabel/misc a --tries 1
 sync
 reboot
 ```
@@ -121,12 +121,12 @@ Confirm configuration:
 cat /userdata/debian/ota/config.json
 ```
 
-Configuration should point to target repo/channel and include `boot`, `oem`, `rootfs` hashes in `factory_partition_hashes.a` and `factory_partition_hashes.b`.
+Configuration should point to target repo/channel and include `boot`, `rootfs` hashes in `factory_partition_hashes.a` and `factory_partition_hashes.b`.
 
 Execute OTA once:
 
 ```bash
-/oem/usr/bin/ota update
+/usr/lib/aiden/ota update
 ```
 
 Expected process:
@@ -142,8 +142,8 @@ Expected process:
 After success, check:
 
 ```bash
-/oem/usr/bin/ota status
-/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
+/usr/lib/aiden/ota status
+/usr/lib/aiden/abctl read /dev/disk/by-partlabel/misc
 ls -l /userdata/ota/pending_boot.json /userdata/ota/health.ok 2>&1 || true
 ```
 
