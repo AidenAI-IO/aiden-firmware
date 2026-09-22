@@ -73,7 +73,7 @@ Most mobile agent projects are lab prototypes that require a laptop or desktop t
 
 ## Repository Scope
 
-- **Firmware integration**: Debian rootfs/OEM overlays, systemd services, USB gadget setup, Wi-Fi/config portal defaults, and full `update.img` generation.
+- **Firmware integration**: Debian rootfs overlay and business package, systemd services, USB gadget setup, Wi-Fi/config portal defaults, and full `update.img` generation.
 - **C++ services**: `frame_service` owns HDMI capture and exposes screenshots over Unix domain sockets; `audio_service` owns recording/playback and volume state.
 - **Go Agent**: the device-side LLM runtime, voice loop, skills, memory, and built-in screenshot/HID/audio/shell tools.
 - **USB networking**: The board exposes `usb0` at `192.168.42.1` for the device config page and local board-to-phone communication.

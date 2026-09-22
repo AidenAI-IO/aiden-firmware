@@ -15,15 +15,12 @@ import (
 
 const (
 	DefaultBootPartitionSize   int64 = 32 << 20
-	DefaultOEMPartitionSize    int64 = 256 << 20
-	DefaultRootFSPartitionSize int64 = 1536 << 20
+	DefaultRootFSPartitionSize int64 = 1792 << 20
 )
 
 var DefaultProductionPartitionSizes = map[string]int64{
 	"boot_a":   DefaultBootPartitionSize,
 	"boot_b":   DefaultBootPartitionSize,
-	"oem_a":    DefaultOEMPartitionSize,
-	"oem_b":    DefaultOEMPartitionSize,
 	"rootfs_a": DefaultRootFSPartitionSize,
 	"rootfs_b": DefaultRootFSPartitionSize,
 }
@@ -382,7 +379,7 @@ func (w PartitionWriter) ResolveBlockName(part string, targetSlot Slot) (string,
 	if targetSlot != SlotA && targetSlot != SlotB {
 		return "", fmt.Errorf("invalid target slot %d", targetSlot)
 	}
-	if part != "boot" && part != "oem" && part != "rootfs" {
+	if part != "boot" && part != "rootfs" {
 		return "", fmt.Errorf("unknown part %q", part)
 	}
 	targetSlotName, err := slotName(targetSlot)

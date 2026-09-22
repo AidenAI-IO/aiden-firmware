@@ -39,6 +39,10 @@ Build and audit the Debian armhf application bundle with:
 scripts/debian-apps/build-apps.sh all
 ```
 
+Git worktrees are supported. Build containers mount the checkout at both `/work`
+and its host path so Git can resolve the SDK submodule's `core.worktree` path
+when recording source provenance.
+
 This workflow will:
 
 1. Build the pinned Debian armhf toolchain container and opencv-mobile;
@@ -48,12 +52,17 @@ This workflow will:
 5. Audit the application and shared-library bundle under `output/debian-apps/`.
 
 Use `./debian_build.sh` for the complete signed local firmware image set. It
-builds applications, the Debian rootfs, the RV1106 BSP, A/B images, and
+builds applications, the RV1106 BSP, the Debian rootfs with its business package, A/B images, and
 the local OTA manifest in one workflow.
 
 ```bash
 ./debian_build.sh
 ```
+
+To build and stage only the business `.deb` (default `0.0.1-2`), run
+`scripts/debian-package/release.sh build` on Linux amd64. See
+[Debian business package](../08-ota/debian-package.md) for independent GitHub
+Release publication and installation.
 
 ### Debian archive mirror
 

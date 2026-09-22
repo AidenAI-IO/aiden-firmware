@@ -32,7 +32,7 @@ extern "C" {
 
 namespace aiden {
 
-static const char* kAudioVqeConfigPath = "/oem/usr/share/aiden/audio/config_aivqe.json";
+static const char* kAudioVqeConfigPath = "/usr/share/aiden/audio/config_aivqe.json";
 
 static bool ensure_sys_init() {
     return acquire_rockit_system();
