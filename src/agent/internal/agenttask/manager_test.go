@@ -648,6 +648,40 @@ func TestManagerTerminalStateDoesNotConsume(t *testing.T) {
 	}
 }
 
+func TestManagerTerminalTasksUseCompletionTimeThenID(t *testing.T) {
+	earlier := time.Date(2026, time.September, 22, 10, 0, 0, 0, time.UTC)
+	later := earlier.Add(time.Second)
+	manager := &Manager{
+		tasks: map[string]*entry{
+			"later-b": {task: Task{ID: "later-b", Status: StatusCompleted, CompletedAt: &later}},
+			"earlier": {task: Task{ID: "earlier", Status: StatusCompleted, CompletedAt: &earlier}},
+			"later-a": {task: Task{ID: "later-a", Status: StatusCompleted, CompletedAt: &later}},
+		},
+		resultNotifications: map[string]resultNotificationState{
+			"later-b": resultNotificationQueued,
+			"earlier": resultNotificationQueued,
+			"later-a": resultNotificationQueued,
+		},
+	}
+
+	want := []string{"earlier", "later-a", "later-b"}
+	assertOrder := func(name string, tasks []Task) {
+		t.Helper()
+		if len(tasks) != len(want) {
+			t.Fatalf("%s() returned %d tasks, want %d: %+v", name, len(tasks), len(want), tasks)
+		}
+		for i, task := range tasks {
+			if task.ID != want[i] {
+				t.Fatalf("%s()[%d].ID = %q, want %q; tasks = %+v", name, i, task.ID, want[i], tasks)
+			}
+		}
+	}
+
+	pending, _ := manager.TerminalState()
+	assertOrder("TerminalState", pending)
+	assertOrder("DrainTerminalTasks", manager.DrainTerminalTasks())
+}
+
 func TestManagerSignalsWakeAndSequencePerTerminalTask(t *testing.T) {
 	manager := newManager(&fakeRunner{result: "done"}, 4, time.Now)
 	defer manager.Close()

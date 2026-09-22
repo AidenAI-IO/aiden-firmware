@@ -143,12 +143,12 @@ type entry struct {
 	steerSignal     chan struct{}
 }
 
-type deliveryState uint8
+type resultNotificationState uint8
 
 const (
-	deliveryQueued deliveryState = iota + 1
-	deliveryClaimed
-	deliveryDelivering
+	resultNotificationQueued resultNotificationState = iota + 1
+	resultNotificationClaimed
+	resultNotificationDelivering
 )
 
 // Manager serializes background work and keeps create, cancel, and query
@@ -162,15 +162,14 @@ type Manager struct {
 	queue  chan string
 	wg     sync.WaitGroup
 
-	mu               sync.RWMutex
-	tasks            map[string]*entry
-	terminal         []Task
-	terminalDelivery map[string]deliveryState
-	terminalSeq      uint64
-	terminalChanged  chan struct{}
-	wakeChanged      chan struct{}
-	actionChanged    chan struct{}
-	closed           bool
+	mu                  sync.RWMutex
+	tasks               map[string]*entry
+	resultNotifications map[string]resultNotificationState
+	terminalSeq         uint64
+	terminalChanged     chan struct{}
+	wakeChanged         chan struct{}
+	actionChanged       chan struct{}
+	closed              bool
 }
 
 func NewManager(runner Runner) *Manager {
@@ -186,16 +185,16 @@ func newManager(runner Runner, queueSize int, now func() time.Time) *Manager {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		runner:           runner,
-		now:              now,
-		ctx:              ctx,
-		cancel:           cancel,
-		queue:            make(chan string, queueSize),
-		tasks:            make(map[string]*entry),
-		terminalDelivery: make(map[string]deliveryState),
-		terminalChanged:  make(chan struct{}, 1),
-		wakeChanged:      make(chan struct{}, 1),
-		actionChanged:    make(chan struct{}, 1),
+		runner:              runner,
+		now:                 now,
+		ctx:                 ctx,
+		cancel:              cancel,
+		queue:               make(chan string, queueSize),
+		tasks:               make(map[string]*entry),
+		resultNotifications: make(map[string]resultNotificationState),
+		terminalChanged:     make(chan struct{}, 1),
+		wakeChanged:         make(chan struct{}, 1),
+		actionChanged:       make(chan struct{}, 1),
 	}
 	m.wg.Add(1)
 	go m.worker()
@@ -265,7 +264,7 @@ func (m *Manager) Outstanding() []Task {
 	var tasks []Task
 	for id, item := range m.tasks {
 		if item.task.Status.terminal() {
-			if _, waiting := m.terminalDelivery[id]; !waiting {
+			if _, waiting := m.resultNotifications[id]; !waiting {
 				continue
 			}
 		}
@@ -309,7 +308,7 @@ func (m *Manager) Cancel(taskID string) (Task, bool, error) {
 		// terminal task it also means "do not announce this result" while delivery
 		// is still owned by the manager or claimed by a foreground session.
 		if item.task.Status.terminal() {
-			notificationCleared = m.suppressTerminalDeliveryLocked(taskID)
+			notificationCleared = m.suppressResultNotificationLocked(taskID)
 		}
 	}
 	task := item.task
@@ -520,15 +519,20 @@ func (m *Manager) DrainTerminalTasks() []Task {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := make([]Task, 0, len(m.terminal))
-	for _, task := range m.terminal {
-		if m.terminalDelivery[task.ID] != deliveryQueued {
+	result := make([]Task, 0, len(m.resultNotifications))
+	for id, state := range m.resultNotifications {
+		if state != resultNotificationQueued {
 			continue
 		}
-		m.terminalDelivery[task.ID] = deliveryClaimed
-		result = append(result, task)
+		item, ok := m.tasks[id]
+		if !ok || !item.task.Status.terminal() {
+			delete(m.resultNotifications, id)
+			continue
+		}
+		m.resultNotifications[id] = resultNotificationClaimed
+		result = append(result, item.task)
 	}
-	m.terminal = nil
+	sortTerminalTasks(result)
 	return result
 }
 
@@ -549,10 +553,10 @@ func (m *Manager) BeginTaskUpdateDelivery(tasks []Task) []Task {
 			continue
 		}
 		if snapshot.Status.terminal() {
-			if m.terminalDelivery[snapshot.ID] != deliveryClaimed {
+			if m.resultNotifications[snapshot.ID] != resultNotificationClaimed {
 				continue
 			}
-			m.terminalDelivery[snapshot.ID] = deliveryDelivering
+			m.resultNotifications[snapshot.ID] = resultNotificationDelivering
 			result = append(result, item.task)
 			continue
 		}
@@ -573,8 +577,8 @@ func (m *Manager) CompleteTaskUpdateDelivery(tasks []Task) {
 	defer m.mu.Unlock()
 	for _, snapshot := range tasks {
 		if snapshot.Status.terminal() {
-			if m.terminalDelivery[snapshot.ID] == deliveryDelivering {
-				delete(m.terminalDelivery, snapshot.ID)
+			if m.resultNotifications[snapshot.ID] == resultNotificationDelivering {
+				delete(m.resultNotifications, snapshot.ID)
 			}
 			continue
 		}
@@ -594,38 +598,41 @@ func (m *Manager) TerminalState() ([]Task, uint64) {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]Task, 0, len(m.terminal))
-	for _, task := range m.terminal {
-		if m.terminalDelivery[task.ID] == deliveryQueued {
-			result = append(result, task)
+	result := make([]Task, 0, len(m.resultNotifications))
+	for id, state := range m.resultNotifications {
+		if state != resultNotificationQueued {
+			continue
+		}
+		if item, ok := m.tasks[id]; ok && item.task.Status.terminal() {
+			result = append(result, item.task)
 		}
 	}
+	sortTerminalTasks(result)
 	return result, m.terminalSeq
 }
 
-// RestoreTerminalTasks returns updates to the front of the delivery queue when
-// a foreground session ends before it can inject them.
+// RestoreTerminalTasks makes updates claimable again when a foreground session
+// ends before it can inject them.
 func (m *Manager) RestoreTerminalTasks(tasks []Task) {
 	if m == nil || len(tasks) == 0 {
 		return
 	}
 	m.mu.Lock()
-	restored := make([]Task, 0, len(tasks))
+	restored := false
 	for _, task := range tasks {
-		state := m.terminalDelivery[task.ID]
-		if state != deliveryClaimed && state != deliveryDelivering {
+		state := m.resultNotifications[task.ID]
+		if state != resultNotificationClaimed && state != resultNotificationDelivering {
 			continue
 		}
 		item, ok := m.tasks[task.ID]
 		if !ok || !item.task.Status.terminal() {
-			delete(m.terminalDelivery, task.ID)
+			delete(m.resultNotifications, task.ID)
 			continue
 		}
-		m.terminalDelivery[task.ID] = deliveryQueued
-		restored = append(restored, item.task)
+		m.resultNotifications[task.ID] = resultNotificationQueued
+		restored = true
 	}
-	if len(restored) > 0 {
-		m.terminal = append(restored, m.terminal...)
+	if restored {
 		m.signalTerminalLocked()
 	}
 	m.mu.Unlock()
@@ -788,8 +795,7 @@ func (m *Manager) finishLocked(item *entry, status Status, result, taskError str
 	item.actionNotified = false
 	item.pendingSteer = nil
 	m.terminalSeq++
-	m.terminal = append(m.terminal, item.task)
-	m.terminalDelivery[item.task.ID] = deliveryQueued
+	m.resultNotifications[item.task.ID] = resultNotificationQueued
 	m.signalTerminalLocked()
 	m.signalWakeLocked()
 }
@@ -839,14 +845,22 @@ func (m *Manager) steerInterrupt(taskID string) <-chan struct{} {
 	return item.steerSignal
 }
 
-func (m *Manager) suppressTerminalDeliveryLocked(taskID string) bool {
-	state, ok := m.terminalDelivery[taskID]
+func (m *Manager) suppressResultNotificationLocked(taskID string) bool {
+	state, ok := m.resultNotifications[taskID]
 	if !ok {
 		return false
 	}
-	delete(m.terminalDelivery, taskID)
-	m.terminal = slices.DeleteFunc(m.terminal, func(task Task) bool { return task.ID == taskID })
-	return state == deliveryQueued || state == deliveryClaimed
+	delete(m.resultNotifications, taskID)
+	return state == resultNotificationQueued || state == resultNotificationClaimed
+}
+
+func sortTerminalTasks(tasks []Task) {
+	slices.SortFunc(tasks, func(a, b Task) int {
+		if order := a.CompletedAt.Compare(*b.CompletedAt); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
 }
 
 func formatUpdatedTaskPrompt(oldPrompt, newPrompt string) string {
