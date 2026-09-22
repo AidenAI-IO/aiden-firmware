@@ -23,7 +23,6 @@ mount -o remount,rw /
 
 if [ ! -e "${marker}" ]; then
     resize2fs "${root_device}"
-    resize2fs "/dev/disk/by-partlabel/oem${AIDEN_SLOT_SUFFIX}"
     resize2fs /dev/disk/by-partlabel/userdata
     resize2fs /dev/disk/by-partlabel/ota
     mkdir -p "$(dirname "${marker}")"

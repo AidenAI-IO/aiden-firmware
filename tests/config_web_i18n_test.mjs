@@ -201,7 +201,7 @@ assert.equal(t('config.save_failed', {section: 'agent'}), 'Save [agent] failed.'
 initI18n();
 assert.equal(document.documentElement.lang, 'en-US');
 assert.equal(document.title, 'Aiden Setup');
-assert.equal(title.textContent, 'Configuration');
+assert.equal(title.textContent, 'Device Settings');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
 
 applyLocale('zh-CN', false);
@@ -237,7 +237,7 @@ assert.equal(t('missing.translation.key'), 'missing.translation.key');
 
 applyLocale('en-US', true);
 assert.equal(document.documentElement.lang, 'en-US');
-assert.equal(title.textContent, 'Configuration');
+assert.equal(title.textContent, 'Device Settings');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
 assert.equal(t('config.fields.model.responses_compact_threshold.label'), 'Compaction threshold (tokens)');
 assert.equal(t('wifi.proxy_url_help'), 'Supported URLs: socks5://, socks5h://, http://, https://');

@@ -3,8 +3,8 @@ set -eu
 
 for module in aes_generic cmac; do
     [ -d "/sys/module/${module}" ] && continue
-    [ -f "/oem/usr/ko/${module}.ko" ] || continue
-    insmod "/oem/usr/ko/${module}.ko"
+    [ -f "/usr/lib/aiden/platform/modules/${module}.ko" ] || continue
+    insmod "/usr/lib/aiden/platform/modules/${module}.ko"
 done
 for algorithm in aes ecdh; do
     grep -Eq "^name[[:space:]]*: ${algorithm}$" /proc/crypto || {
