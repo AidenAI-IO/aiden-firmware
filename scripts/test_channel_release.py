@@ -231,18 +231,18 @@ class PlannerTests(GitFixture):
         clone = Path(temporary.name) / "clone"
         self.git("clone", "--quiet", "--depth=1", "--no-tags", self.root.as_uri(), str(clone))
         self.root = clone
-        self.git("fetch", "--quiet", "--depth=1", "origin", previous["source_commit"])
         self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "true")
+        published = subprocess.run(["git", "cat-file", "-e", previous["source_commit"] + "^{commit}"],
+                                   cwd=self.root, capture_output=True)
+        self.assertNotEqual(published.returncode, 0)
 
     def test_shallow_squash_fetches_history_before_comparing_released_tree(self):
         previous = self.squash_published_branch()
         self.commit({"src/agent/main.go": "business after squash"})
         self.shallow_clone(previous)
         commit = self.git("rev-parse", "HEAD")
-        common = subprocess.run(["git", "merge-base", previous["source_commit"], commit],
-                                cwd=self.root, capture_output=True)
-        self.assertEqual(common.returncode, 1)
         record = self.make()
+        self.assertEqual(self.git("cat-file", "-t", previous["source_commit"]), "commit")
         self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "false")
         self.assertEqual(record["source_commit"], commit)
         self.assertEqual(record["kind"], "business")
