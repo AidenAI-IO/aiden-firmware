@@ -307,8 +307,66 @@ second step:
   run: uv run python -m runner publish-langfuse --run-dir "runs/$RUN_ID"
 ```
 
-The repository does not yet schedule benchmark suites in GitHub Actions; runner,
-device environment, suite selection, and trigger policy remain to be configured.
+## GitHub Actions CI
+
+The benchmark workflow is `.github/workflows/benchmark.yml`. It deliberately
+uses the CLI runner rather than the WebUI, so every case has a stable exit code,
+self-contained artifacts, and an idempotent Langfuse publication step.
+
+The source of truth for suite selection is `benchmark/ci/suites.json`. The CI
+catalog validation job fails when a new `benchmark/suites/**/*.json` file is not
+classified, which prevents a new suite from being silently omitted. A suite can
+be represented by more than one case when its tasks need different platforms;
+`connection_capabilities_v1.json` is currently split into iOS and Android cases.
+
+The default trigger policy is intentionally tiered:
+
+| Trigger | Profile | Purpose |
+| --- | --- | --- |
+| Push to `main` touching benchmark/agent code | `smoke` | Post-merge regression check |
+| Tue-Sun schedule | `smoke` | Low-cost deterministic regression signal (5 cases) |
+| Monday schedule | `weekly` | All isolated, mock, and MobileGym cases (14 cases) |
+| Manual dispatch | `hardware` | ADB, VPhone, desktop, and real-phone bridge cases (12 cases) |
+| Manual dispatch | `all` | Every catalog case; requires all configured environments |
+
+Hardware cases are not part of the schedule because they require a connected
+device or a long-lived external environment bridge and cannot be made reliable
+on a generic GitHub runner. The weekly sweep includes the 100-task MobileGym
+calibration suite; if its cost becomes too high, it can be moved from `weekly`
+to `hardware` without changing the runner.
+
+Pull requests run the catalog and planner tests in the normal `CI` workflow, but
+do not receive Agent/Judge/Langfuse secrets and therefore do not operate a
+device. The real smoke benchmark runs after merge on `main`. Manual dispatch is
+restricted to `main` for the same secret-isolation reason.
+
+Treat the first two weeks as a baseline period. Review the recorded run duration,
+Langfuse cost, and failure class before changing cadence: keep smoke cases when
+their p95 duration is within 30 minutes and infrastructure-failure rate is under
+5%; move a case to weekly when it exceeds either threshold. Only promote an
+external hardware case into a schedule after its bridge has at least 99% health
+availability over that baseline period.
+
+The workflow expects these GitHub configuration values in addition to the
+existing Langfuse variables:
+
+- Variables: `AIDEN_BENCHMARK_AGENT_PROVIDER`, `AIDEN_BENCHMARK_AGENT_MODEL`,
+  `AIDEN_BENCHMARK_AGENT_BASE_URL`, `AIDEN_BENCHMARK_JUDGE_MODEL`,
+  `AIDEN_BENCHMARK_JUDGE_BASE_URL`, `AIDEN_DAEMON_IMAGE`, `ANDROID_SERIAL`, and
+  the bridge URLs named by `environment_variable` in `benchmark/ci/suites.json`.
+- Secrets: `AIDEN_BENCHMARK_AGENT_API_KEY`,
+  `AIDEN_BENCHMARK_JUDGE_API_KEY`, `LANGFUSE_PUBLIC_KEY`, and
+  `LANGFUSE_SECRET_KEY`.
+- Variable: `LANGFUSE_BASE_URL`.
+
+The benchmark job uses the dedicated `aiden-hosted-01` runner because the
+MobileGym and agent-daemon paths require Docker. It runs matrix cases one at a
+time to avoid device/bridge contention. Every completed run's report, results,
+suite snapshot, and task artifacts are uploaded and published with
+`runner publish-langfuse`; generated worker configs are intentionally excluded
+from artifacts because they contain materialized Agent credentials. A failed
+Langfuse upload can be retried from the safe artifact without re-running the
+device task.
 
 ## Environment Variables
 

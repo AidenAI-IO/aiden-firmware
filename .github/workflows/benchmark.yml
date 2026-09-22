@@ -1,0 +1,226 @@
+name: Benchmark
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'benchmark/**'
+      - 'src/agent/**'
+      - '.github/workflows/benchmark.yml'
+  schedule:
+    # 02:17 Asia/Shanghai, Tuesday through Sunday.
+    - cron: '17 18 * * 1-6'
+    # 02:43 Asia/Shanghai every Monday; weekly includes the smoke suites.
+    - cron: '43 18 * * 0'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Suite profile
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - weekly
+          - hardware
+          - all
+      suite:
+        description: Optional suite path, for example suites/memory_v1.json
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      profile: ${{ steps.profile.outputs.profile }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: profile
+        name: Select scheduled profile
+        env:
+          DISPATCH_PROFILE: ${{ inputs.profile }}
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            profile="${DISPATCH_PROFILE:-smoke}"
+          elif [[ "$SCHEDULE" == "43 18 * * 0" ]]; then
+            profile="weekly"
+          else
+            profile="smoke"
+          fi
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        name: Build suite matrix
+        env:
+          PROFILE: ${{ steps.profile.outputs.profile }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SUITE" ]]; then
+            matrix="$(python3 benchmark/ci/plan.py matrix --profile "$PROFILE" --suite "$SUITE")"
+          else
+            matrix="$(python3 benchmark/ci/plan.py matrix --profile "$PROFILE")"
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      - name: Summarize plan
+        env:
+          MATRIX: ${{ steps.matrix.outputs.matrix }}
+          PROFILE: ${{ steps.profile.outputs.profile }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          cases = json.loads(os.environ["MATRIX"])["include"]
+          print(f"## Benchmark plan: {os.environ['PROFILE']}")
+          print(f"\n{len(cases)} case(s): " + ", ".join(case["id"] for case in cases))
+          PY
+
+  run:
+    needs: plan
+    if: ${{ startsWith(github.ref, 'refs/heads/') && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    runs-on: aiden-hosted-01
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      AIDEN_BENCHMARK_AGENT_PROVIDER: ${{ vars.AIDEN_BENCHMARK_AGENT_PROVIDER }}
+      AIDEN_BENCHMARK_AGENT_MODEL: ${{ vars.AIDEN_BENCHMARK_AGENT_MODEL }}
+      AIDEN_BENCHMARK_AGENT_BASE_URL: ${{ vars.AIDEN_BENCHMARK_AGENT_BASE_URL }}
+      AIDEN_BENCHMARK_AGENT_API_KEY: ${{ secrets.AIDEN_BENCHMARK_AGENT_API_KEY }}
+      AIDEN_BENCHMARK_JUDGE_MODEL: ${{ vars.AIDEN_BENCHMARK_JUDGE_MODEL || 'anthropic/claude-sonnet-4-6' }}
+      AIDEN_BENCHMARK_JUDGE_BASE_URL: ${{ vars.AIDEN_BENCHMARK_JUDGE_BASE_URL || 'https://openrouter.ai/api/v1' }}
+      AIDEN_BENCHMARK_JUDGE_API_KEY: ${{ secrets.AIDEN_BENCHMARK_JUDGE_API_KEY }}
+      AIDEN_DAEMON_IMAGE: ${{ vars.AIDEN_DAEMON_IMAGE || 'aiden-agent-daemon:local' }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+      ANDROID_SERIAL: ${{ vars.ANDROID_SERIAL }}
+      AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL }}
+    steps:
+      - name: Reclaim persistent runner workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${GITHUB_WORKSPACE:-}" && -d "$GITHUB_WORKSPACE" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1; then
+              sudo chown -R "$owner" "$GITHUB_WORKSPACE"
+            elif [[ "$(id -u)" == "0" ]]; then
+              chown -R "$owner" "$GITHUB_WORKSPACE"
+            fi
+          fi
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: benchmark/uv.lock
+      - name: Install Python and benchmark dependencies
+        working-directory: benchmark
+        run: |
+          uv python install 3.12
+          uv sync --frozen --python 3.12
+      - name: Validate benchmark credentials
+        env:
+          REQUIRED_VALUES: >-
+            AIDEN_BENCHMARK_AGENT_PROVIDER
+            AIDEN_BENCHMARK_AGENT_MODEL
+            AIDEN_BENCHMARK_AGENT_BASE_URL
+            AIDEN_BENCHMARK_AGENT_API_KEY
+            AIDEN_BENCHMARK_JUDGE_API_KEY
+            LANGFUSE_PUBLIC_KEY
+            LANGFUSE_SECRET_KEY
+            LANGFUSE_BASE_URL
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in $REQUIRED_VALUES; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            echo "Missing benchmark configuration: ${missing[*]}" >&2
+            exit 1
+          fi
+      - name: Run benchmark case
+        working-directory: benchmark
+        env:
+          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+        run: uv run python -m ci.run_case --case-id "${{ matrix.id }}" --run-id "$RUN_ID"
+      - name: Clean up benchmark services
+        if: ${{ always() }}
+        env:
+          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+        run: |
+          set -euo pipefail
+          for container in \
+            "aiden-mobilegym-env-mobilegym-${RUN_ID}" \
+            "aiden-benchmark-agent-${RUN_ID}"; do
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          done
+          while read -r container; do
+            [[ -z "$container" ]] || docker rm -f "$container" >/dev/null 2>&1 || true
+          done < <(docker ps -aq --filter "name=aiden-benchmark-agent-${RUN_ID}-")
+          pid_file="benchmark/runs/cli-services/adb-android-${RUN_ID}/adb-android.pid"
+          if [[ -s "$pid_file" ]]; then
+            kill -TERM "$(cat "$pid_file")" >/dev/null 2>&1 || true
+          fi
+      - name: Publish completed run to Langfuse
+        if: ${{ always() }}
+        working-directory: benchmark
+        env:
+          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "runs/$RUN_ID/manifest.json" ]]; then
+            echo "::warning::No completed manifest for $RUN_ID; skipping Langfuse publication"
+            exit 0
+          fi
+          uv run python -m runner publish-langfuse --run-dir "runs/$RUN_ID"
+      - name: Add benchmark summary
+        if: ${{ always() }}
+        working-directory: benchmark
+        env:
+          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+        run: |
+          if [[ -f "runs/$RUN_ID/summary.md" ]]; then
+            cat "runs/$RUN_ID/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload benchmark artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/manifest.json
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/metrics.json
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/results.jsonl
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/summary.md
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/report.html
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/suite.json
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/tasks/**
+          if-no-files-found: warn
+          retention-days: 14
