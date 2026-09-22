@@ -225,6 +225,49 @@ class PlannerTests(GitFixture):
         self.assertEqual(record["kind"], "none")
         self.assertEqual(record["changes"]["ignore"], ["docs/readme.md"])
 
+    def shallow_clone(self, previous):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        clone = Path(temporary.name) / "clone"
+        self.git("clone", "--quiet", "--depth=1", "--no-tags", self.root.as_uri(), str(clone))
+        self.root = clone
+        self.git("fetch", "--quiet", "--depth=1", "origin", previous["source_commit"])
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "true")
+
+    def test_shallow_squash_fetches_history_before_comparing_released_tree(self):
+        previous = self.squash_published_branch()
+        self.commit({"src/agent/main.go": "business after squash"})
+        self.shallow_clone(previous)
+        commit = self.git("rev-parse", "HEAD")
+        common = subprocess.run(["git", "merge-base", previous["source_commit"], commit],
+                                cwd=self.root, capture_output=True)
+        self.assertEqual(common.returncode, 1)
+        record = self.make()
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "false")
+        self.assertEqual(record["source_commit"], commit)
+        self.assertEqual(record["kind"], "business")
+        self.assertEqual(record["platform"], previous["platform"])
+        self.assertEqual(record["changes"]["business"], ["src/agent/main.go"])
+        self.assertEqual(record["changes"]["system"], [])
+
+    def test_shallow_fetch_failure_is_not_reported_as_unrelated_history(self):
+        previous = self.squash_published_branch()
+        self.shallow_clone(previous)
+        self.git("remote", "set-url", "origin", str(self.root / "missing-remote"))
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.make()
+        self.assertEqual(raised.exception.cmd[:3], ("git", "fetch", "--unshallow"))
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "true")
+
+    def test_shallow_unrelated_history_is_rejected_after_fetch(self):
+        previous = self.publish()
+        self.git("checkout", "--orphan", "unrelated")
+        self.commit({"src/agent/main.go": "unrelated business"})
+        self.shallow_clone(previous)
+        with self.assertRaisesRegex(ValueError, "unrelated"):
+            self.make()
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "false")
+
     def test_unrelated_history_is_rejected(self):
         self.publish()
         self.git("checkout", "--orphan", "unrelated")

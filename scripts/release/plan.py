@@ -173,6 +173,8 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
         # A squash merge or rebase can preserve released content without
         # preserving its commit as an ancestor. Compare the two release trees,
         # using ancestry only to reject older commits and unrelated histories.
+        if command("git", "rev-parse", "--is-shallow-repository", cwd=root) == "true":
+            command("git", "fetch", "--unshallow", "origin", previous["source_commit"], commit, cwd=root)
         common = subprocess.run(["git", "merge-base", previous["source_commit"], commit],
                                 cwd=root, capture_output=True, text=True, timeout=300)
         if common.returncode == 1:
