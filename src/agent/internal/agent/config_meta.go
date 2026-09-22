@@ -245,10 +245,9 @@ func withDisplayDefaults(metadata ConfigMetadata) ConfigMetadata {
 }
 
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
-// here are the canonical defaults for the device's agent.toml. Free-text
-// fields (custom_instruction, additional_prompt) intentionally carry no
-// metadata default: the built-in prompt is runtime content, while
-// custom_instruction is only an override.
+// here are the canonical defaults for the device's agent.toml. The free-text
+// prompt intentionally carries no metadata default: the built-in
+// Agent instruction is runtime content, and prompt only extends it.
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
 	tencentSTTProviderNames := sttProviderNamesForCanonical(tencentASRProvider)
@@ -829,10 +828,8 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},
 					{Key: "screen_stable_ms", Widget: WidgetNumber, Default: defaults.ScreenStableMs},
 					{Key: "screen_stable_diff_threshold", Widget: WidgetNumber, Default: defaults.ScreenStableDiffThreshold},
-					{Key: "custom_instruction", Label: "Primary instruction", Widget: WidgetTextarea, Layout: "wide",
-						Help: "Replaces the built-in Agent instruction when set. Leave empty to use the built-in instruction."},
-					{Key: "additional_prompt", Label: "Additional prompt", Widget: WidgetTextarea, Layout: "wide",
-						Help: "Appended after the primary instruction. Use it for device, project, or environment-specific requirements."},
+					{Key: "prompt", Label: "Prompt", Widget: WidgetTextarea, Layout: "wide",
+						Help: "Appended after the built-in Agent instruction. Use it for device, project, or environment-specific requirements."},
 				},
 			},
 		},

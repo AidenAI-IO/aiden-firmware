@@ -97,8 +97,7 @@ export const VISIBLE_FIELDS = {
   // Classic mode is selected here; provider-specific STT/TTS fields are
   // rendered by their provider dialogs.
   'agent.max_iterations': true,
-  'agent.custom_instruction': true,
-  'agent.additional_prompt': true,
+  'agent.prompt': true,
   'agent.context_prune_threshold': true,
   'agent.context_compaction_threshold': true,
 
