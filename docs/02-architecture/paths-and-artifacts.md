@@ -10,7 +10,7 @@ sidebar_position: 4
 | --- | --- |
 | `build-host/bin/aiden_tests` | Host-native C++ test binary |
 | `output/debian-apps/apps/bin/` | Cross-compiled application and diagnostic binaries |
-| `output/debian-apps/apps/lib/` | Runtime libraries staged for the OEM image |
+| `output/debian-apps/apps/lib/` | Runtime libraries staged into rootfs platform/lib |
 | `output/debian-apps/apps-audit/` | ELF, dependency, and allowlist audit results |
 | `output/debian-system/rootfs.ext4` | Reproducible Debian armhf rootfs image |
 | `output/debian-system/image/` | Audited system partition and factory images |
@@ -33,8 +33,8 @@ sidebar_position: 4
 | `src/agent/internal/agent` | Agent runtime and tools |
 | `src/agent/internal/ota` | OTA download, slot, health, and state machine |
 | `overlay-debian/` | Debian rootfs overlay and systemd integration |
-| `overlay-debian-oem/` | Debian OEM-owned scripts and assets |
-| `overlay-debian-oem/usr/lib/` | OEM runtime libraries, including the VQE AEC/beamforming libs registered by `aiden-oem-ldconfig` |
+| `assets/business/` | Business package models and notification sounds |
+| `overlay-debian/usr/lib/aiden/platform/lib/` | Platform runtime libraries, including the VQE AEC/beamforming libs registered by `aiden-platform-ldconfig` |
 | `scripts/debian-apps/` | Application cross-build and audit |
 | `scripts/debian-system/` | Rootfs, BSP, image assembly, and audit |
 | `tests/` | Host-native C++ tests |
@@ -43,11 +43,10 @@ sidebar_position: 4
 
 | Path | Description |
 | --- | --- |
-| `/oem/usr/bin/` | Audited production applications |
-| `/oem/usr/lib/` | Vendor and application runtime libraries |
-| `/oem/usr/model/` | VAD models and weights |
-| `/oem/usr/share/aiden/config-web/` | Config Web static assets served by `agent config-web` |
-| `/usr/lib/aiden/` | Debian service helpers |
+| `/usr/lib/aiden/` | Packaged applications and base-owned service helpers |
+| `/usr/lib/aiden/platform/lib/` | Vendor and application runtime libraries |
+| `/usr/lib/aiden/models/` | VAD models and weights |
+| `/usr/share/aiden/config-web/` | Config Web static assets served by `agent config-web` |
 | `/userdata/agent/agent.toml` | Agent configuration |
 | `/userdata/agent/python/` | Persistent pip userbase |
 | `/userdata/agent/skills/` | Agent skills |
@@ -59,7 +58,7 @@ sidebar_position: 4
 | `/userdata/debian/wifi/wpa_supplicant-wlan0.conf` | Wi-Fi configuration |
 | `/userdata/debian/ota/config.json` | Debian OTA repository and factory baseline |
 | `/userdata/ota/` | Dedicated OTA state and download partition |
-| `/oem/etc/ota_pubkey.pem` | OTA manifest Ed25519 public key |
+| `/usr/share/keyrings/aiden-ota.pem` | OTA manifest Ed25519 public key |
 | `/run/frame_service/frame_service.sock` | Frame service socket |
 | `/run/audio_service/audio_service.sock` | Audio service socket |
 | `/run/ble_service/ble_service.sock` | BLE service socket |
@@ -72,6 +71,13 @@ plain `aiden` user can run the diagnostic CLIs against them. A socket that shows
 up as `0755 root:root`, or a client that gets `TRANSPORT_ERROR`, means the unit
 lost those group settings or the process ran under an unexpected umask.
 
+Login shells for both `root` and `aiden` append `/usr/lib/aiden` to `PATH` via
+`/etc/profile.d/aiden-path.sh`. `/etc/sudoers.d/20-aiden-path` also includes it in
+sudo's `secure_path`, so installed tools can be called by name, including
+`sudo ota status`. Reconnect SSH or the Web terminal after installing this
+configuration; an existing shell can load it with
+`. /etc/profile.d/aiden-path.sh`. Child shells inherit the exported path.
+
 ## Configuration Sources
 
 | File | Description |
@@ -83,11 +89,12 @@ lost those group settings or the process ran under an unexpected umask.
 | `overlay-debian/etc/systemd/system/` | Debian service and mount units |
 | `overlay-debian/etc/systemd/network/` | systemd-networkd configuration |
 | `overlay-debian/etc/profile.d/aiden-python.sh` | Fixed persistent Python userbase |
-| `overlay-debian-oem/usr/model/` | OEM VAD models |
-| `overlay-debian-oem/usr/share/aiden/audio/` | VQE and fallback audio assets |
-| `overlay-debian/etc/ld.so.conf.d/aiden-oem.conf` | Registers OEM libraries from the active slot |
+| `assets/business/models/` | Business VAD models |
+| `assets/business/audio/` | Business notification audio |
+| `overlay-debian/usr/share/aiden/audio/config_aivqe.json` | Platform VQE configuration |
+| `overlay-debian/etc/ld.so.conf.d/aiden-platform.conf` | Registers platform libraries from the active slot |
 | `AGENT_CONFIG_PATH` | External Agent configuration required by image assembly |
-| `OTA_PUBLIC_KEY_PATH` | External OTA verification key required by image assembly |
+| `OTA_PUBLIC_KEY_PATH` | External OTA verification key required by rootfs and image assembly |
 
 ## Common Commands
 
@@ -132,17 +139,17 @@ curl http://<device-ip>:8080/api/storage/monitor/status
 curl -X POST -H 'Content-Type: application/json' -d '{"force":false,"targets":[]}' http://<device-ip>:8080/api/storage/cleanup
 
 # OTA
-/oem/usr/bin/ota status
-/oem/usr/bin/ota update
-/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
+/usr/lib/aiden/ota status
+/usr/lib/aiden/ota update
+/usr/lib/aiden/abctl read /dev/disk/by-partlabel/misc
 
 # Logs
 tail -f /userdata/agent/log/agent.log
 journalctl -u aiden-frame.service -u aiden-agent.service
 ```
 
-The diagnostic CLIs are apps artifacts and are not part of the production OEM
-allowlist. Copy a required CLI to `/userdata` for a bounded device test.
+The diagnostic CLIs are apps artifacts and are not generally included in the business package; `frame_service_cli` and
+`audio_service_cli` are included for OTA health checks. Copy a required CLI to `/userdata` for a bounded device test.
 
 ## Persistent Logs
 
@@ -162,9 +169,9 @@ policy under `storage_settings.storage.degraded_mode`.
 
 ## EDID Files
 
-Development EDIDs live in `edid/`. The Debian OEM image installs its production
+Development EDIDs live in `edid/`. The Debian rootfs installs its production
 TC358743 EDID at:
 
 ```text
-/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex
+/usr/share/aiden/edid/hdmi_1080p30_cta.hex
 ```
