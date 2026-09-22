@@ -45,7 +45,7 @@ The action vocabulary is deliberately small:
 - `wait`: waits for `ms` milliseconds without changing contact state.
 - `touch_up`: releases the current contact; `point` is optional.
 
-Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; each wait is bounded to 30 seconds, cumulative wait time is bounded to 60 seconds, and programs are limited to 128 actions. Supported one-object `type` forms remain the default for normal interactions; `type:"drag"` is not supported.
+Coordinates use the normalized `0..1000` range. A program must contain at least one action and must end with `touch_up`; each declared action duration is bounded to 30 seconds, the sum of declared durations is bounded to 60 seconds, and programs are limited to 128 actions. HID and ADB check these limits on both the submitted program and the expanded motion profile, including its release tails, before sending any input. Supported one-object `type` forms remain the default for normal interactions; `type:"drag"` is not supported.
 
 Moving a draggable target intentionally spans two tool calls. Never replace
 this flow with atomic `actions`. Always use this sequence:
