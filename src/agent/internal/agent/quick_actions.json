@@ -693,7 +693,7 @@
             "actions": [
               { "action": "touch_down", "point": { "x": 500, "y": 780 } },
               { "action": "wait", "ms": 80 },
-              { "action": "move_to", "point": { "x": 500, "y": 50 }, "duration_ms": 300 },
+              { "action": "move_to", "point": { "x": 500, "y": 50 }, "duration_ms": 180 },
               { "action": "touch_up" }
             ]
           },
