@@ -175,6 +175,47 @@ persisting it, the manager discards that stale result and immediately runs the
 latest complete goal again. This closes the race between a direct final answer
 and an update arriving after the agent loop's last steer check.
 
+## Backend interruption context
+
+Backend execution writes persisted `notice` messages when a run stops early,
+so the next model request can distinguish interrupted work from completed work.
+These notices belong to `sessions/backend`; frontend playback and task-result
+delivery retain their own lifecycle.
+
+| Situation | Notice and behavior |
+| --- | --- |
+| Cancel a running task, cancel a legacy chat request, STT wakeup cancellation, or service shutdown | `Interrupt [canceled]`; completion is not confirmed. |
+| Another `Runtime.Run` takes over | `Interrupt [preempted]`. Creating a queued backend task does not preempt its predecessor. |
+| Execution deadline expires | `Interrupt [deadline_exceeded]`. |
+| Update a running task or submit chat steer | `Interrupt [steer]` immediately before the replacement user instruction; the same run continues. |
+| A model/tool call was interrupted but its steer was withdrawn or yielded no text | `Interrupt [steer_resumed]`; continue the original task from its last confirmed state. |
+| Unrecovered model request failure | `Interrupt [model_error]`. |
+| Context budget, compaction, or other execution failure | `Interrupt [execution_error]`. |
+| Iteration/time budget, repeated actions, no progress, or repeated parsing failures | `Interrupt` with the loop guard's stop reason. Existing guard warnings and stop results remain available. |
+| Incompatible device touch mode | `Interrupt [device_mode_mismatch]`. |
+| Runtime panic | `Interrupt [panic]`, when persistence remains possible; the panic is rethrown. |
+| Abrupt process exit with no recorded end | `Interrupt [agent_restart]`, recovered before the next backend input; completion is unknown. |
+| Successful `request_user_action` or `wait_for_wakeup` | `Pause [...]`; intentional suspension is not task completion. |
+
+The runtime atomically records `.pending-run.json` in `sessions/backend` before
+execution. It clears the record after a normal end or after persisting an
+interruption. A failed notice write leaves a recovery record; if recovery also
+fails, the next run reports the error instead of executing without that context.
+Recovery follows active compaction lineage, deduplicates notices, and preserves
+history rotation/clearing. Runs started by older binaries have no such journal;
+their existing Episode interruption recovery still applies.
+
+Notices are appended after tool results, preserving tool-call/result pairing.
+They tell the model to verify the current device state before repeating an action,
+because cancellation cannot undo side effects. Tools that ignore cancellation
+must return before the loop can record their result and finish.
+
+Normal answers, recovered model errors, individual recoverable tool errors,
+HTTP client disconnection, foreground realtime interruption, and stopping TTS
+after the loop completed do not produce backend interruption notices. Canceling
+queued work or an already-paused task does not interrupt an active AgentLoop;
+the task manager handles those state changes separately.
+
 ## Result delivery
 
 Completed, failed, and cancelled tasks are delivered to the foreground model as

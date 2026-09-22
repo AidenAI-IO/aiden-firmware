@@ -1806,10 +1806,12 @@ func TestRuntimeRunCanceledToolDoesNotPoisonNextRunToolHistory(t *testing.T) {
 		t.Fatalf("first Run() error = %v, want context canceled", err)
 	}
 
+	requireInterruptNotices(t, runtime.contextManager, "canceled")
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "continue"})
 	if err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
+	requireInterruptNotices(t, runtime.contextManager, "canceled")
 	if result.Output != "continued" {
 		t.Fatalf("second Run() output = %q, want continued", result.Output)
 	}
@@ -4638,6 +4640,8 @@ func TestRuntimePreemptCancelsActiveRun(t *testing.T) {
 	if secondResult.Output != "second" {
 		t.Fatalf("second run output = %q, want 'second'", secondResult.Output)
 	}
+
+	requireInterruptNotices(t, runtime.contextManager, "preempted")
 
 	// WasPreempted should report true.
 	if !runtime.WasPreempted(5 * time.Second) {

@@ -89,7 +89,7 @@ type Runtime struct {
 	telemetrySessionID      string
 	runGate                 chan struct{}
 	preemptMu               sync.Mutex
-	activeCancel            context.CancelFunc
+	activeCancel            context.CancelCauseFunc
 	preemptHooks            []func()
 	lastPreemptTime         time.Time
 	userContextResetMu      sync.Mutex
@@ -807,7 +807,7 @@ func (r *Runtime) Preempt() {
 	r.preemptMu.Lock()
 	defer r.preemptMu.Unlock()
 	if r.activeCancel != nil {
-		r.activeCancel()
+		r.activeCancel(errRunPreempted)
 		r.lastPreemptTime = time.Now()
 	}
 	for i, hook := range r.preemptHooks {
@@ -932,7 +932,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	// Register this run's cancel so future callers can preempt us.
-	runCtx, runCancel := context.WithCancel(ctx)
+	runCtx, runCancel := context.WithCancelCause(ctx)
 	if req.UserActionHandler != nil {
 		runCtx = WithUserActionHandler(runCtx, req.UserActionHandler)
 	}
@@ -943,7 +943,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		r.preemptMu.Lock()
 		r.activeCancel = nil
 		r.preemptMu.Unlock()
-		runCancel()
+		runCancel(nil)
 	}()
 
 	// Check if we were preempted while waiting for runGate.
@@ -1160,6 +1160,10 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		steerRecorder = tracker
 	}
 
+	if err := recoverPendingBackendRun(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), r.contextManager); err != nil {
+		return RunResult{}, err
+	}
+
 	// Configuration changes rotate at the next task boundary, preserving the
 	// complete old transcript and provider-specific continuation metadata.
 	if r.configContextRotate.Load() {
@@ -1191,6 +1195,13 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err := r.contextManager.AppendMessage(userMessageFromInput(r.contextManager, turnInput.InputText, turnInput.Attachments)); err != nil {
 		return RunResult{}, err
 	}
+
+	notices, err := startRunNotices(func() *contextmanager.ContextManager { return r.contextManager }, runID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	// Covers preparation failures before AgentLoop starts as well as panics.
+	defer notices.finishOnReturn(ctx, &runErr)
 
 	// The compactor runs on the run's usage-tracking model so its model calls are
 	// counted and traced as part of the episode rather than disappearing from the
@@ -1274,6 +1285,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, cfg.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop.notices = notices
 	agentLoop.ScreenState = r.screenState
 	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
@@ -1431,6 +1443,11 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
+	// End execution tracking before session bookkeeping and TTS. Canceling
+	// playback after a completed loop must not mark its task interrupted.
+	if noticeErr := notices.finish(ctx, err); noticeErr != nil {
+		err = errors.Join(err, noticeErr)
+	}
 	if err != nil {
 		// If the agent couldn't parse the LLM output format, extract the raw
 		// text and return it as the response instead of failing.
