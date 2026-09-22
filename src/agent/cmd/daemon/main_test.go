@@ -41,6 +41,7 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 	cfg := agent.Config{
 		Instruction: "be concise",
 		VoiceModel: agent.VoiceModelConfig{
+			Provider:               realtimevoice.ProviderQwen,
 			Voice:                  "custom-voice",
 			Instructions:           "speak naturally",
 			EnableSpeechEmotion:    &emotion,
@@ -227,6 +228,27 @@ func TestRealtimeAgentTaskManagerFollowsUseBackendAgent(t *testing.T) {
 			t.Fatalf("backend-agent configuration did not create its task manager: %+v", cfg.VoiceModel)
 		}
 		manager.Close()
+	}
+}
+
+func TestRealtimeSessionConfigOnlyAppliesTurnDetectionToQwen(t *testing.T) {
+	threshold := 0.2
+	for _, provider := range []string{"openai", "gemini", "xai", "speko"} {
+		t.Run(provider, func(t *testing.T) {
+			cfg := agent.Config{VoiceModel: agent.VoiceModelConfig{
+				Provider: provider, TurnDetection: "smart_turn",
+				TurnDetectionThreshold: &threshold, TurnDetectionSilenceMs: 900,
+			}}
+			got := realtimeProviderSessionConfig(cfg, nil)
+			if got.TurnDetection != "" || got.TurnDetectionThresh != nil || got.TurnDetectionSilenceMs != 0 {
+				t.Fatalf("%s received Qwen turn detection settings: %+v", provider, got)
+			}
+		})
+	}
+
+	got := realtimeProviderSessionConfig(agent.Config{VoiceModel: agent.VoiceModelConfig{Provider: realtimevoice.ProviderQwen}}, nil)
+	if got.TurnDetection != "server_vad" {
+		t.Fatalf("Qwen default turn detection = %q, want server_vad", got.TurnDetection)
 	}
 }
 

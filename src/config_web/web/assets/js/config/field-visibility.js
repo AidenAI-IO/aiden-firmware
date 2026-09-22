@@ -87,6 +87,9 @@ export const VISIBLE_FIELDS = {
   'voice_model_providers.thinking_level': true,
   'voice_model_providers.base_url': true,
   'voice_model_providers.region': true,
+  'voice_model_providers.turn_detection': true,
+  'voice_model_providers.turn_detection_threshold': true,
+  'voice_model_providers.turn_detection_silence_ms': true,
   'voice_model_providers.voice': true,
 
   // Conversation mode
@@ -129,4 +132,3 @@ export function applyFieldVisibilityRules() {
     }
   });
 }
-

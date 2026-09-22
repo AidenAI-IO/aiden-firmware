@@ -166,22 +166,25 @@ type STTProvider struct {
 // VoiceModelProvider mirrors one [voice_model_providers.<name>] record. The
 // selected record name stays in voice_model.provider.
 type VoiceModelProvider struct {
-	Type             string `json:"type"`
-	UpstreamProvider string `json:"upstream_provider,omitempty"`
-	AgentID          string `json:"agent_id,omitempty"`
-	APIKey           string `json:"api_key,omitempty"`
-	HasAPIKey        bool   `json:"has_api_key,omitempty"`
-	Model            string `json:"model,omitempty"`
-	WorkspaceID      string `json:"workspace_id,omitempty"`
-	Region           string `json:"region,omitempty"`
-	AuthMode         string `json:"auth_mode,omitempty"`
-	ProjectID        string `json:"project_id,omitempty"`
-	Location         string `json:"location,omitempty"`
-	Endpoint         string `json:"endpoint,omitempty"`
-	BaseURL          string `json:"base_url,omitempty"`
-	RealtimeProtocol string `json:"realtime_protocol,omitempty"`
-	ThinkingLevel    string `json:"thinking_level,omitempty"`
-	Voice            string `json:"voice,omitempty"`
+	Type                   string   `json:"type"`
+	UpstreamProvider       string   `json:"upstream_provider,omitempty"`
+	AgentID                string   `json:"agent_id,omitempty"`
+	APIKey                 string   `json:"api_key,omitempty"`
+	HasAPIKey              bool     `json:"has_api_key,omitempty"`
+	Model                  string   `json:"model,omitempty"`
+	WorkspaceID            string   `json:"workspace_id,omitempty"`
+	Region                 string   `json:"region,omitempty"`
+	AuthMode               string   `json:"auth_mode,omitempty"`
+	ProjectID              string   `json:"project_id,omitempty"`
+	Location               string   `json:"location,omitempty"`
+	Endpoint               string   `json:"endpoint,omitempty"`
+	BaseURL                string   `json:"base_url,omitempty"`
+	RealtimeProtocol       string   `json:"realtime_protocol,omitempty"`
+	ThinkingLevel          string   `json:"thinking_level,omitempty"`
+	Voice                  string   `json:"voice,omitempty"`
+	TurnDetection          string   `json:"turn_detection,omitempty"`
+	TurnDetectionThreshold *float64 `json:"turn_detection_threshold,omitempty"`
+	TurnDetectionSilenceMs int      `json:"turn_detection_silence_ms,omitempty"`
 }
 
 func (d *VoiceModelProvider) UnmarshalJSON(data []byte) error {
@@ -823,21 +826,24 @@ func voiceModelProvidersFromConfig(providers map[string]agent.VoiceModelProvider
 	result := make(map[string]VoiceModelProvider, len(providers))
 	for name, provider := range providers {
 		result[name] = VoiceModelProvider{
-			Type:             provider.Type,
-			UpstreamProvider: provider.UpstreamProvider,
-			AgentID:          provider.AgentID,
-			HasAPIKey:        strings.TrimSpace(provider.APIKey) != "",
-			Model:            provider.Model,
-			WorkspaceID:      provider.WorkspaceID,
-			Region:           provider.Region,
-			AuthMode:         provider.AuthMode,
-			ProjectID:        provider.ProjectID,
-			Location:         provider.Location,
-			Endpoint:         provider.Endpoint,
-			BaseURL:          provider.BaseURL,
-			RealtimeProtocol: provider.RealtimeProtocol,
-			Voice:            provider.Voice,
-			ThinkingLevel:    provider.ThinkingLevel,
+			Type:                   provider.Type,
+			UpstreamProvider:       provider.UpstreamProvider,
+			AgentID:                provider.AgentID,
+			HasAPIKey:              strings.TrimSpace(provider.APIKey) != "",
+			Model:                  provider.Model,
+			WorkspaceID:            provider.WorkspaceID,
+			Region:                 provider.Region,
+			AuthMode:               provider.AuthMode,
+			ProjectID:              provider.ProjectID,
+			Location:               provider.Location,
+			Endpoint:               provider.Endpoint,
+			BaseURL:                provider.BaseURL,
+			RealtimeProtocol:       provider.RealtimeProtocol,
+			ThinkingLevel:          provider.ThinkingLevel,
+			Voice:                  provider.Voice,
+			TurnDetection:          provider.TurnDetection,
+			TurnDetectionThreshold: provider.TurnDetectionThreshold,
+			TurnDetectionSilenceMs: provider.TurnDetectionSilenceMs,
 		}
 	}
 	return result
@@ -850,21 +856,24 @@ func (d Config) voiceModelProvidersToAgentConfig() map[string]agent.VoiceModelPr
 	result := make(map[string]agent.VoiceModelProvider, len(d.VoiceModelProviders))
 	for name, provider := range d.VoiceModelProviders {
 		mapped := agent.VoiceModelProvider{
-			Type:             provider.Type,
-			UpstreamProvider: provider.UpstreamProvider,
-			AgentID:          provider.AgentID,
-			APIKey:           provider.APIKey,
-			Model:            provider.Model,
-			WorkspaceID:      provider.WorkspaceID,
-			Region:           provider.Region,
-			AuthMode:         provider.AuthMode,
-			ProjectID:        provider.ProjectID,
-			Location:         provider.Location,
-			Endpoint:         provider.Endpoint,
-			BaseURL:          provider.BaseURL,
-			RealtimeProtocol: provider.RealtimeProtocol,
-			ThinkingLevel:    provider.ThinkingLevel,
-			Voice:            provider.Voice,
+			Type:                   provider.Type,
+			UpstreamProvider:       provider.UpstreamProvider,
+			AgentID:                provider.AgentID,
+			APIKey:                 provider.APIKey,
+			Model:                  provider.Model,
+			WorkspaceID:            provider.WorkspaceID,
+			Region:                 provider.Region,
+			AuthMode:               provider.AuthMode,
+			ProjectID:              provider.ProjectID,
+			Location:               provider.Location,
+			Endpoint:               provider.Endpoint,
+			BaseURL:                provider.BaseURL,
+			RealtimeProtocol:       provider.RealtimeProtocol,
+			ThinkingLevel:          provider.ThinkingLevel,
+			Voice:                  provider.Voice,
+			TurnDetection:          provider.TurnDetection,
+			TurnDetectionThreshold: provider.TurnDetectionThreshold,
+			TurnDetectionSilenceMs: provider.TurnDetectionSilenceMs,
 		}
 		if mapped.APIKey == "" && provider.HasAPIKey {
 			mapped.APIKey = hasAPIKeyPlaceholder
