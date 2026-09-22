@@ -455,6 +455,38 @@ assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), {
   doubao: {type: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3'},
 });
 
+// A persisted provider rename must survive a runtime-application failure.
+ModelProvidersManager.load({'saved-old': {type: 'openai'}});
+ModelProvidersManager.records = {'saved-new': {type: 'openai'}};
+appState.config = {
+  model: {provider: 'saved-old', model: 'gpt-4o'},
+  model_providers: {'saved-old': {type: 'openai'}},
+};
+providerSelectForModels.value = 'saved-old';
+const persistedProviderConfig = {
+  model: {provider: 'saved-new', model: 'gpt-4o'},
+  model_providers: {'saved-new': {type: 'openai', has_api_key: true}},
+};
+requestImpl = async () => { throw Object.assign(new Error('prepare VAD failed'), {
+  persisted: true, applied: false, config: persistedProviderConfig,
+}); };
+assert.equal(await ModelProvidersManager.save(null, '', {
+  oldName: 'saved-old', newName: 'saved-new', selected: true,
+}), true, 'a persisted rename counts as saved even when runtime application fails');
+assert.equal(providerSelectForModels.value, 'saved-new');
+assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.confirmedRecords)), persistedProviderConfig.model_providers);
+assert.deepEqual(JSON.parse(JSON.stringify(appState.config)), persistedProviderConfig);
+assert.equal(latestDetails, 'prepare VAD failed');
+// A later unrelated edit must not delete the record that already reached disk.
+ModelProvidersManager.records.another = {type: 'openai'};
+let afterFailurePatch;
+requestImpl = async (_url, options) => {
+  afterFailurePatch = JSON.parse(options.body).config.model_providers;
+  return {config: {model_providers: {...persistedProviderConfig.model_providers, another: {type: 'openai'}}}};
+};
+assert.equal(await ModelProvidersManager.save(), true);
+assert.deepEqual(afterFailurePatch, {another: {type: 'openai'}});
+
 const firstRequest = deferred();
 const secondRequest = deferred();
 let activeRequests = 0;
