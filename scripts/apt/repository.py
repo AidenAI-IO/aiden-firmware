@@ -31,7 +31,7 @@ def sha256(path):
 
 
 def suite_for(record):
-    return f"{record['channel']}-c{record['platform']['contract'].split('.')[0]}"
+    return f"{record['channel']}-c{record['platform']['contract']}"
 
 
 def select_records(records, repo, keep=3):
@@ -89,10 +89,14 @@ def package_control(package, record):
     }
     if record.get("runtime_config", 0):
         expected_platform["runtime_config"] = record["runtime_config"]
-    major = int(record["platform"]["contract"].split(".")[0])
-    if (platform != expected_platform or manifest.get("business_release") != record["version"]
+    contract = record["platform"]["contract"]
+    required = manifest.get("required_platform_contract")
+    if (type(platform.get("platform_contract")) is not int
+            or platform != expected_platform or manifest.get("business_release") != record["version"]
             or manifest.get("package_revision") != "1"
-            or manifest.get("required_platform_contract") != {"min": f"{major}.0.0", "max_exclusive": f"{major + 1}.0.0"}):
+            or not isinstance(required, dict)
+            or any(type(required.get(k)) is not int for k in ("min", "max_exclusive"))
+            or required != {"min": contract, "max_exclusive": contract + 1}):
         raise ValueError("Published package manifest differs from channel/contract/version")
     return control + "\n"
 

@@ -30,7 +30,7 @@ Debian 构建链使用 `aiden-business` 作为业务基线包。应用构建阶�
 包内的 `release-manifest.json` 记录业务版本、架构、平台契约范围、配置 schema 和
 `business_epoch`。三通道发布包的 `preinst` 会核对当前平台契约、通道和底座标识。
 包签名、磁盘空间等完整升级策略仍需独立业务升级编排器；当前通过 apt 安装下载的包。
-新布局从契约 `1.0.0` 开始，包要求为 `[1.0.0, 2.0.0)`。
+新布局从契约 `1` 开始，包要求为 `[1, 2)`。
 基座通过 `/usr/lib/aiden/platform/contract.json` 声明契约，该文件不属于业务包。
 旧布局不能通过
 slot OTA 跨越此变更，必须重新强刷；新布局内后续平台更新使用完整 boot/rootfs OTA。
@@ -88,7 +88,7 @@ Debian revision `2`，完整本地包版本为 `0.0.1-2`。命令行可用 `AIDE
 `AIDEN_BUSINESS_REVISION` 覆盖。正式三通道发布由发布计划自动分配版本和基础契约，
 详见 [三通道发布](channel-release.md)。
 
-未使用发布计划时，平台契约默认为 `1.0.0`。正式发布每次系统 OTA 都分配新契约，
+未使用发布计划时，平台契约默认为 `1`。正式发布每次系统 OTA 都分配新契约，
 后续业务包继承本通道的最新底座。OTA 清单仍使用 schema 2。
 
 ## 独立构建和 GitHub Release

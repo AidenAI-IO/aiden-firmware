@@ -12,9 +12,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def declaration():
     value = json.loads((ROOT / "overlay-debian/usr/lib/aiden/platform/contract.json").read_text())
-    contract = os.environ.get("AIDEN_PLATFORM_CONTRACT") or value["platform_contract"]
-    if not re.fullmatch(r"[1-9][0-9]*\.0\.0", contract):
-        raise ValueError("Platform contract must be a positive MAJOR.0.0")
+    contract = value["platform_contract"]
+    override = os.environ.get("AIDEN_PLATFORM_CONTRACT", "")
+    if override:
+        if not re.fullmatch(r"[1-9][0-9]*", override):
+            raise ValueError("Platform contract must be a positive integer")
+        contract = int(override)
+    if type(contract) is not int or contract < 1:
+        raise ValueError("Platform contract must be a positive integer")
     value["platform_contract"] = contract
     fields = {"channel": "AIDEN_RELEASE_CHANNEL", "base_release": "AIDEN_PLATFORM_BASE",
               "system_fingerprint": "AIDEN_SYSTEM_FINGERPRINT"}
@@ -38,12 +43,12 @@ def package_manifest():
         raise ValueError("Invalid business version")
     if not re.fullmatch(r"[1-9][0-9]*", revision):
         raise ValueError("Invalid package revision")
-    major = int(platform["platform_contract"].split(".")[0])
+    contract = platform["platform_contract"]
     manifest = {
         "format": 1, "product": "aiden", "artifact_kind": "debian-package",
         "package": "aiden-business", "business_release": version, "package_revision": revision,
         "architecture": "armhf", "required_platform_contract": {
-            "min": platform["platform_contract"], "max_exclusive": f"{major + 1}.0.0"},
+            "min": contract, "max_exclusive": contract + 1},
         "config_schema": {"min_supported": 3, "target": 4}, "business_epoch": 1,
         "runtime_config": 1,
     }
@@ -70,6 +75,7 @@ def main():
             "path = os.environ.get('DPKG_ROOT', '') + '/usr/lib/aiden/platform/contract.json'\n"
             "try:\n"
             "    with open(path) as stream: actual = json.load(stream)\n"
+            "    if type(actual.get('platform_contract')) is not int: raise ValueError('platform_contract must be an integer')\n"
             "    for key, value in expected.items():\n"
             "        if actual.get(key) != value: raise ValueError(f'{key}: expected {value}, got {actual.get(key)}')\n"
             "except (OSError, ValueError) as error:\n"

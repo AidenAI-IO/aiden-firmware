@@ -60,8 +60,18 @@ class GitFixture(unittest.TestCase):
 class PlannerTests(GitFixture):
     def test_first_release_establishes_contract(self):
         record = self.make()
-        self.assertEqual((record["kind"], record["version"], record["platform"]["contract"]), ("ota", "0.0.2", "1.0.0"))
+        self.assertEqual((record["kind"], record["version"], record["platform"]["contract"]), ("ota", "0.0.2", 1))
+        self.assertIs(type(record["platform"]["contract"]), int)
+        self.assertEqual(plan.environment(record)["AIDEN_PLATFORM_CONTRACT"], "1")
         self.assertEqual(record["platform"]["base_release"], record["tag"])
+
+    def test_release_contract_rejects_non_positive_or_non_integer_values(self):
+        for value in (0, -1, True, False, 1.0, "1", "1.0.0", None):
+            with self.subTest(value=value):
+                record = self.make()
+                record["platform"]["contract"] = value
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    plan.validate_record(record)
 
     def test_business_after_system_inherits_latest_base(self):
         self.publish()
@@ -69,7 +79,7 @@ class PlannerTests(GitFixture):
         system = self.publish()
         self.commit({"src/agent/main.go": "new business"})
         business = self.publish()
-        self.assertEqual(system["platform"]["contract"], "2.0.0")
+        self.assertEqual(system["platform"]["contract"], 2)
         self.assertEqual(business["kind"], "business")
         self.assertEqual(business["platform"], system["platform"])
         self.commit({"src/agent/main.go": "next business"})
@@ -103,7 +113,7 @@ class PlannerTests(GitFixture):
         old = self.publish()
         del old["runtime_config"]
         updated = self.publish()
-        self.assertEqual((updated["kind"], updated["platform"]["contract"]), ("ota", "2.0.0"))
+        self.assertEqual((updated["kind"], updated["platform"]["contract"]), ("ota", 2))
         self.commit({"overlay-debian/etc/aiden_new.conf": "config"})
         self.assertEqual(self.make()["kind"], "business")
 
@@ -111,7 +121,7 @@ class PlannerTests(GitFixture):
         dev = self.publish()
         staging = self.publish("staging")
         prod = self.publish("prod")
-        self.assertEqual([r["platform"]["contract"] for r in self.history], ["1.0.0", "2.0.0", "3.0.0"])
+        self.assertEqual([r["platform"]["contract"] for r in self.history], [1, 2, 3])
         self.assertEqual(prod["version"], "0.0.4")
         self.commit({"src/agent/main.go": "changed"})
         updated = self.publish("staging")
@@ -147,14 +157,124 @@ class PlannerTests(GitFixture):
     def test_force_ota_refreshes_unchanged_external_dependencies(self):
         self.publish()
         self.assertEqual(self.make(force_ota=True)["kind"], "ota")
-        self.assertEqual(self.make(force_ota=True)["platform"]["contract"], "2.0.0")
+        self.assertEqual(self.make(force_ota=True)["platform"]["contract"], 2)
 
-    def test_cannot_release_old_or_divergent_source(self):
+    def test_cannot_release_older_ancestor(self):
         old = self.git("rev-parse", "HEAD")
         self.commit({"src/agent/main.go": "next"})
         self.publish()
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.make(ref=old)
+        for force_ota in (False, True):
+            with self.subTest(force_ota=force_ota), self.assertRaisesRegex(ValueError, "older than"):
+                self.make(ref=old, force_ota=force_ota)
+
+    def squash_published_branch(self):
+        base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-qb", "release-candidate")
+        self.commit({"overlay-debian/etc/config": "released system", "src/agent/main.go": "released business"})
+        previous = self.publish()
+        self.git("checkout", "-qb", "squashed-main", base)
+        self.git("merge", "--squash", "release-candidate")
+        self.git("commit", "-qm", "feat: squash released changes")
+        self.assertNotEqual(self.git("rev-parse", "HEAD"), previous["source_commit"])
+        return previous
+
+    def test_squash_with_identical_tree_does_not_release(self):
+        previous = self.squash_published_branch()
+        record = self.make()
+        self.assertEqual(record["kind"], "none")
+        self.assertEqual(record["source_tree"], previous["source_tree"])
+        self.assertEqual(record["platform"], previous["platform"])
+        self.assertEqual(record["previous_commit"], previous["source_commit"])
+        self.assertTrue(all(not paths for paths in record["changes"].values()))
+        self.commit({"docs/readme.md": "documentation after squash"})
+        self.assertEqual(self.make()["kind"], "none")
+
+    def test_business_after_squash_compares_published_tree(self):
+        previous = self.squash_published_branch()
+        self.commit({"src/agent/main.go": "business after squash"})
+        record = self.make()
+        self.assertEqual(record["kind"], "business")
+        self.assertEqual(record["platform"], previous["platform"])
+        self.assertEqual(record["previous_tag"], previous["tag"])
+        self.assertEqual(record["changes"]["business"], ["src/agent/main.go"])
+        self.assertEqual(record["changes"]["system"], [])
+        self.assertIn(f"/compare/{previous['tag']}..{record['tag']})", release.notes(record))
+        release.assert_current(record, self.history)
+
+    def test_system_removal_after_squash_requires_new_contract(self):
+        previous = self.squash_published_branch()
+        self.commit({"overlay-debian/etc/config": None})
+        record = self.make()
+        self.assertEqual(record["kind"], "ota")
+        self.assertEqual(record["previous_commit"], previous["source_commit"])
+        self.assertEqual(record["platform"]["contract"], 2)
+        self.assertEqual(record["changes"]["system"], ["overlay-debian/etc/config"])
+        release.assert_current(record, self.history)
+
+    def test_rebased_release_with_only_docs_changes_does_not_release(self):
+        base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-qb", "release-candidate")
+        self.commit({"src/agent/main.go": "released business"})
+        previous = self.publish()
+        self.git("checkout", "-qb", "new-base", base)
+        self.commit({"docs/readme.md": "new main documentation"})
+        self.git("checkout", "release-candidate")
+        self.git("rebase", "new-base")
+        self.assertNotEqual(self.git("rev-parse", "HEAD"), previous["source_commit"])
+        record = self.make()
+        self.assertEqual(record["kind"], "none")
+        self.assertEqual(record["changes"]["ignore"], ["docs/readme.md"])
+
+    def shallow_clone(self, previous):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        clone = Path(temporary.name) / "clone"
+        self.git("clone", "--quiet", "--depth=1", "--no-tags", self.root.as_uri(), str(clone))
+        self.root = clone
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "true")
+        published = subprocess.run(["git", "cat-file", "-e", previous["source_commit"] + "^{commit}"],
+                                   cwd=self.root, capture_output=True)
+        self.assertNotEqual(published.returncode, 0)
+
+    def test_shallow_squash_fetches_history_before_comparing_released_tree(self):
+        previous = self.squash_published_branch()
+        self.commit({"src/agent/main.go": "business after squash"})
+        self.shallow_clone(previous)
+        commit = self.git("rev-parse", "HEAD")
+        record = self.make()
+        self.assertEqual(self.git("cat-file", "-t", previous["source_commit"]), "commit")
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "false")
+        self.assertEqual(record["source_commit"], commit)
+        self.assertEqual(record["kind"], "business")
+        self.assertEqual(record["platform"], previous["platform"])
+        self.assertEqual(record["changes"]["business"], ["src/agent/main.go"])
+        self.assertEqual(record["changes"]["system"], [])
+
+    def test_shallow_fetch_failure_is_not_reported_as_unrelated_history(self):
+        previous = self.squash_published_branch()
+        self.shallow_clone(previous)
+        self.git("remote", "set-url", "origin", str(self.root / "missing-remote"))
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.make()
+        self.assertEqual(raised.exception.cmd[:3], ("git", "fetch", "--unshallow"))
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "true")
+
+    def test_shallow_unrelated_history_is_rejected_after_fetch(self):
+        previous = self.publish()
+        self.git("checkout", "--orphan", "unrelated")
+        self.commit({"src/agent/main.go": "unrelated business"})
+        self.shallow_clone(previous)
+        with self.assertRaisesRegex(ValueError, "unrelated"):
+            self.make()
+        self.assertEqual(self.git("rev-parse", "--is-shallow-repository"), "false")
+
+    def test_unrelated_history_is_rejected(self):
+        self.publish()
+        self.git("checkout", "--orphan", "unrelated")
+        self.commit({"src/agent/main.go": "unrelated business"})
+        for force_ota in (False, True):
+            with self.subTest(force_ota=force_ota), self.assertRaisesRegex(ValueError, "unrelated"):
+                self.make(force_ota=force_ota)
 
     def test_versions_must_increase_across_channels(self):
         self.publish(version="1.2.3")
@@ -207,7 +327,7 @@ class PlannerTests(GitFixture):
         self.publish("dev")
         stage = self.make("staging")
         self.assertEqual(stage["kind"], "ota")
-        self.assertEqual(stage["platform"]["contract"], "4.0.0")
+        self.assertEqual(stage["platform"]["contract"], 4)
 
 
 class ContractTests(unittest.TestCase):
@@ -215,7 +335,7 @@ class ContractTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.env = {**os.environ, "AIDEN_PLATFORM_CONTRACT": "7.0.0", "AIDEN_PLATFORM_BASE": "dev-v0.0.9",
+        self.env = {**os.environ, "AIDEN_PLATFORM_CONTRACT": "7", "AIDEN_PLATFORM_BASE": "dev-v0.0.9",
                     "AIDEN_RELEASE_CHANNEL": "dev", "AIDEN_SYSTEM_FINGERPRINT": "a" * 64,
                     "AIDEN_BUSINESS_VERSION": "0.0.10", "AIDEN_BUSINESS_REVISION": "1"}
 
@@ -224,7 +344,22 @@ class ContractTests(unittest.TestCase):
             platform = contract.declaration()
             manifest = contract.package_manifest()
         self.assertEqual(platform, manifest["platform"])
-        self.assertEqual(manifest["required_platform_contract"], {"min": "7.0.0", "max_exclusive": "8.0.0"})
+        self.assertEqual(manifest["required_platform_contract"], {"min": 7, "max_exclusive": 8})
+        self.assertIs(type(platform["platform_contract"]), int)
+
+    def test_default_contract_is_integer_one(self):
+        with patch.dict(os.environ, {**self.env, "AIDEN_PLATFORM_CONTRACT": ""}):
+            platform = contract.declaration()
+            manifest = contract.package_manifest()
+        self.assertIs(type(platform["platform_contract"]), int)
+        self.assertEqual(platform["platform_contract"], 1)
+        self.assertEqual(manifest["required_platform_contract"], {"min": 1, "max_exclusive": 2})
+
+    def test_contract_environment_requires_canonical_positive_integer(self):
+        for value in ("0", "-1", "1.0.0", "1.0", "01", "+1", "true", " 1"):
+            with self.subTest(value=value), patch.dict(os.environ, {**self.env, "AIDEN_PLATFORM_CONTRACT": value}):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    contract.declaration()
 
     def test_preinst_checks_contract_before_any_service_operation(self):
         subprocess.run(["bash", str(ROOT / "scripts/debian-package/write-maintainer-scripts.sh"),
@@ -236,7 +371,9 @@ class ContractTests(unittest.TestCase):
         env = {**self.env, "DPKG_ROOT": str(self.root), "SYSTEMD_OFFLINE": "1"}
         script = str(self.root / "DEBIAN/preinst")
         subprocess.run([script, "install"], check=True, env=env)
-        for field, value in (("platform_contract", "6.0.0"), ("runtime_config", 0), ("channel", "prod"),
+        for field, value in (("platform_contract", 6), ("platform_contract", 7.0),
+                             ("platform_contract", "7"), ("platform_contract", "7.0.0"),
+                             ("runtime_config", 0), ("channel", "prod"),
                              ("base_release", "dev-v0.0.8"), ("system_fingerprint", "b" * 64)):
             with self.subTest(field=field):
                 release.write_json(contract_path, {**platform, field: value})
@@ -316,11 +453,12 @@ class AssetTests(GitFixture):
     def test_package_binding_cannot_be_changed_by_rehashing_assets(self):
         self.create_assets()
         platform = release.read_json(self.assets / "platform-contract.json")
-        platform["platform_contract"] = "999.0.0"
-        release.write_json(self.assets / "platform-contract.json", platform)
-        self.seal()
-        with self.assertRaisesRegex(ValueError, "binding"):
-            release.verify(self.assets)
+        for value in (999, True, 1.0, "1", "1.0.0"):
+            with self.subTest(contract=value):
+                release.write_json(self.assets / "platform-contract.json", {**platform, "platform_contract": value})
+                self.seal()
+                with self.assertRaisesRegex(ValueError, "binding"):
+                    release.verify(self.assets)
 
     def test_signed_ota_and_corrupted_signature(self):
         self.create_assets("ota")
