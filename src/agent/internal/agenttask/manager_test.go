@@ -687,10 +687,10 @@ func TestManagerTerminalTasksUseCompletionTimeThenID(t *testing.T) {
 			"earlier": {task: Task{ID: "earlier", Status: StatusCompleted, CompletedAt: &earlier}},
 			"later-a": {task: Task{ID: "later-a", Status: StatusCompleted, CompletedAt: &later}},
 		},
-		resultNotifications: map[string]resultNotificationState{
-			"later-b": resultNotificationQueued,
-			"earlier": resultNotificationQueued,
-			"later-a": resultNotificationQueued,
+		terminalNotifications: map[string]terminalNotificationState{
+			"later-b": terminalNotificationQueued,
+			"earlier": terminalNotificationQueued,
+			"later-a": terminalNotificationQueued,
 		},
 	}
 
