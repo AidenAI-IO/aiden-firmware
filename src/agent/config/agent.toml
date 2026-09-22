@@ -207,6 +207,9 @@ input_mode = "stt"
 # region = "cn-beijing" # or "ap-southeast-1"
 # endpoint = ""         # optional ws/wss endpoint override
 # voice = "longanqian"
+# turn_detection = "server_vad" # or "smart_turn"
+# turn_detection_threshold = 0.5
+# turn_detection_silence_ms = 800
 #
 # [voice_settings.realtime]
 # provider = "qwen-main"
@@ -214,9 +217,6 @@ input_mode = "stt"
 # enable_speech_emotion = true
 # input_audio_format = "pcm"
 # output_audio_format = "pcm"
-# turn_detection = "server_vad" # or "smart_turn"
-# turn_detection_threshold = 0.5
-# turn_detection_silence_ms = 800
 
 # Classic voice configuration (STT + TTS)
 

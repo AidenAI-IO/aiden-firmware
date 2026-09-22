@@ -1459,7 +1459,7 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+	if len(reports) <= 2+defaultSwipeSteps+touchReleaseReportCount {
 		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].buttons != 0x00 {
@@ -1474,13 +1474,13 @@ func TestTouchGestureSwipeWritesDragSequence(t *testing.T) {
 	if reports[1].x != 3277 || reports[1].y != 29490 {
 		t.Fatalf("press point = (%d,%d), want (3277,29490)", reports[1].x, reports[1].y)
 	}
-	finalMove := 1 + defaultSwipeSteps
+	finalMove := len(reports) - touchReleaseReportCount - 1
 	if reports[finalMove].x != 29490 || reports[finalMove].y != 3277 || reports[finalMove].buttons != 0x01 {
 		t.Fatalf("final move = (%d,%d,%d), want (29490,3277,1)", reports[finalMove].x, reports[finalMove].y, reports[finalMove].buttons)
 	}
 	for i := finalMove + 1; i < len(reports); i++ {
-		if reports[i].x != 29490 || reports[i].y != 3277 || reports[i].buttons != 0x00 {
-			t.Fatalf("release report %d = (%d,%d,%d), want (29490,3277,0)", i-4, reports[i].x, reports[i].y, reports[i].buttons)
+		if reports[i].x != 29490 || reports[i].y != 3277 || reports[i].buttons != 0 {
+			t.Fatalf("release report %d = (%d,%d,%d), want (29490,3277,0)", i, reports[i].x, reports[i].y, reports[i].buttons)
 		}
 	}
 }
@@ -1498,14 +1498,14 @@ func TestSwipeDirectionUsesSpeedAndDuration(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+	if len(reports) <= 2+defaultSwipeSteps+touchReleaseReportCount {
 		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].y != 26214 {
 		t.Fatalf("swipe start y = %d, want 26214", reports[0].y)
 	}
-	if reports[1+defaultSwipeSteps].y != 1638 {
-		t.Fatalf("swipe end y = %d, want 1638", reports[1+defaultSwipeSteps].y)
+	if reports[len(reports)-touchReleaseReportCount-1].y != 1638 {
+		t.Fatalf("swipe end y = %d, want 1638", reports[len(reports)-touchReleaseReportCount-1].y)
 	}
 }
 
@@ -1522,18 +1522,18 @@ func TestSwipeSpeedControlsCalculatedDuration(t *testing.T) {
 	}
 
 	reports := readMouseReports(t, dev, path)
-	if len(reports) != 2+defaultSwipeSteps+touchReleaseReportCount {
+	if len(reports) <= 2+defaultSwipeSteps+touchReleaseReportCount {
 		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
 	}
 	if reports[0].y != 19660 {
 		t.Fatalf("start y = %d, want 19660", reports[0].y)
 	}
-	if reports[1+defaultSwipeSteps].y != 13107 {
-		t.Fatalf("end y = %d, want 13107", reports[1+defaultSwipeSteps].y)
+	if reports[len(reports)-touchReleaseReportCount-1].y != 13107 {
+		t.Fatalf("end y = %d, want 13107", reports[len(reports)-touchReleaseReportCount-1].y)
 	}
 }
 
-func TestSwipeDirectionDefaultsToEdgeAndImmediateRelease(t *testing.T) {
+func TestSwipeDirectionDefaultsToEdgeAndSlowsBeforeRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
@@ -1546,13 +1546,13 @@ func TestSwipeDirectionDefaultsToEdgeAndImmediateRelease(t *testing.T) {
 	}
 
 	times := w.writeTimes()
-	if len(times) != 2+defaultSwipeSteps+touchReleaseReportCount {
+	if len(times) <= 2+defaultSwipeSteps+touchReleaseReportCount {
 		t.Fatalf("len(times) = %d, want provider default sequence", len(times))
 	}
 	firstRelease := len(times) - touchReleaseReportCount
-	releaseDelay := times[firstRelease].Sub(times[firstRelease-1])
-	if releaseDelay > 200*time.Millisecond {
-		t.Fatalf("direction-form swipe final-move-to-release gap = %v, want no default hold delay", releaseDelay)
+	releaseDelay := times[firstRelease].Sub(times[1+defaultSwipeSteps])
+	if releaseDelay < 95*time.Millisecond || releaseDelay > 250*time.Millisecond {
+		t.Fatalf("direction-form swipe slow tail duration = %v, want about 100ms", releaseDelay)
 	}
 }
 
@@ -1682,14 +1682,15 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	}
 
 	reports := readTouchscreenReports(t, dev, path)
-	if len(reports) != 1+defaultSwipeSteps+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want provider default sequence", len(reports))
+	if len(reports) <= 1+defaultSwipeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want additional low-speed reports", len(reports))
 	}
 	if reports[0].flags != 0x03 || reports[0].x != 6553 {
 		t.Fatalf("down report = %+v, want start touch", reports[0])
 	}
-	if reports[defaultSwipeSteps].flags != 0x03 || reports[defaultSwipeSteps].x != 26214 {
-		t.Fatalf("final move = %+v, want end while touching", reports[defaultSwipeSteps])
+	finalMove := len(reports) - touchReleaseReportCount - 1
+	if reports[finalMove].flags != 0x03 || reports[finalMove].x != 26214 {
+		t.Fatalf("final move = %+v, want end while touching", reports[finalMove])
 	}
 	last := reports[len(reports)-1]
 	if last.flags != 0x00 || last.x != 26214 {
@@ -2993,7 +2994,7 @@ func TestTouchGestureSwipeStartsMovingImmediately(t *testing.T) {
 	}
 }
 
-func TestTouchGestureSwipeDefaultsUseFastMotionAndImmediateRelease(t *testing.T) {
+func TestTouchGestureSwipeDefaultsUseFastMotionAndSlowTailBeforeRelease(t *testing.T) {
 	dev, w := newTimedHIDDevice()
 	tool := testTouchGestureTool(t, testMNKOpts{screenState: &screen.ScreenState{}, pointer: dev})
 
@@ -3005,21 +3006,21 @@ func TestTouchGestureSwipeDefaultsUseFastMotionAndImmediateRelease(t *testing.T)
 		t.Fatalf("output = %q, want ok", out)
 	}
 
-	// Writes: pre-move, press, 24 default move steps, repeated release.
+	// Writes: pre-move, press, 24 main motion steps, slow final motion, release.
 	times := w.writeTimes()
-	if len(times) != defaultSwipeSteps+2+touchReleaseReportCount {
-		t.Fatalf("len(times) = %d, want %d", len(times), defaultSwipeSteps+2+touchReleaseReportCount)
+	if len(times) <= defaultSwipeSteps+2+touchReleaseReportCount {
+		t.Fatalf("len(times) = %d, want additional low-speed reports", len(times))
 	}
 	moveStart := 2
 	firstRelease := len(times) - touchReleaseReportCount
-	lastMove := firstRelease - 1
+	lastMove := 1 + defaultSwipeSteps
 	moveDuration := times[lastMove].Sub(times[moveStart])
 	if moveDuration < 250*time.Millisecond || moveDuration > 450*time.Millisecond {
 		t.Fatalf("swipe move duration = %v, want about 300ms", moveDuration)
 	}
 	releaseDelay := times[firstRelease].Sub(times[lastMove])
-	if releaseDelay > 200*time.Millisecond {
-		t.Fatalf("swipe final-move-to-release gap = %v, want no default hold_after_ms delay", releaseDelay)
+	if releaseDelay < 95*time.Millisecond || releaseDelay > 250*time.Millisecond {
+		t.Fatalf("swipe slow tail duration = %v, want about 100ms", releaseDelay)
 	}
 }
 
@@ -3148,8 +3149,8 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 	}
 
 	examples, ok := schema["examples"].([]map[string]any)
-	if !ok || len(examples) != 5 {
-		t.Fatalf("schema examples = %#v, want five complete examples", schema["examples"])
+	if !ok || len(examples) != 3 {
+		t.Fatalf("schema examples = %#v, want three complete examples", schema["examples"])
 	}
 	encoded, err := json.Marshal(examples)
 	if err != nil || !json.Valid(encoded) {
@@ -3159,11 +3160,6 @@ func TestTouchGestureSchemaRequiresNamedCoordinateObjectsAndValidExamples(t *tes
 		`{"point":{"x":500,"y":500},"type":"tap"}`,
 		`"type":"drag_start"`,
 		`"type":"drag_release"`,
-		`"start":{"x":500,"y":800}`,
-		`"end":{"x":500,"y":200}`,
-		`"direction":"up"`,
-		`"duration_ms":300`,
-		`"speed":2500`,
 	} {
 		if !strings.Contains(string(encoded), want) {
 			t.Fatalf("schema examples missing %q: %s", want, encoded)

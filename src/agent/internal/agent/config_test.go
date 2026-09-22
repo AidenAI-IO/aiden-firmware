@@ -154,6 +154,9 @@ provider = "speko"
 api_key = "secret"
 upstream_provider = "google"
 model = "gemini-live"
+turn_detection = "smart_turn"
+turn_detection_threshold = 0.25
+turn_detection_silence_ms = 900
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +165,7 @@ model = "gemini-live"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.VoiceModel.Model != "gemini-live" || runtime.VoiceModel.Voice != "" || runtime.VoiceModel.Region != "" || runtime.VoiceModel.TurnDetection != "" {
+	if runtime.VoiceModel.Model != "gemini-live" || runtime.VoiceModel.Voice != "" || runtime.VoiceModel.Region != "" || runtime.VoiceModel.TurnDetection != "" || runtime.VoiceModel.TurnDetectionThreshold != nil || runtime.VoiceModel.TurnDetectionSilenceMs != 0 {
 		t.Fatalf("runtime Speko inherited Qwen defaults: %+v", runtime.VoiceModel)
 	}
 
@@ -171,7 +174,7 @@ model = "gemini-live"
 		t.Fatal(err)
 	}
 	record := resolved.VoiceModelProviders["speko"]
-	if record.Model != "gemini-live" || record.Voice != "" || record.Region != "" || resolved.VoiceModel.Model != "" {
+	if record.Model != "gemini-live" || record.Voice != "" || record.Region != "" || record.TurnDetection != "" || record.TurnDetectionThreshold != nil || record.TurnDetectionSilenceMs != 0 || resolved.VoiceModel.Model != "" {
 		t.Fatalf("resolved Speko inherited Qwen defaults: selector=%+v record=%+v", resolved.VoiceModel, record)
 	}
 }

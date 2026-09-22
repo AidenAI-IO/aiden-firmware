@@ -435,6 +435,7 @@ type VoiceModelConfig struct {
 	Endpoint               string   `toml:"endpoint,omitempty"`
 	BaseURL                string   `toml:"base_url,omitempty"`
 	RealtimeProtocol       string   `toml:"realtime_protocol,omitempty"`
+	ThinkingLevel          string   `toml:"thinking_level,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
 	Instructions           string   `toml:"instructions,omitempty"`
 	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
@@ -443,7 +444,12 @@ type VoiceModelConfig struct {
 	TurnDetection          string   `toml:"turn_detection,omitempty"`
 	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
 	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
-	ActiveProviderRecord   string   `toml:"-"`
+	// UseBackendAgent controls whether the realtime model can delegate work to
+	// the backend agent. When disabled, the runtime tools that the backend agent
+	// would otherwise use are exposed directly to the realtime model. Provider
+	// reasoning is determined independently by the provider/model.
+	UseBackendAgent      bool   `toml:"use_backend_agent,omitempty"`
+	ActiveProviderRecord string `toml:"-"`
 }
 
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
@@ -452,6 +458,13 @@ func (c VoiceModelConfig) Validate() error {
 	provider := strings.ToLower(strings.TrimSpace(c.Provider))
 	if provider != "" && !realtimevoice.IsProvider(provider) {
 		return fmt.Errorf("voice_model.provider: unsupported provider %q", c.Provider)
+	}
+	if level := strings.ToUpper(strings.TrimSpace(c.ThinkingLevel)); level != "" {
+		switch level {
+		case "MINIMAL", "LOW", "MEDIUM", "HIGH":
+		default:
+			return fmt.Errorf("voice_model.thinking_level: unsupported value %q (use LOW, MEDIUM, HIGH, or MINIMAL)", c.ThinkingLevel)
+		}
 	}
 	if provider == "speko" {
 		upstream := strings.TrimSpace(c.UpstreamProvider)
@@ -492,11 +505,10 @@ func (c VoiceModelConfig) Validate() error {
 			return fmt.Errorf("voice_model.base_url: invalid HTTP URL %q", c.BaseURL)
 		}
 	}
-	if provider != "speko" && c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
-		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
-	}
-	if c.TurnDetectionSilenceMs < 0 {
-		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
+	if provider == realtimevoice.ProviderQwen {
+		if err := validateQwenTurnDetection(c.TurnDetection, c.TurnDetectionThreshold, c.TurnDetectionSilenceMs, "voice_model"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1210,6 +1222,12 @@ func applyVoiceModelProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	}
 	if !metadata.IsDefined("voice_model", "turn_detection") {
 		cfg.VoiceModel.TurnDetection = ""
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection_threshold") {
+		cfg.VoiceModel.TurnDetectionThreshold = nil
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection_silence_ms") {
+		cfg.VoiceModel.TurnDetectionSilenceMs = 0
 	}
 }
 

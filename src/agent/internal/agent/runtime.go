@@ -898,6 +898,7 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+
 	defer func() {
 		if runErr != nil && isLLMTurnFailureSource(runErr) {
 			result.TurnFailure = TurnFailureFromError(runErr)
@@ -921,6 +922,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	defer unlockRun()
 	r.configOperations.RLock()
 	defer r.configOperations.RUnlock()
+
+	// A realtime session configured without a backend agent must execute the
+	// transferred tools itself. Take the decision under the same config snapshot
+	// the rest of the run reads, so a reload cannot flip it mid-run.
+	cfg := r.ConfigSnapshot()
+	if cfg.InputModeOrDefault() == "realtime" && !cfg.VoiceModel.UseBackendAgent {
+		return RunResult{}, fmt.Errorf("backend agent is disabled for this realtime session; all processing should be handled by the realtime voice session")
+	}
 
 	// Register this run's cancel so future callers can preempt us.
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -1183,7 +1192,10 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	contextCompactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	// The compactor runs on the run's usage-tracking model so its model calls are
+	// counted and traced as part of the episode rather than disappearing from the
+	// run's token accounting.
+	contextCompactor := compactor.NewCompactor(compactor.DefaultProtectRule, m)
 	budgetContextWindow := contextWindow
 	if budgetContextWindow <= 0 {
 		budgetContextWindow = r.models.Spec().ContextWindow
@@ -1237,7 +1249,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, summarizing conversation... tokenUsage: %d, trigger: %d, contextWindow: %d", tokenUsage, compactionTrigger, contextWindow)
 		}
-		newManager, compacted, err := contextCompactor.Compact(ctx, r.contextManager, r.sessionChunkWriter())
+		newManager, compacted, err := contextCompactor.Compact(withTelemetryRole(ctx, telemetryRoleCompaction), r.contextManager, r.sessionChunkWriter())
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
@@ -1349,7 +1361,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			// Deterministic pruning cannot shrink historical user/assistant text.
 			// Try the existing summary recovery before failing locally, including
 			// when provider-managed compaction disables threshold summaries.
-			compactedManager, compacted, compactErr := contextCompactor.Compact(guardCtx, activeManager, &pendingChunk)
+			compactedManager, compacted, compactErr := contextCompactor.Compact(withTelemetryRole(guardCtx, telemetryRoleCompaction), activeManager, &pendingChunk)
 			if episodeRecorder != nil {
 				episodeRecorder.RecordEvent(contextCompactionEvent(
 					contextCompactor.LastCompactionStats(), compacted, compactErr, "active_turn_input_budget",
@@ -1387,7 +1399,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return activeManager, changed, nil
 	}
 	compactAgentContext := func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager, triggerReason string) (*contextmanager.ContextManager, bool, error) {
-		newManager, compacted, compactErr := contextCompactor.Compact(recoveryCtx, currentManager, r.sessionChunkWriter())
+		// Compaction summarises the conversation with the same model as the run;
+		// tag it so its prompt becomes a `summarize-context` generation.
+		newManager, compacted, compactErr := contextCompactor.Compact(withTelemetryRole(recoveryCtx, telemetryRoleCompaction), currentManager, r.sessionChunkWriter())
 		if episodeRecorder != nil {
 			episodeRecorder.RecordEvent(contextCompactionEvent(
 				contextCompactor.LastCompactionStats(),
@@ -1891,6 +1905,14 @@ func (r *Runtime) availableTools() []langtools.Tool {
 	}
 	tools := NewToolSpecs(r.toolSnapshot().All()).AgentToolsForPlatform(r.devicePlatformFromState())
 	return r.filterPhoneBridgeAgentTools(tools)
+}
+
+// AvailableTools returns the runtime-filtered tools exposed to the
+// conversational agent for the current device platform and bridge state.
+// Realtime providers use this same catalog when they execute tool calls
+// without the legacy backend agent.
+func (r *Runtime) AvailableTools() []langtools.Tool {
+	return r.availableTools()
 }
 
 // Tool returns a registered runtime tool by name. Realtime voice uses this to

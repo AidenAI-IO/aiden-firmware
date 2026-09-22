@@ -26,6 +26,7 @@ import {applySystemEnv, refreshSystemEnvApplication, cancelSystemEnvEdit, enterS
 import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
 import {VISIBLE_FIELDS} from './field-visibility.js';
 import {SECTION_TO_GROUP_MAP} from './config-groups.js';
+import {cancelDataBackup, chooseDataRestore, closeDataBackup, createDataBackup, initBackup, startDataBackup, startDataRestore} from './backup.js';
 
 const simpleActions = {
   'export-logs': exportLogs,
@@ -44,6 +45,12 @@ const simpleActions = {
   'eject-storage': ejectStorageCard,
   'export-config-backup': exportConfigBackup,
   'choose-config-backup': chooseConfigBackup,
+  'create-data-backup': createDataBackup,
+  'choose-data-restore': chooseDataRestore,
+  'start-data-backup': startDataBackup,
+  'start-data-restore': startDataRestore,
+  'cancel-data-backup': cancelDataBackup,
+  'close-data-backup': closeDataBackup,
   'edit-system-env': enterSystemEnvEdit,
   'toggle-system-env-comment': toggleSystemEnvComment,
   'cancel-system-env': cancelSystemEnvEdit,
@@ -210,6 +217,7 @@ async function reloadAll() {
 
 async function init() {
   initI18n();
+  initBackup();
   initProviders();
   configureTerminalLink();
   let metaOk = true;

@@ -1,0 +1,1592 @@
+---
+sidebar_position: 1
+title: 数据备份与恢复实现设计
+---
+
+# 数据备份与恢复实现设计
+
+## 1. 文档状态
+
+- 状态：Implemented（阶段一、二、四的设备端与 CLI 部分已实现；阶段三 Bridge App 原生桥接待实现）
+- 最近更新：2026-09-17
+- 本次更新：自动全量备份与恢复、固定 same_device 和 `allow_different`、取消密码与新归档加密；备份和恢复向导移除标题栏 Close 和运行阶段 Cancel operation，恢复计划页使用一次开始确认弹窗，Cancel 直接执行且不二次确认；保留完整性校验和事务恢复
+- 适用系统：Aiden Debian 固件
+- 适用客户端：Config Web 页面、Aiden Bridge App WebView、通过 USB ECM 连接的电脑浏览器或 CLI
+- 目标场景：完整刷写固件前备份用户数据，刷写完成后恢复
+
+本文定义数据范围、归档格式、设备端 API、服务维护模式、跨文件系统恢复事务、客户端行为、安全控制及测试要求。实现阶段如需改变数据范围或归档格式，必须同步更新格式版本和兼容性测试。
+
+## 2. 背景
+
+Debian 固件采用 A/B rootfs、A/B OEM、独立 userdata 和独立 OTA 分区。userdata 为 3 GiB ext4 分区，挂载到 `/userdata`；OTA 分区挂载到 `/userdata/ota`。完整刷写 `update.img` 会覆盖 userdata，因此用户配置、Agent 记忆、会话及设备身份都会丢失。
+
+设备还可以挂载外置 SD 卡。当前 Aiden 管理的 SD 数据位于 `/mnt/sdcard/aiden`，主要用于保存从 eMMC 迁移的音频归档。备份产物不得保存在 SD 卡，应当通过 USB ECM 直接传输到手机或电脑。
+
+## 3. 目标与边界
+
+### 3.1 目标
+
+1. 支持在完整刷写前导出用户数据，并在新固件首次启动后恢复。
+2. 以 Config Web 的 Storage Settings 页面为统一入口，支持 Aiden Bridge App WebView 和电脑浏览器，并向电脑 CLI 提供同一套设备 API。
+3. 同时覆盖 eMMC userdata 和 Aiden 管理的外置 SD 数据。
+4. 备份期间获得一致的数据视图，避免会话、记忆、附件、索引等关联文件发生错配。
+5. 恢复过程具备校验、回滚和掉电恢复能力。
+6. 新备份固定使用同设备模式，通过硬件标识检查阻止意外跨设备恢复身份。
+7. 创建、校验和恢复新归档无需密码；归档为明文，并保留分块、文件及 footer 的完整性校验。
+
+### 3.2 第一版范围外事项
+
+1. 不备份整个 Debian 根文件系统。
+2. 不承诺恢复用户通过 SSH 任意修改的 `/etc`、`/usr/local`、`/var/lib` 等系统路径。
+3. 不备份 OTA 下载、启动事务、锁文件和分区校验状态。
+4. 不提供磁盘空间不足时的原地覆盖恢复。
+5. 不在 Loader 或 Maskrom 模式下提供备份 API。
+6. 不使用 SD 卡存放备份归档或恢复归档。
+
+## 4. 现有系统基础
+
+### 4.1 持久化分区
+
+| 分区 | 挂载点 | 用途 |
+| --- | --- | --- |
+| `userdata`，`/dev/mmcblk0p11` | `/userdata` | 用户配置、Agent 数据、设备身份、音频 |
+| `ota`，`/dev/mmcblk0p12` | `/userdata/ota` | OTA 下载和更新事务 |
+| 外置 SD，默认 `mmcblk2` | `/mnt/sdcard` | Aiden 分层存储及用户文件 |
+
+完整刷写前必须将目标数据传输到设备外。普通 A/B OTA 更新仍应保持 userdata，但备份功能不应依赖此假设，用户可以在重大更新前主动备份。
+
+### 4.2 现有服务能力
+
+Config Web 当前具有以下条件：
+
+- 以 root 权限运行，监听 80 端口；
+- 已提供配置、Wi-Fi、存储、OTA、日志和设备控制 API；
+- 持有 SD `StorageManager`；
+- 已具备 Agent、frame service、Wi-Fi proxy 的控制脚本入口；
+- Agent 停止后仍可通过 USB ECM 访问。
+
+Agent 监听 8080 端口，并持续写入会话、记忆、技能状态、日志和音频。完整备份 API 应由 Config Web 或独立的备份守护进程承载。第一版建议在 Config Web 中增加控制层和流式传输层，核心逻辑放入独立 Go package，后续可以平滑拆分为 `aiden-backupd`。
+
+Config Web 当前 HTTP server 对读写设置了 65 秒全局超时，现有 support archive 还会将 gzip 全部缓存在内存。备份实现需要通过 `http.NewResponseController(w).SetWriteDeadline(time.Time{})` 清除归档下载端点的 write deadline，恢复上传采用小于全局 read timeout 的固定块。不得复用整包 `bytes.Buffer` 的 support archive 路径。第一版继续由 Config Web 承载数据流；独立 `aiden-backupd` 仅作为未来进程隔离和资源配额增强方案。
+
+### 4.3 现有 Config Web 备份界面
+
+Storage Settings 页面已经提供 Backup & Restore 卡片，包含 Export、Import 和一个隐藏文件选择器。现有实现只处理 Agent TOML 配置：
+
+| 项目 | 当前行为 |
+| --- | --- |
+| Export | `GET /api/config/backup`，下载 `aiden-config-<timestamp>.toml` |
+| Import | `PUT /api/config/backup`，接收 `.toml` 文件 |
+| 服务端范围 | 只读取或替换 `AgentConfigPath`，即 `/userdata/agent/agent.toml` |
+| 大小限制 | `maxAgentConfigSize`，当前为 1 MiB |
+| 导入校验 | 校验 grouped TOML schema、解析 Agent 配置、校验 voice provider |
+| 应用行为 | 原子写入 TOML，然后应用 frame/storage 配置并请求 Agent reload |
+| 浏览器实现 | Export 使用 `response.blob()`，Import 将浏览器 `File` 作为单个请求 body |
+
+该能力继续作为“仅 Agent 配置”功能保留，现有 `/api/config/backup` 路由不得改为完整数据归档。完整备份使用 `/api/backup/*` 和 `/api/restore/*`，防止旧客户端把二进制归档当作 TOML，也防止新客户端将 TOML 传给事务式恢复接口。
+
+截图中的 Backup & Restore 卡片改为完整数据备份入口。Export 和 Import 按钮保留在卡片首层，点击后打开向导。仅 Agent 配置的 TOML 导入导出移动到该卡片的 Advanced 区域，或改名为 `Export Agent config (.toml)` 和 `Import Agent config (.toml)`，避免用户误认为现有 TOML 已包含记忆、会话、身份和 SD 数据。
+
+## 5. 数据分类与备份策略
+
+### 5.1 备份组件
+
+归档使用组件作为选择、校验、提交和回滚的最小逻辑单元。
+
+创建备份不显示组件勾选或 Advanced components 折叠区，服务端自动包含所有可用组件。无 SD 时跳过 SD 组件；存在 SD 时同时包含 Aiden 音频和用户文件。原有永久排除、安全遍历和数据大小限制继续生效。Config Web 恢复时同样不显示组件勾选，自动选择 manifest 中的全部组件；服务端继续执行兼容性检查。
+
+| 组件 ID | 路径 | 内容 | 默认策略 |
+| --- | --- | --- | --- |
+| `agent_config` | `/userdata/agent/agent.toml` | Agent、模型、设备和存储配置 | 包含、敏感 |
+| `system_environment` | `/userdata/system/env` | API Key、Token、Secret、代理变量 | 包含、敏感 |
+| `network` | `/userdata/debian/wifi/wpa_supplicant-wlan0.conf`、`/userdata/system/wifi-proxies.json` | Wi-Fi 和代理配置 | 包含、敏感 |
+| `ota_settings` | `/userdata/debian/ota/config.json` 中的用户字段、用户 token 文件和经批准的自定义公钥 | OTA 源、代理和凭据 | 包含、敏感 |
+| `agent_skills` | `/userdata/agent/skills`、`/userdata/agent/skill-state` | 用户技能及技能状态 | 包含 |
+| `agent_memory` | `/userdata/agent/memory` | 长期、临时、设备、事件和通知记忆 | 包含、敏感 |
+| `agent_sessions` | `/userdata/agent/sessions` | 对话、会话元数据、附件和工具产物 | 包含、敏感 |
+| `user_home` | `/userdata/userhome` | 持久化 `/root`，包括用户 SSH 配置和自定义文件 | 包含、敏感 |
+| `preferences` | `/userdata/audio_service/playback_volume` | 本地偏好设置 | 包含 |
+| `device_identity` | `/userdata/system/machine-id`、`/userdata/system/ssh`、`/userdata/ble_service/bluetooth` | 机器、SSH 和蓝牙身份 | 同设备模式包含 |
+| `audio_archive` | `/userdata/audio` | eMMC 音频归档 | 自动包含 |
+| `sd_managed_audio` | `/mnt/sdcard/aiden/audio` | SD 音频归档 | SD 可用时默认包含 |
+| `sd_user_files` | `/mnt/sdcard` 中 Aiden 管理目录以外的普通文件 | 用户自行放置的文件 | SD 可用时自动包含 |
+| `python_environment` | `/userdata/agent/python` | 动态安装的 Python 用户环境 | 自动包含，恢复仍执行 ABI 校验 |
+| `diagnostics` | `/userdata/agent/log`、`/userdata/log` | 运行日志和诊断信息 | 自动包含、敏感 |
+
+`agent_memory` 和 `agent_sessions` 必须分别作为整体处理。恢复时不得只覆盖其中的索引、元数据或附件子目录。
+
+`ota_settings` 属于逻辑组件，不通过通用目录遍历器复制 OTA 配置或凭据路径。§5.2 的原始路径排除规则继续适用，只有该组件处理器可以读取经批准的 token 和公钥内容。
+
+### 5.2 永久排除项
+
+以下路径不进入常规备份：
+
+```text
+/userdata/ota/**
+/userdata/debian/ota/personalization-v1.json
+/userdata/debian/ota/factory-identity-v1.json
+/userdata/system/migration/**
+/userdata/swapfile
+/userdata/tmp/**
+/userdata/agent/cache/**
+/userdata/agent/files_report.html
+/userdata/agent_tools/**
+```
+
+排除原因：
+
+- OTA 分区哈希、pending boot、personalization sidecar、identity marker 和更新锁属于当前固件运行状态；
+- migration state 由目标固件自己的迁移逻辑维护；
+- cache、生成的文件报告工具、swap 和临时文件均可重建；
+- 恢复旧 OTA 状态可能影响 A/B 启动健康判断。
+
+`/userdata/debian/ota/config.json` 不按文件整体备份。`ota_settings` 组件只提取以下用户字段：
+
+```text
+manifest_url
+github_proxy_url
+github_token
+github_token_path 指向的 token 内容
+public_key_path 指向的经批准持久化公钥内容
+```
+
+恢复时将这些字段合并到目标固件生成的 `config.json`。不得恢复 `factory_version`、`factory_build_time`、`factory_partition_hashes`、分区大小、设备节点、`state_dir`、`download_dir`、锁路径和临时路径。`github_token_path` 与 `public_key_path` 只能解析到允许的持久化根目录，禁止跟随任意路径读取文件。Agent TOML 中存在同名 OTA 代理设置时，组件处理器必须按目标固件定义的优先级合并，避免两个配置源产生不同值。
+
+### 5.3 Python 环境策略
+
+`/userdata/agent/python` 自动纳入备份，可能体积较大，并可能包含与旧固件 Python ABI 绑定的二进制扩展。恢复前必须校验：
+
+- CPU 架构；
+- Python major/minor 版本；
+- libc ABI；
+- 目标固件定义的环境 schema。
+
+校验失败时跳过该组件并返回明确警告。
+
+### 5.4 设备身份模式
+
+新备份固定使用 `same_device`，页面和 CLI 不提供模式选择：
+
+| 模式 | 行为 |
+| --- | --- |
+| `same_device` | 包含 machine-id、SSH 主机密钥和 BlueZ 状态，只允许原设备恢复 |
+| `portable` | 仅作为旧归档读取兼容模式，新创建接口不再接受 |
+
+归档必须记录不可变硬件标识。新备份创建时无法获得该标识应报错，不自动降级为 portable。恢复仍拒绝硬件标识不一致的身份数据。明文 SHA-256 校验无法阻止主动修改 manifest，这项检查只用于防止意外跨设备恢复；用户必须确认归档来源可信。
+
+恢复 `device_identity` 前必须确认 `/userdata/ota/pending_boot.json` 不存在。pending boot 表示当前槽位尚未完成 OTA 健康确认；此时修改 machine-id 或 personalization sidecar 会导致健康检查失败和槽位回滚，因此任务返回 `ota_pending_boot`，不允许用户强制跳过。
+
+恢复 machine-id 后不主动删除 identity marker 或 personalization sidecar。既有 provision 流程会根据 machine-id 判断 marker 是否有效并自动更新。提交身份数据后运行：
+
+```bash
+/oem/usr/bin/ota --config /userdata/debian/ota/config.json provision-identity
+```
+
+`provision-identity` 命令通过结果报告是否需要重启。运行期维护控制器必须先持久化事务并进入 `reboot_required`，再安排自动重启；启动期的 `aiden-machine-id.service` 调用 `aiden-machine-id-provision`，其收到 `reboot_required` 后会执行 `systemctl reboot --no-block`。客户端显示“设备正在完成身份恢复并自动重启”，不得重复发送 reboot 请求。启动恢复服务在下一次启动时幂等完成后处理并记录最终结果。
+
+## 6. 外置 SD 处理
+
+### 6.1 默认范围
+
+第一版默认备份 `/mnt/sdcard/aiden/audio`。`/mnt/sdcard/aiden/logs` 可以保留为未来组件，当前没有业务写入者时无需加入默认范围。
+
+SD 卡可用时自动遍历其他普通用户文件，无需用户选择 `sd_user_files`。以下内容仍需排除：
+
+```text
+/mnt/sdcard/.aiden-restore/**
+/mnt/sdcard/aiden/**/*.aiden-partial
+lost+found
+文件系统元数据和不可识别的特殊文件
+```
+
+### 6.2 存储快照租约
+
+为 `StorageManager` 增加以下接口：
+
+```go
+type StorageSnapshotLease interface {
+    Snapshot() StorageSnapshot
+    Release()
+}
+
+type StorageSnapshot struct {
+    DevicePath     string
+    MountPoint     string
+    FilesystemUUID string
+    MountID        string
+}
+
+func (m *StorageManager) AcquireSnapshotLease(ctx context.Context) (StorageSnapshotLease, error)
+```
+
+获取租约时执行：
+
+1. 阻止新迁移任务启动；
+2. 调用现有迁移取消逻辑并等待当前文件完成；
+3. 阻止格式化、弹出和重新配置；
+4. 记录设备路径、UUID、挂载 ID 和当前状态；
+5. 验证 SD 仍为可读写挂载。
+
+释放租约后恢复后台迁移。备份读取完成前，如果检测到挂载 ID、UUID 或设备路径变化，任务必须失败。
+
+### 6.3 eMMC 与 SD 重复文件
+
+音频迁移的中断窗口允许同一个文件同时存在于 eMMC 和 SD。生成归档时按照以下规则处理：
+
+1. 使用相对路径作为逻辑键；
+2. eMMC 副本优先；
+3. 文件大小和 SHA-256 相同则只写入一个逻辑条目；
+4. 内容不同则保留两个物理条目，并在 manifest 中标记冲突；
+5. 存在冲突时归档仍可完成，但恢复必须要求明确的冲突策略。
+
+### 6.4 恢复到 SD
+
+如果归档包含 SD 组件：
+
+- SD 可用且 UUID 匹配：恢复到原存储层；
+- SD 可用但 UUID 不同：要求用户确认，默认暂停；
+- SD 缺失：暂停 SD 组件，允许用户插卡后继续；
+- 用户选择 eMMC fallback：完成容量预检后可以恢复到 `/userdata/audio`；
+- 用户选择将 eMMC 音频映射到 SD：要求显式确认，并检查 SD 容量和目标有效 `audio_archive.max_*` 限额；
+- 目标 SD 已存在相同哈希文件：跳过写入；
+- 目标 SD 存在同名不同内容文件：使用事务式替换并保留 rollback 副本。
+
+所有存储层映射均在 manifest 就绪后的 `plan` 阶段决定。`agent_config` 必须先于媒体组件提交；Agent、音频写入和自动保留清理在全量提交完成前不得运行。用户未恢复 `agent_config` 时使用目标配置检查文件数和容量，避免首次启动即驱逐恢复数据。
+
+## 7. 总体架构
+
+```text
+Config Web（电脑浏览器 / Bridge App WebView）/ 电脑 CLI
+           |
+           | USB ECM, HTTP, maintenance session
+           v
+Config Web :80
+  - USB 来源校验
+  - API 与任务状态
+  - 全局维护锁
+  - 服务编排
+  - SD snapshot lease
+           |
+           v
+internal/backup
+  - 数据范围规划
+  - 安全遍历
+  - manifest 与哈希
+  - tar/gzip 流
+  - 分块 SHA-256 校验
+  - 恢复暂存、提交、回滚
+           |
+     +-----+----------------+
+     |                      |
+     v                      v
+/userdata ext4       /mnt/sdcard filesystem
+```
+
+实际代码布局：
+
+```text
+src/agent/internal/backup/
+  types.go          格式常量、PublicHeader、Manifest 及校验
+  components.go     组件表、默认选择、选择校验
+  crypto.go         明文分块 SHA-256 读写器；保留旧版加密归档读取兼容
+  planner.go        安全遍历、哈希、OTA 白名单、SD 去重
+  archive.go        归档写入与整体校验（VerifyArchive）
+  stream.go         恢复端有界内存流式解包（ArchiveStream）
+  transaction.go    事务日志、单元提交/回滚、bind mount、启动恢复扫描
+  identity.go       OTA provision-identity 封装
+  recover_cli.go    `agent backup-recover` 子命令
+  path.go / errors.go
+
+src/agent/internal/configweb/
+  maintenance.go    全局锁、服务控制、维护会话与 transfer token
+  backup_jobs.go    capabilities、backup job、服务编排、流式导出
+  restore_jobs.go   restore job：分块摄取、plan、validate、apply、看门狗
+
+src/agent/cmd/aiden-backup/main.go   电脑 CLI
+src/agent/cmd/daemon/main.go         注册 `backup-recover` 子命令
+
+overlay-debian/etc/systemd/system/aiden-backup-recover.service
+overlay-debian/usr/lib/aiden/aiden-backup-recover   调用 /oem/usr/bin/agent backup-recover
+overlay-debian/etc/systemd/system/aiden-agent.service   After=aiden-backup-recover.service，恢复失败标记存在时不启动
+
+src/config_web/web/assets/js/config/backup.js / backup-modal.js / host-transfer.js
+```
+
+`internal/backup` 不依赖 HTTP。Config Web 的提交/回滚与启动恢复服务共用 `transaction.go`，避免两套实现对事务日志的解释不一致。
+
+## 8. 维护模式与服务编排
+
+### 8.1 全局锁
+
+使用 `/run/aiden/backup.lock` 作为进程级排他锁，采用 `flock(LOCK_EX | LOCK_NB)`。锁的适用操作包括：
+
+- 备份；
+- 恢复；
+- OTA 更新；
+- SD 格式化；
+- SD 弹出；
+- 会改变备份范围的配置修改。
+
+Config Web 内还需要一个维护状态对象，保存任务 ID、操作类型、开始时间和阶段。维护模式期间，冲突 API 返回：
+
+```http
+HTTP/1.1 423 Locked
+Content-Type: application/json
+
+{
+  "error": "maintenance_in_progress",
+  "operation": "backup",
+  "job_id": "..."
+}
+```
+
+设备状态、备份状态、健康检查和当前任务的数据流端点保持可用。
+
+恢复从接收第一个数据块前进入 `restore_ingest` 维护阶段，并持有全局锁直至任务结束。此阶段允许 Agent 继续运行，但必须获得存储保护租约：
+
+- 暂停 `StorageMonitor.CheckAndRemediate` 的自动 cleaners；
+- 阻止 SD 迁移、格式化、弹出以及其他会显著消耗 `/userdata` 的操作；
+- 持续检查 userdata 和 SD 可用空间，保留高于 warning 阈值及预估运行期写入量的安全余量；
+- 进入 apply 前再停止数据写入服务。
+
+如果第一版无法实现可验证的存储保护租约，则在接收第一个恢复数据块前停止 Agent，并在上传、校验、提交全部结束后恢复。不得在存储监控仍可执行 emergency cleanup 的情况下向 `/userdata/.aiden-restore` 写入大体积暂存数据。
+
+> 实现说明：`StorageMonitor` 及其 cleaners 运行在 Agent 进程内，Config Web 无法在进程外暂停它们，因此第一版采用后一种方案：`restore_ingest` 开始时停止 `aiden-agent.service`（记录原 active 状态），任务以任意方式结束时（完成、失败、取消、看门狗超时、Config Web 关闭）统一恢复。上传期间每个数据块到达时都会检查 userdata/SD 剩余空间是否仍高于安全余量（64 MiB），低于时中止并删除 `new/`。
+
+Config Web 当前会在每个 API 请求路由前尝试执行 deferred Agent restart。维护状态检查必须移动到该调用之前，或者由 `startDeferredRestartIfIdle()` 显式检查维护状态。维护期间的规则如下：
+
+- 已排队的 deferred restart 保持 pending，不得启动；
+- 维护期间产生的新 restart 请求只记录，不执行；
+- 进入 quiescing 前等待正在执行的 restart 完成，无法完成时终止维护任务；
+- 退出维护模式后，根据任务结果和维护前服务状态统一执行 pending restart。
+
+该约束适用于状态轮询、下载、上传、validate、apply 和 cancel 等全部备份恢复 API，防止页面轮询在归档或提交中途拉起 Agent。
+
+### 8.2 停止服务
+
+维护控制器应记录每个服务进入维护模式前的 active 状态，只恢复原先处于 active 的服务。
+
+| 服务 | 备份 | 恢复 | 说明 |
+| --- | --- | --- | --- |
+| `aiden-agent.service` | 停止 | 停止 | 主要数据写入者 |
+| `aiden-audio.service` | 停止 | 停止 | 音量和音频状态 |
+| `aiden-ble.service` | 身份组件启用时停止 | 身份组件启用时停止 | BLE 状态 |
+| `bluetooth.service` | 身份组件启用时停止 | 身份组件启用时停止 | BlueZ 多文件状态 |
+| `aiden-wifi-proxy.service` | 通常保持 | network commit 前停止 | Config Web 写入由维护锁阻止 |
+| `wpa_supplicant@wlan0.service` | 通常保持 | network commit 前停止 | 正常运行不持续写入配置 |
+| `ssh.service` | user_home 启用且存在活跃写入风险时停止 | user_home commit 或 identity commit 前停止 | 活跃会话可能写入 `/root` |
+| `aiden-ttyd.service` | user_home 启用时停止 | user_home commit 前停止 | 终端会话可能写入 `/root` |
+| `aiden-frame.service` | 通常保持 | 提交相关配置时停止或重启 | 默认无目标数据写入 |
+| `aiden-config-web.service` | 保持 | 保持 | API 承载者 |
+| `aiden-usb-gadget.service` | 保持 | 保持 | USB 数据链路 |
+| `aiden-usb-dnsmasq.service` | 保持 | 保持 | USB 网络配置 |
+| `aiden-usb-ecm-watchdog.service` | 保持 | 保持 | USB 网络稳定性 |
+
+`user_home` 备份开始前必须禁止新 SSH/ttyd 会话，并确认现有会话已退出或停止对应服务。恢复 `user_home` 时需要卸载 `/root` bind mount，因此必须停止所有引用 `/root` 的交互会话。未选择 `user_home` 时，SSH 和 ttyd 可以保持运行；仅恢复 `device_identity` 时在 identity commit 前停止 SSH，完成身份 provision 后重启。
+
+建议停止顺序按实际选中的组件执行：
+
+```text
+ttyd / ssh
+Wi-Fi proxy / wpa_supplicant
+BLE / bluetooth
+audio
+Agent
+```
+
+恢复后的启动顺序：
+
+```text
+身份修复和 schema migration
+bluetooth / BLE
+应用 network 后启动 wpa_supplicant / Wi-Fi proxy
+audio
+frame（需要时）
+Agent
+ttyd / ssh
+```
+
+### 8.3 Agent 优雅退出
+
+当前 Agent systemd 停止超时为 15 秒，运行时关闭路径中的 profile flush 最长可等待 30 秒。实现前应完成至少一项调整：
+
+1. 将 `aiden-agent.service` 的 `TimeoutStopSec` 提高到 60 秒；
+2. 增加仅本机可访问的 Agent quiesce/flush 方法，由维护控制器先请求 flush，再停止服务。
+
+如果 Agent 未在期限内优雅停止，备份任务应失败并恢复服务。强制终止后继续备份会引入无法判断的关联文件状态。
+
+## 9. 备份流程
+
+### 9.1 状态机
+
+```text
+created
+  -> planning
+  -> ready
+  -> quiescing
+  -> streaming
+  -> resuming_services
+  -> completed
+
+任意非终态
+  -> cancelling -> cancelled
+  -> recovering -> failed
+```
+
+状态记录保存在内存和 `/run/aiden/backup/jobs/<job-id>.json`。运行时记录不得进入用户归档。Config Web 重启后，任务统一进入 `failed`，同时执行维护恢复清理。
+
+### 9.2 执行顺序
+
+1. 验证维护会话、请求参数和组件组合。
+2. 获取 `/run/aiden/backup.lock`。
+3. 检查 OTA、SD 格式化、恢复任务等冲突操作。
+4. 查询组件大小并返回预估值；预估允许存在偏差。
+5. 获取 SD snapshot lease。
+6. 记录目标服务状态并优雅停止写入者。
+7. 对 `/userdata` 和 SD 挂载执行 `syncfs`。
+8. 使用固定组件白名单生成文件计划。
+9. 逐文件读取、哈希、写入归档流。
+10. 写入并验证归档尾部。
+11. 结束 HTTP 数据流。
+12. 恢复服务、释放 SD 租约和全局锁。
+13. 客户端校验已落盘文件并显示结果。
+
+服务在步骤 6 至步骤 12 之间保持停止。数据流连续无进展超过 120 秒时，服务端取消任务并进入清理流程。总任务时间默认限制为 4 小时，可通过设备配置调整。
+
+### 9.3 安全文件遍历
+
+遍历器只接受组件表中注册的根目录，并满足：
+
+- 路径经 `filepath.Clean` 后必须位于组件根下；
+- 普通文件以 `O_NOFOLLOW` 打开，并在打开后通过 `fstat` 再次验证类型；
+- 目录使用 fd-relative 遍历；
+- 符号链接不跟随，仅保存链接文本；
+- 只允许指向组件内部的相对符号链接恢复；
+- socket、FIFO、块设备和字符设备全部拒绝；
+- hard link 默认按独立普通文件保存；
+- 每个文件和组件都有大小限制；
+- 文件发生 size、inode、mtime 不一致时重试一次，第二次仍变化则失败。
+
+## 10. 归档格式
+
+### 10.1 文件扩展名和版本
+
+扩展名：`.aiden-backup`
+
+格式版本：`1`
+
+外层采用自描述容器：
+
+```text
++--------------------------+
+| Magic: AIDENBKP          |
++--------------------------+
+| Container version        |
++--------------------------+
+| Header length            |
++--------------------------+
+| Public header JSON       |
++--------------------------+
+| Plain chunk frames       |
++--------------------------+
+| Checksummed footer       |
++--------------------------+
+```
+
+负载为未加密的 `tar.gz` 流。`manifest.json` 必须位于流首部，使恢复端在写入组件内容前完成范围和容量规划。gzip 使用低压缩等级，减少板卡 CPU 占用。恢复上传要求 frame 按序到达，服务端将解析和解压状态保存在任务内存中；任务中断后重新创建任务并从头上传。
+
+### 10.2 公共头
+
+公共头记录格式、创建时间和分块校验参数，不保存 SSID、用户名、路径清单等隐私内容。新归档不包含 salt、nonce、KDF 内存或迭代参数。
+
+```json
+{
+  "format": "aiden-backup",
+  "version": 1,
+  "created_at": "2026-09-14T08:30:00Z",
+  "protection": {
+    "algorithm": "sha256-chunked",
+    "kdf": "none",
+    "chunk_size": 1048576
+  }
+}
+```
+
+每个 frame 保存原始负载和 32 字节 SHA-256 校验值。摘要输入包含固定域分隔符、公共头哈希、格式版本、frame 类型、递增序号及负载。footer 记录总 frame 数、负载总字节数和整体 SHA-256；恢复必须核对全部 frame、footer 和文件哈希，拒绝截断、乱序和额外尾部数据。
+
+这些摘要提供损坏检测，不提供加密、可信来源认证或抵抗主动篡改。API Key、Wi-Fi 密码、SSH 私钥及个人数据在归档中可被读取，客户端必须安全保存文件，仅恢复可信来源归档。格式仍使用 container v1，通过 `algorithm` 区分新版明文与旧版加密归档；旧客户端会拒绝不支持的新算法。
+
+库和设备 API 保留旧版 `xchacha20-poly1305-chunked` 读取兼容，只有显式提交原口令的旧客户端可使用。新的页面和 CLI 无密码输入与提示，遇到旧加密归档返回明确兼容性错误，不能将其视为明文恢复。
+
+### 10.3 归档负载
+
+tar 内部布局：
+
+```text
+manifest.json
+components/agent_config/...
+components/system_environment/...
+components/network/...
+components/ota_settings/...
+components/agent_skills/...
+components/agent_memory/...
+components/agent_sessions/...
+components/user_home/...
+components/device_identity/...
+components/audio_archive/...
+components/sd_managed_audio/...
+components/sd_user_files/...
+components/preferences/...
+components/python_environment/...
+components/diagnostics/...
+```
+
+所有 tar 路径均为相对路径，统一使用 `/` 分隔。tar header 不允许设备节点、绝对路径或 `..` 段。
+
+### 10.4 Manifest
+
+示例：
+
+```json
+{
+  "schema_version": 1,
+  "backup_id": "0199...",
+  "created_at": "2026-09-14T08:30:00Z",
+  "source": {
+    "hardware_id": "...",
+    "machine_id": "...",
+    "firmware_version": "...",
+    "firmware_build": "...",
+    "active_slot": "a"
+  },
+  "mode": "same_device",
+  "components": [
+    {
+      "id": "agent_memory",
+      "schema_version": 1,
+      "file_count": 42,
+      "expanded_size": 123456,
+      "sha256": "..."
+    }
+  ],
+  "storage": {
+    "userdata_uuid": "...",
+    "sd_present": true,
+    "sd_uuid": "..."
+  },
+  "files": [
+    {
+      "component": "agent_memory",
+      "path": "long_term/profile.md",
+      "type": "regular",
+      "mode": "0600",
+      "size": 1234,
+      "mtime_unix_nano": 0,
+      "sha256": "..."
+    }
+  ]
+}
+```
+
+归档不依赖 mtime 恢复业务正确性。为提高可复现性，允许将 tar mtime 归一化为 manifest 中的值。属主固定映射为 root，文件模式从白名单和 manifest 共同决定。
+
+## 11. API 设计
+
+### 11.1 访问控制会话
+
+```http
+POST /api/maintenance/sessions
+X-Aiden-Client: bridge-app/1.0
+```
+
+只接受经 USB ECM 到达、本地地址为板卡 USB 地址的连接。CLI 使用响应中的 Bearer token。Config Web 页面还需要同源下载 cookie 和 CSRF token，因为普通 `<a download>` 无法附加 Authorization header。响应示例：
+
+```json
+{
+  "token": "...",
+  "csrf_token": "...",
+  "expires_at": "2026-09-14T09:00:00Z",
+  "device": {
+    "hardware_id": "...",
+    "firmware_version": "..."
+  }
+}
+```
+
+同时设置 cookie：
+
+```http
+Set-Cookie: aiden_maintenance=<opaque>; Path=/api; HttpOnly; SameSite=Strict
+```
+
+USB Config Web 当前使用 HTTP，无法依赖 `Secure` cookie。服务端必须同时校验连接到达的本地接口、来源 USB 子网、cookie 会话和 CSRF token。将来启用 HTTPS 后再增加 `Secure`。
+
+后续请求使用：
+
+```http
+Authorization: Bearer <token>
+X-Aiden-Request-ID: <uuid>
+```
+
+Config Web 页面中的变更请求使用：
+
+```http
+X-Aiden-CSRF-Token: <csrf_token>
+X-Aiden-Request-ID: <uuid>
+```
+
+token、cookie 会话和 CSRF token 只保存在内存，最多允许一个具有变更权限的维护会话。普通状态查询可以并发。cookie 使浏览器下载管理器可以直接流式保存归档，不需要在 JavaScript 中构造完整 Blob。
+
+会话接管规则：当没有备份或恢复任务在运行时，新的客户端（例如再次执行的 CLI、另一台电脑打开的页面）创建会话会**替换**当前空闲会话，旧 token 立即失效；任务运行期间创建会话返回 `409 maintenance_session_busy`。以下只读端点只要求 USB 来源和同源，不要求会话，使页面刷新后总能重绑进度：`GET /api/maintenance/current`、`GET /api/backup/jobs/{id}`、`GET /api/restore/jobs/{id}`。
+
+### 11.2 能力查询
+
+```http
+GET /api/backup/capabilities
+```
+
+响应：
+
+```json
+{
+  "format_versions": [1],
+  "components": [
+    {
+      "id": "agent_memory",
+      "available": true,
+      "default_selected": true,
+      "sensitive": true,
+      "estimated_size": 123456
+    }
+  ],
+  "sd": {
+    "present": true,
+    "mounted": true,
+    "uuid": "..."
+  },
+  "maintenance_busy": false
+}
+```
+
+### 11.3 创建备份
+
+```http
+POST /api/backup/jobs
+Content-Type: application/json
+```
+
+```json
+{
+  "format_version": 1,
+  "mode": "same_device",
+  "protection": {
+    "mode": "none"
+  }
+}
+```
+
+响应使用 `202 Accepted`：
+
+```json
+{
+  "job_id": "...",
+  "state": "ready",
+  "archive_url": "/api/backup/jobs/.../archive",
+  "suggested_filename": "aiden-backup-20260914-163000.aiden-backup",
+  "estimated_bytes": 20971520,
+  "transfer_token": "..."
+}
+```
+
+创建任务自动纳入全部可用组件，包含 SD 用户文件、Python 环境和诊断日志。不接受自定义 `components`、portable 模式或密码保护请求。创建时只保存任务元数据，不停止服务；客户端真正请求 `archive_url` 时才进入 quiescing 并开始流式归档。
+
+### 11.4 下载与状态
+
+```http
+GET /api/backup/jobs/{job_id}
+GET /api/backup/jobs/{job_id}/archive
+DELETE /api/backup/jobs/{job_id}
+```
+
+归档响应头：
+
+```http
+Content-Type: application/vnd.aiden.backup
+Content-Disposition: attachment; filename="aiden-backup-20260914-163000.aiden-backup"
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
+```
+
+状态包含：
+
+```json
+{
+  "job_id": "...",
+  "state": "streaming",
+  "phase": "agent_sessions",
+  "files_processed": 120,
+  "bytes_read": 10485760,
+  "estimated_bytes": 20971520,
+  "started_at": "...",
+  "error": null
+}
+```
+
+第一版数据流不支持 HTTP Range 恢复。连接中断后重新创建备份，保持实现和安全模型清晰。后续版本可以引入固定块索引和可恢复传输。
+
+Config Web 使用同源 `<a download>` 或隐藏 iframe 打开 `archive_url`，由浏览器下载管理器接收响应。页面每秒轮询 job 状态展示设备端 `bytes_read`。该数值代表设备已写入 HTTP 响应的字节数，浏览器是否完成本地落盘仍以下载管理器结果为准。
+
+### 11.5 创建恢复任务
+
+```http
+POST /api/restore/jobs
+```
+
+```json
+{
+  "format_version": 1,
+  "archive_size": 123456789,
+  "public_header": {
+    "format": "aiden-backup",
+    "version": 1,
+    "created_at": "2026-09-14T08:30:00Z",
+    "protection": {
+      "algorithm": "sha256-chunked",
+      "kdf": "none",
+      "chunk_size": 1048576
+    }
+  },
+  "conflict_policy": "replace_with_rollback",
+  "protection": {
+    "mode": "none"
+  }
+}
+```
+
+`archive_sha256` 可以作为可选字段提交。浏览器端缺少稳定的标准流式 SHA-256 API，不应为了预先计算哈希而把完整文件读入内存。服务端在接收后计算完整归档 SHA-256，App 原生模块或 CLI 如已流式计算，可以在 validate 请求中提交结果进行交叉校验。
+
+创建请求必须通过 `public_header` 提交客户端读取的公共头。服务端检查算法和 frame 大小；第 0 块实际公共头必须与创建请求完全一致，并通过 frame 摘要检查。新归档不执行 KDF，也不分配 Argon2 工作内存。
+
+响应返回上传块大小和任务 ID：
+
+```json
+{
+  "job_id": "...",
+  "chunk_size": 4194304,
+  "state": "created",
+  "transfer_token": "..."
+}
+```
+
+上传块大小与 frame 大小解耦：`chunk_size = min(4 × frame_size, 4 MiB)`（默认帧 1 MiB → 上传块 4 MiB）。公共头加首帧的开销使第 0 个 1 MiB 块无法容纳完整首帧，放大上传块后 `manifest.json` 在绝大多数归档中于第 0 块解出。任务在收到第 0 块时才进入 `restore_ingest` 并获取全局锁。
+
+第 0 块上传后立即尝试验证首个完整 frame，使损坏尽早失败。任务不保存新归档的口令或派生密钥。
+
+创建任务时只检查 userdata 安全余量；不把 `archive_size` 当作 userdata 分配需求，避免包含大量 SD 用户文件的归档被错误拒绝。接收第一个数据块前进入 `restore_ingest` 维护阶段，持有全局锁并获得存储保护租约。解析到流首部的 manifest 后按实际组件目标执行精确容量预检；预检失败时立即停止接收并删除 `new/`。
+
+### 11.6 分块上传、校验和应用
+
+```http
+PUT  /api/restore/jobs/{job_id}/chunks/{index}
+POST /api/restore/jobs/{job_id}/plan
+POST /api/restore/jobs/{job_id}/validate
+POST /api/restore/jobs/{job_id}/apply
+GET  /api/restore/jobs/{job_id}
+DELETE /api/restore/jobs/{job_id}
+```
+
+每个上传块携带：
+
+```http
+Content-Length: ...
+X-Aiden-Chunk-SHA256: ...
+```
+
+块必须从 index 0 开始严格顺序上传。服务端不保存完整归档，而是执行：
+
+```text
+校验块 SHA-256
+  -> 解析完整明文 frame
+  -> 验证 frame SHA-256
+  -> 流式 gzip/tar 解码
+  -> 按组件直接写入 new/
+```
+
+`manifest.json` 必须为第一个 tar 条目，未压缩大小上限为 8 MiB。服务端读取 manifest 后进入 `awaiting_plan`，在当前块响应中返回来源、组件和存储信息，客户端暂停发送后续块。解码器在 manifest 结束处暂停，待处理输入最多保留一个上传块和一个解析 frame；不得提前展开后续组件或使用无上限缓冲区。
+
+每个块的响应在设备取得进展后才返回，客户端据响应中的 `state` 决定下一步：
+
+| 响应 `state` | 含义 | 客户端动作 |
+| --- | --- | --- |
+| `reading_manifest` | 块已被完全消费，manifest 尚未解出 | 发送下一块 |
+| `awaiting_plan` | manifest 已解出，解码器暂停 | 调用 `plan`；此时再发块返回 `409 restore_plan_required` |
+| `uploading_and_staging` | 块已认证并展开到 `new/` | 发送下一块 |
+| `validating` | 最后一块已展开，暂存树校验完成 | 调用 `validate` |
+
+块序号错误返回 `409 chunk_out_of_order`；frame 摘要错误返回 `hash_mismatch`，任务进入 `failed`。
+
+客户端通过 `plan` 提交恢复组件和 SD 目标策略。Config Web 固定提交 manifest 中的全部组件和 `allow_different`，即 SD 数据写入当前插入并挂载的 SD 卡；页面不显示组件与 SD 策略选择控件。CLI 和其他 API 客户端仍可显式提交子集或其他 SD 策略。服务端完成设备、组件、路径上限和精确容量检查后允许继续上传；API 客户端未选择的条目仍须消费并认证，但不写入 `new/`。userdata 需要满足：
+
+```text
+可用空间 >= 选中 userdata 组件展开大小 + 额外 rollback 分配大小 + 安全余量
+```
+
+已有目标文件通过同文件系统 rename 保留时，已占用空间不重复计入额外 rollback 分配；只有需要新增复制的 rollback 才计入该项。SD 组件的 `new/` 和额外 rollback 空间在 SD 上单独检查。安全余量至少覆盖存储监控 warning 阈值、迟滞空间以及恢复期间允许继续运行的服务写入预算。上传期间持续检查剩余空间；低于预留值时中止任务并删除 `new/`，不得触发 cleaners 为恢复任务腾出空间。
+
+只有完整 footer、所有 frame 摘要、manifest 条目和文件 SHA-256 全部验证成功并完成 `fsync` 后，任务才进入 `prepared`。在此之前发生错误或断连时删除 `new/`，正式数据保持不变。
+
+`validate` 用于结束输入流并完成以下工作：
+
+- 验证可选的外层 SHA-256；
+- 确认全部 frame 和文件 SHA-256 已验证；
+- 验证 footer；
+- 确认设备身份、固件兼容性、路径、类型、大小、模式和文件哈希均已通过；
+- 对暂存树重新核对组件摘要并同步目录；
+- 生成恢复计划及警告。
+
+`apply` 只有在 `prepared` 状态下才可调用，并要求客户端提交 validate 返回的 plan digest，防止校验后参数被替换。
+
+第一版不支持恢复上传断点续传。页面刷新、进程重启、块乱序、块重复或解析流状态丢失后，客户端必须删除原任务并从第 0 块创建新任务。未来如需续传，归档格式应改为可独立解压和校验的 component frame，并在完整 frame 边界保存 checkpoint；不得只依赖已接收块位图恢复连续 gzip 状态。
+
+### 11.7 当前维护任务
+
+```http
+GET /api/maintenance/current
+```
+
+页面首次加载、刷新和收到 `423 Locked` 时调用该接口。无任务时返回 `204 No Content`；有任务时返回操作类型、job ID、阶段、进度和可取消标记。接口不能返回口令、派生密钥、Bearer token 或 transfer token。
+
+`transfer_token` 为可选的宿主传输令牌，仅供 Bridge App 原生模块使用。它绑定单个 job、固定操作和固定 URL，默认 5 分钟过期，任务结束后立即失效。普通浏览器使用 same-origin cookie，不把 token 放入下载 URL或页面历史。
+
+## 12. 恢复事务
+
+### 12.1 状态机
+
+```text
+created
+  -> restore_ingest
+  -> reading_manifest
+  -> awaiting_plan
+  -> uploading_and_staging
+  -> validating
+  -> prepared
+  -> quiescing
+  -> committing
+  -> post_processing
+  -> resuming_services
+  -> completed | reboot_required
+
+committing 前取消或失败
+  -> discarding_staging
+  -> resuming_services
+  -> cancelled | failed
+
+committing 及之后失败
+  -> rolling_back
+  -> failed | rollback_failed
+```
+
+### 12.2 暂存目录
+
+```text
+/userdata/.aiden-restore/<job-id>/
+  transaction.json
+  new/<component>/...
+  old/<component>/...
+
+/mnt/sdcard/.aiden-restore/<job-id>/
+  transaction.json
+  new/<component>/...
+  old/<component>/...
+```
+
+不创建完整归档 `upload` 文件。每个文件写入后执行 `fsync`，每个目录结构完成后同步目录 fd。`prepared` 状态只有在所有组件完成 frame、文件哈希校验和同步后才可记录。
+
+### 12.3 提交单位
+
+提交顺序是协议的一部分，不允许按 manifest 顺序任意提交：
+
+```text
+agent_config
+system_environment
+network
+ota_settings
+agent_skills
+agent_memory
+agent_sessions
+user_home
+preferences
+device_identity
+audio_archive
+sd_managed_audio
+sd_user_files
+python_environment
+diagnostics
+```
+
+`agent_config` 必须先于 `audio_archive`、`sd_managed_audio` 和其他受保留策略控制的媒体组件提交。Agent 和音频写入服务在全部组件提交、配置应用和启动前校验完成前保持停止，使服务第一次运行时直接加载恢复后的保留策略；服务启动后再执行运行健康检查。如果用户未选择 `agent_config`，应用前必须用目标固件当前有效配置检查媒体文件数量和容量；可能在首次启动时触发驱逐的计划必须要求用户确认。
+
+普通目录组件的提交过程：
+
+1. 将现有目标目录重命名到 `old/<component>`；
+2. 将 `new/<component>` 重命名到正式目标；
+3. 同步目标父目录；
+4. 在事务日志中记录该组件已提交；
+5. 同步事务日志及其父目录。
+
+单文件组件使用同目录临时文件和 rename。一个组件存在多个目标文件时，在事务日志中维护子步骤，并保留所有旧文件直至组件整体通过校验。
+
+`user_home` 和 `device_identity` 中的 BlueZ 目录属于 bind mount 源，禁止直接使用上述普通目录流程。分别执行：
+
+1. 停止可能引用目标 mount 的服务和交互会话；
+2. 使用 `findmnt` 验证 `/root` 或 `/var/lib/bluetooth` 当前确实绑定到预期源目录；
+3. 执行 `umount /root` 或 `umount /var/lib/bluetooth`；卸载失败时在任何 rename 前终止提交；
+4. 按事务日志记录的子目标，将原源目录移动到对应的 `old/` 路径，将对应的 `new/` 子目录移入正式路径，并同步父目录；
+5. 重新执行 `aiden-root-home` 或 `aiden-bluetooth-state` 建立 bind mount；
+6. 再次使用 `findmnt` 和组件校验检查 mount 来源及内容；
+7. 只有重新挂载和健康检查成功后才允许清理 rollback。
+
+掉电恢复服务在处理这两个组件时必须检查“目录是否已交换”和“bind mount 是否已切换”两个独立状态，重复执行卸载、挂载和校验应当幂等。禁止在旧目录仍被 bind mount 引用时删除其内容。原地递归覆盖会破坏目录级事务语义，不作为默认提交方案。
+
+### 12.4 跨文件系统一致性
+
+userdata 和 SD 使用独立文件系统，无法通过一次 rename 完成全局提交。恢复采用可重入事务：
+
+- `prepared` 之前失败：删除暂存内容，正式数据保持不变；
+- `committing` 期间掉电：启动恢复服务读取事务日志，继续提交或按策略回滚；
+- userdata 已提交、SD 未提交：优先完成 SD；SD 不可用时保持维护失败状态，等待插卡或执行回滚；
+- 所有组件通过后写入 `committed`；
+- 服务启动、bind mount 来源检查和组件健康检查全部成功后删除 rollback 数据。
+
+事务日志必须采用临时文件、`fsync`、rename、父目录 `fsync` 的顺序持久化。
+
+### 12.5 启动恢复服务
+
+新增 `aiden-backup-recover.service`，其启动顺序应满足：
+
+```text
+Requires=oem.mount userdata.mount userdata-ota.mount
+After=oem.mount userdata.mount userdata-ota.mount
+Before=aiden-userdata-migrate.service aiden-root-home.service aiden-bluetooth-state.service
+Before=aiden-machine-id.service aiden-config-web.service aiden-agent.service
+```
+
+服务执行 `/oem/usr/bin/agent backup-recover`（`internal/backup.RunRecover`），与 Config Web 共用 `transaction.go`。结果写入 `/run/aiden/backup/recovery.json`；任何单元无法完成提交或回滚时创建 `/run/aiden/backup/recovery.failed`，`aiden-agent.service` 通过 `ConditionPathExists=!/run/aiden/backup/recovery.failed` 拒绝启动。Config Web 启动时也执行同一扫描，处理自身崩溃遗留的暂存目录或半提交事务，并在 `GET /api/backup/capabilities` 的 `last_recovery` 字段中报告结果。
+
+职责：
+
+1. 查找未完成的恢复事务；
+2. 验证事务日志校验和；
+3. 根据状态继续提交或回滚；
+4. 清理未完成事务遗留的 `new/` 和已经完成的 rollback；
+5. 将需要用户处理的故障写入设备状态文件；
+6. 在无法保证正式数据完整时阻止 Agent 启动；
+7. 对已提交的 `user_home` 和 BlueZ 状态重新建立并验证 bind mount；
+8. identity provisioning 报告 `reboot_required` 时确保事务已落盘；随后 `aiden-machine-id.service` 可能触发一次额外自动重启，下次启动幂等续接，不将该重启报告为恢复故障。
+
+## 13. Schema 与固件兼容
+
+每个组件都具有独立 schema version。恢复处理器声明：
+
+```go
+type ComponentHandler interface {
+    ID() string
+    CurrentSchema() int
+    Validate(ctx context.Context, source fs.FS, manifest ComponentManifest) error
+    Migrate(ctx context.Context, source fs.FS, from, to int) error
+    Stage(ctx context.Context, source fs.FS, target string) error
+    PostCommit(ctx context.Context) error
+}
+```
+
+兼容规则：
+
+- 目标固件支持归档格式版本，才允许继续；
+- 组件 schema 相同，可以直接 stage；
+- 存在迁移链时，先在暂存目录迁移；
+- 归档 schema 高于目标固件且无降级处理器时拒绝恢复该组件；
+- 用户可以取消不兼容的可选组件；
+- `agent_config` 默认保留归档中的原始 TOML 字节，复用现有 `/api/config/backup` 的校验、原子写入、`applyConfigServices` 和 Agent reload 内部逻辑；实现时将共同流程提取为 Go service，不在进程内发起 HTTP 请求；
+- 目标固件新增而旧 TOML 缺少的字段由 `DefaultConfig()` 和 `OrDefault()` 补充，不通过重新序列化破坏注释、格式或解析器允许的未建模字段；
+- 只有组件 schema 明确要求结构迁移时，才在 `new/` 中运行版本化 TOML migrator，并对迁移结果执行与现有配置导入相同的校验；
+- memory 索引如可安全重建，可以只恢复源记录并在 post-commit 阶段重建索引；
+- OTA 运行状态始终使用目标固件生成的版本；`ota_settings` 只将白名单用户字段 merge 到目标配置。
+
+## 14. Config Web 页面与 Bridge App WebView
+
+完整功能以现有 Storage Settings 页面中的 Backup & Restore 卡片为统一入口。用户从电脑浏览器和 Bridge App 打开的都是同一个 Config Web 页面，设备端 API、状态机和文案保持一致。App 只为 WebView 提供系统文件选择、流式传输和安全存储桥接，不再开发一套独立的备份业务页面。
+
+App 项目：`/Users/C/dev/luckfox/bridge-app`
+
+### 14.1 卡片首层交互
+
+保留截图中的两项主要操作：
+
+| 控件 | 建议文案 | 行为 |
+| --- | --- | --- |
+| Export | `Create backup` / `创建备份` | 打开完整数据备份向导 |
+| Import | `Restore backup` / `恢复备份` | 选择 `.aiden-backup` 并打开恢复向导 |
+
+帮助文案调整为：
+
+```text
+Back up Agent data and settings to this computer or phone, or restore a validated Aiden backup.
+将 Agent 数据和设置备份到当前电脑或手机，或从经过校验的 Aiden 备份恢复。
+```
+
+卡片中增加以下常驻元素：
+
+- 最近一次操作状态；
+- 当前任务状态和阶段文案；主页面和弹窗均不显示进度条；
+- 运行中的备份和恢复任务不提供 Hide 或 Cancel operation；恢复开始后不可由 Config Web 取消；
+- `Agent configuration only` 高级折叠区，承载原 TOML Export/Import；
+- SD 缺失、空间不足、设备身份不匹配等警告区。
+
+备份和恢复向导的标题栏只显示标题，不提供右上角 Close。用户在开始前通过底部 Cancel 直接退出，无二次确认；运行页不提供关闭或隐藏入口，完成页通过 Close 关闭结果。运行期间保持页面打开和 USB 连接。
+
+页面通过非 USB 网络访问时，完整数据 Create backup 和 Restore backup 按钮保持禁用，并提示用户通过 USB 连接设备。TOML 配置功能是否允许非 USB 访问继续沿用现有 Config Web 策略。
+
+现有 `configBackupExportBtn`、`configBackupImportBtn` 和 `configBackupInput` 改为 TOML 高级操作专用 ID。完整备份使用新的 `dataBackupExportBtn`、`dataRestoreImportBtn` 和 `dataRestoreInput`，其中恢复输入接受：
+
+```html
+accept=".aiden-backup,application/vnd.aiden.backup,application/octet-stream"
+```
+
+### 14.2 前端代码组织
+
+现有 `storage.js` 继续负责容量、SD 格式化和弹出。新增：
+
+```text
+src/config_web/web/assets/js/config/backup.js
+src/config_web/web/assets/js/config/backup-modal.js
+src/config_web/web/assets/js/config/host-transfer.js
+src/config_web/web/assets/js/config/backup-session.js
+src/config_web/web/assets/js/config/backup-checksum.js
+```
+
+职责：
+
+| 文件 | 职责 |
+| --- | --- |
+| `backup.js` | capability、任务创建、轮询、取消、validate、apply |
+| `backup-modal.js` | 备份和恢复向导、manifest 摘要、确认、进度和错误展示 |
+| `host-transfer.js` | 浏览器传输与 React Native WebView 传输适配 |
+| `backup-session.js` | HTTP 环境下的 UUID v4 请求 ID |
+| `backup-checksum.js` | HTTP 环境下有界 SHA-256 后备计算 |
+| `storage.js` | 保留 storage status、format/eject 和 TOML 配置导入导出 |
+
+`app.js` 注册新的 data-action，并在页面初始化时查询当前维护任务。如果页面在任务进行期间刷新，应重新绑定任务状态，不能创建重复任务。
+
+### 14.3 创建备份向导
+
+点击 Create backup 后执行：
+
+1. 调用 `POST /api/maintenance/sessions` 建立短时维护会话；
+2. 调用 `GET /api/backup/capabilities`；
+3. 显示来源设备、固件版本、eMMC/SD 状态和预计数据量；
+4. 固定使用 `same_device`，不显示模式选择；
+5. 自动备份全部可用组件，包含 Python 环境、诊断日志和 SD 用户文件，不显示勾选或高级组件区；
+6. 不要求密码，提示归档包含明文凭据和个人数据，需要安全保存；
+7. 调用 `POST /api/backup/jobs`；
+8. 选择保存位置；
+9. 请求 `archive_url`，同时轮询 job 状态；
+10. 服务端恢复服务后显示设备端完成状态；
+11. 浏览器或 App 完成本地校验后显示最终成功状态。
+
+向导必须说明：
+
+- 备份期间 Agent、音频、蓝牙等相关功能会短暂不可用；
+- SD 数据量可能显著延长时间；
+- 归档未加密，必须安全保存，避免上传到公开位置；
+- 备份文件保存到当前电脑或手机，不会写入 SD。
+
+创建 job 失败时页面保持在参数步骤。下载中断时设备端任务进入清理，页面提供 Retry，Retry 创建新 job。
+
+### 14.4 恢复向导
+
+点击 Restore backup 后执行：
+
+1. 选择 `.aiden-backup`；
+2. 读取固定大小公共头，确认格式版本和明文 frame 校验参数；
+3. 不要求密码，拒绝未经确认的来源；旧版加密归档提示使用原客户端；
+4. 单一恢复入口页显示文件名、大小、备份时间、全量恢复与当前 SD 卡策略说明，以及设备身份显式确认勾选框。公共头不含完整 manifest，入口页不声称已校验来源身份或 SD UUID。按钮显示 `Restore`，不再提供单独的 Upload and verify 或 Start restore 页面；
+5. 点击 Restore 后显示一次确认弹窗，说明连续执行上传、校验和恢复、音频冲突文件均保留、开始后无法取消及可能自动重启。取消确认则留在入口页，不创建任务；确认后创建 restore job 并获得 chunk size，进入运行页；
+6. 上传首部块，第 0 块完成后尽早检查 frame 摘要。解出 manifest 后自动提交 `plan`，选择全部 manifest 组件并固定 `allow_different`；`confirm_conflicts=true` 对应入口页及弹窗已说明的音频保留策略，`confirm_identity` 使用开始时用户勾选状态。SD 数据恢复到当前插入并挂载的 SD 卡；
+7. 不显示中间计划页，无需再次点击按钮。后端仍校验设备身份、pending OTA boot、SD 和容量；拒绝计划或校验失败时自动清理任务及暂存数据并显示失败，不继续 apply；
+8. 精确容量预检通过后继续严格按序上传，设备端同步校验并展开到 `new/`，显示上传和暂存进度；
+9. 上传完成后调用 `validate`，完成 footer、组件摘要和暂存树校验；
+10. 校验成功后自动携带 plan digest 调用 `apply`，不显示 RESTORE 文本输入步骤；
+11. 页面轮询提交、post-processing 和服务恢复状态；
+12. 状态为 `reboot_required` 时显示自动重启和重新连接提示；只有设备明确报告未自动重启时才提供手动 Reboot 按钮；
+13. 重启后页面重新连接并查询恢复结果。
+
+接收第一个块前进入 `restore_ingest` 维护阶段，暂停存储自动清理并保留空间；具备可靠存储保护租约时 Agent 可以继续运行，缺少该能力时从第一个块开始停止 Agent。apply 前必须停止全部相关写入服务。Config Web 仅允许在恢复开始前退出入口页；开始后不再显示或执行用户取消。服务端仍保留失败、超时和内部中止所需的清理路径，在 committing 阶段只能等待完成或由事务恢复逻辑处理。
+
+截图所示设备仅剩 0.5 GiB 可用空间时，页面应在上传前突出显示恢复空间风险。备份导出采用直接流式传输；恢复也不保存完整 upload 文件，但仍需要 `new`、rollback 和安全余量空间，必须在任务创建时粗略预检，并在解出 manifest 后精确预检。
+
+### 14.5 浏览器传输适配
+
+电脑浏览器导出不得使用当前的 `response.blob()`。推荐实现：
+
+1. 维护会话通过 HttpOnly same-origin cookie 授权；
+2. 创建一个隐藏 `<a download>` 指向 `archive_url` 并触发浏览器下载；
+3. 服务端设置 `Content-Disposition` 和 `application/vnd.aiden.backup`；
+4. 页面通过 job API展示设备端输出进度；
+5. 浏览器下载结果由浏览器自身展示。
+
+恢复上传使用 `File.slice(offset, offset + chunkSize)`，每次只读取一个块并等待服务端完成该块认证和展开后再发送下一块。第一版页面刷新或连接中断后从头创建恢复任务，页面不得依据已接收块位图尝试恢复连续解压状态。
+
+普通 HTTP USB 页面通常无法使用 `crypto.randomUUID()` 和 `crypto.subtle`。`backup-session.js` 使用 `getRandomValues` 生成合法 UUID v4，并在缺少该能力时提供符合 UUID 格式的请求 ID；请求 ID 不承担授权作用。`backup-checksum.js` 为每个上传块提供有界 SHA-256 后备计算，不能因 Web Crypto 缺失跳过服务端必需的块校验。
+
+变更请求收到 `401 maintenance_session_required` 时清除缓存会话、重新建立会话并最多重试一次，保留同一请求 ID。浏览器上传使用可续建的维护会话和 CSRF，不使用仅有 5 分钟有效期的原生 transfer token。真正的会话冲突、USB 来源拒绝和错误摘要不可通过重试绕过。
+
+支持 File System Access API 的浏览器可以增加增强路径，使用 `ReadableStream` 直接写入用户选择的文件并计算本地 SHA-256。该路径只能作为能力检测后的优化，标准下载路径必须继续可用。
+
+### 14.6 Bridge App WebView 传输适配
+
+当前 `BoardWebViewScreen.tsx` 没有文件下载处理，`onMessage` 也只在终端页面启用。完整备份需要增加 Config Web 消息桥，并继续复用现有 USB 网络绑定。
+
+建议消息：
+
+```json
+{"type":"aiden_backup_download","job_id":"...","url":"...","filename":"...","transfer_token":"..."}
+{"type":"aiden_restore_pick_file"}
+{"type":"aiden_restore_upload","job_id":"...","chunk_size":4194304,"transfer_token":"..."}
+{"type":"aiden_transfer_cancel","job_id":"..."}
+```
+
+App 回传：
+
+```json
+{"type":"aiden_transfer_progress","job_id":"...","bytes":1048576,"total":20971520}
+{"type":"aiden_transfer_complete","job_id":"...","path":"...","sha256":"..."}
+{"type":"aiden_transfer_failed","job_id":"...","error_code":"..."}
+{"type":"aiden_restore_file_selected","name":"...","size":123456789,"sha256":"...可选..."}
+```
+
+具体实现要求：
+
+- Android 使用 Storage Access Framework 选择目标，OkHttp 绑定板卡网络后流式读写；
+- iOS 使用 Document Picker/Files 和 NSURLSession，写入 security-scoped URL；
+- 原生传输通过 job scoped、短时 `transfer_token` 设置 Authorization header；
+- token 只允许访问指定 job 的 archive 或 chunk 端点；
+- 下载时写入临时文件，完成 footer 和 SHA-256 校验后提交最终文件；
+- 上传按服务端 chunk size 读取，不进入 React Native JS heap；
+- 进度通过 `postMessage` 回传页面；
+- App 进入后台时由原生模块继续传输；如果平台无法保证执行，应在进入后台前明确提示取消，恢复上传取消后需要从第 0 块重新开始；
+- App 被系统终止时，设备端无进展超时负责删除未完成的 `new/`、退出维护并恢复服务。
+
+App 侧建议增加：
+
+```text
+src/services/BoardBackupTransfer.ts
+android/.../BoardBackupTransferModule.kt
+ios/.../BoardBackupTransferModule.swift
+```
+
+Web 页面通过 `window.ReactNativeWebView` 判断宿主能力。App 应在 WebView 加载时注入明确的 capability 对象，避免仅依靠对象存在推断版本：
+
+```js
+window.AidenHostCapabilities = {
+  backupTransferVersion: 1,
+  nativeFilePicker: true,
+  nativeStreaming: true
+};
+```
+
+宿主能力不存在时自动使用普通浏览器路径。
+
+### 14.7 页面状态与互斥
+
+备份运行或恢复进入 `restore_ingest` 后：
+
+- 禁用 SD Format、Safe eject、TOML Import、配置保存、memory reset 和 OTA Update；
+- Refresh Status 保持可用；
+- 页面顶部显示维护状态；
+- 离开页面前提示任务仍在进行，但离开页面不取消任务；
+- 重新进入页面后通过 `GET /api/maintenance/current` 恢复进度；
+- Config Web banner 只用于短消息，长任务使用弹窗及卡片的文字状态，不显示进度条；
+- `423 Locked` 响应统一跳转到当前任务状态，不显示普通网络错误。
+
+## 15. 电脑客户端
+
+在 `src/agent/cmd/aiden-backup` 实现跨平台 CLI，默认访问：
+
+```text
+http://192.168.42.1/api
+```
+
+命令：
+
+```text
+aiden-backup [--json] inspect <archive>
+aiden-backup [--json] verify <archive>
+aiden-backup [--json] create --output <path>
+aiden-backup [--json] restore <archive> [--components a,b,c]
+                      [--sd-strategy require_match|allow_different|emmc_fallback|skip]
+                      [--confirm-identity] [--yes]
+aiden-backup [--json] status <job-id>
+aiden-backup [--json] cancel <job-id>
+```
+
+环境变量：`AIDEN_BACKUP_URL`（默认 `http://192.168.42.1/api`）。新 CLI 不读取口令环境变量，不显示密码或模式选择。退出码：1 连接或用法错误、2 归档无效或旧版加密格式不受支持、3 空间不足、4 设备不匹配或身份恢复被阻止、5 设备端备份/恢复失败。
+
+要求：
+
+- 创建、校验和恢复新归档无需密码，创建固定同设备且全量；
+- 输出文件先写入 `<name>.partial`；
+- 完成后校验并 rename；
+- 支持 JSON 输出以便刷写脚本集成；
+- 默认拒绝覆盖已有文件；
+- `restore` 在 apply 前再次要求确认；
+- 退出码区分连接失败、归档无效、空间不足、设备不匹配和恢复失败。
+
+推荐刷写流程：
+
+```text
+aiden-backup create
+  -> aiden-backup verify
+  -> flash update.img
+  -> 等待 Debian 与 USB ECM 启动
+  -> aiden-backup restore
+  -> 重启并验证
+```
+
+## 16. 安全要求
+
+### 16.1 网络边界
+
+Config Web 当前监听所有接口。备份与恢复 API 必须执行额外限制：
+
+- 请求到达的本地地址必须是 USB ECM 地址；
+- 远端地址必须位于配置的 USB 子网；
+- CLI 只接受有效维护会话 Bearer token；
+- Config Web 页面只接受有效同源 cookie，并在变更请求中校验 CSRF token；
+- Bridge App 原生传输只接受绑定 job 和端点的短时 transfer token；
+- 校验 `Origin` 和 `Referer`，允许 Config Web 同源请求，拒绝跨源浏览器请求；
+- 所有变更请求要求 `X-Aiden-Request-ID`，Web 页面还要求 `X-Aiden-CSRF-Token`；
+- token、口令、文件内容和敏感路径不得进入日志。
+
+如果未来允许 Wi-Fi 访问，必须增加配对认证和 TLS，不能只取消 USB 来源限制。
+
+### 16.2 归档输入安全
+
+恢复归档视为不可信输入：
+
+- 限制归档总大小；
+- 限制总展开大小和压缩比；
+- 限制文件数量、目录深度和单文件大小；
+- 拒绝绝对路径、路径穿越和重复冲突条目；
+- 拒绝设备节点、socket 和 FIFO；
+- 符号链接只能使用组件内相对目标；
+- 校验 manifest 与 tar 实际条目一一对应；
+- 文件权限经过组件策略收敛，禁止恢复 setuid/setgid 位；
+- 目标路径通过 fd-relative API 打开，防止校验后路径被替换；
+- 所有内容在进入正式目录前完成 frame、文件及 footer 的 SHA-256 校验；这些校验无法认证归档来源。
+
+### 16.3 敏感数据
+
+下列内容必须标记为敏感：
+
+- 模型 API Key 和 Token；
+- Wi-Fi PSK；
+- 代理凭据；
+- SSH 私钥；
+- BlueZ 链路密钥；
+- Agent 对话、记忆、通知和录音。
+
+App 截图、系统日志、错误上报和分析事件均不得包含这些内容。
+
+## 17. 错误处理与可观测性
+
+统一错误结构：
+
+```json
+{
+  "error": "insufficient_space",
+  "message": "userdata requires 512 MiB additional free space",
+  "retryable": false,
+  "details": {
+    "filesystem": "userdata",
+    "required_bytes": 536870912,
+    "available_bytes": 268435456
+  }
+}
+```
+
+稳定错误码至少包含：
+
+```text
+maintenance_in_progress
+usb_required
+ota_in_progress
+ota_pending_boot
+storage_busy
+storage_remediation_unavailable
+sd_missing
+sd_changed
+service_quiesce_failed
+stream_stalled
+wrong_passphrase
+upload_interrupted
+host_transfer_unavailable
+local_save_failed
+archive_truncated
+archive_authentication_failed
+manifest_invalid
+unsupported_format
+unsupported_component_schema
+source_device_mismatch
+insufficient_space
+path_rejected
+hash_mismatch
+commit_failed
+rollback_failed
+reboot_required
+```
+
+设备日志只记录任务 ID、阶段、组件 ID、字节数、耗时和稳定错误码。文件内容、口令、token、SSID、密钥和值字段全部脱敏。
+
+## 18. 测试计划
+
+### 18.1 Go 单元测试
+
+在 `src/agent/internal/backup` 和 `src/agent/internal/configweb` 增加：
+
+- 组件 include/exclude 规则；
+- portable/same-device 身份规则；
+- manifest 生成、排序和校验；
+- 明文 frame 损坏、截断和乱序检测；旧版加密读取兼容；
+- tar path traversal、绝对路径和符号链接攻击；
+- 文件遍历期间变化检测；
+- SD 重复音频合并；
+- snapshot lease 对迁移、格式化和弹出的互斥；
+- HTTP 断开、取消、无进展超时和服务恢复；
+- 单文件及目录组件提交；
+- `/root` 和 `/var/lib/bluetooth` 卸载、目录交换、重新 bind 与来源校验；
+- bind mount 卸载失败时正式目录未改变、rollback 不被清理；
+- 每个事务阶段的回滚和幂等恢复；
+- TOML 原始字节保留、注释和允许的未知字段保留、缺失字段默认值补充；
+- schema 升级、未知 schema 和显式结构迁移；
+- pending boot 存在时拒绝 identity 恢复、sidecar 保持不变；
+- OTA 用户字段白名单 merge，工厂字段和运行状态不被覆盖；
+- 状态轮询不会执行 deferred restart，退出维护后按策略恢复 pending restart；
+- 上传期间存储保护租约生效，未选中的正式数据不会被 cleaners 删除；
+- 流式解包无完整 upload 文件，块乱序和中断后的暂存清理；
+- manifest 首部解析、awaiting_plan 暂停和组件目标容量预检；
+- agent_config 先于媒体提交，未恢复配置时检查目标有效保留策略；
+- machine-id 恢复后的 identity provisioning 和自动重启幂等续接。
+
+执行：
+
+```bash
+cd src/agent
+go test ./...
+go vet ./...
+```
+
+### 18.2 Config Web 与 App 测试
+
+Config Web 前端测试：
+
+- 现有 `/api/config/backup` TOML 导入导出保持兼容；
+- 完整备份按钮调用 `/api/backup/*`，TOML 高级按钮继续调用 `/api/config/backup`；
+- capability 到自动全量备份、job 创建和下载触发流程，不显示备份组件、模式或密码控件；
+- 浏览器下载路径不调用 `response.blob()`；
+- restore 使用 `File.slice()` 按块上传；
+- 恢复只有一个入口页，按钮显示 Restore；开始前确认一次，随后连续执行 upload、自动 plan、validate、apply，无中间计划页及 RESTORE 文本输入；
+- manifest 就绪后自动提交全部组件和 `allow_different` SD 策略；身份确认使用入口页勾选状态，后端拒绝时清理暂存数据且不 apply；
+- 备份和恢复向导标题栏不显示 Close；开始前 Cancel 直接退出且不显示确认弹窗；
+- 运行页不显示 Hide 或 Cancel operation；弹窗及主页面不显示进度条，保留文字状态；
+- 页面刷新后的恢复上传提示从头重试，不尝试连续 gzip 续传；
+- 页面刷新后通过 `/api/maintenance/current` 恢复进度；
+- HTTP 下 UUID v4 和 SHA-256 后备、会话过期续建；`423 Locked`、运行阶段不显示取消入口、摘要错误、SD 缺失和空间不足页面；
+- React Native host capability 存在与缺失时选择正确传输适配；
+- 长任务状态不会被自动消失的 banner 隐藏；
+- 维护期间互斥按钮保持禁用。
+
+Bridge App 测试：
+
+- Android board network 绑定；
+- WebView 消息类型、字段校验和来源 URL 校验；
+- job scoped transfer token 不会发送到其他地址；
+- 大文件流不进入 JS heap；
+- 下载临时文件清理和本地校验；
+- 分块严格顺序、重复/乱序拒绝以及中断后从头重试；
+- App 后台、取消和进程终止；
+- 设备重启后的重连；
+- 原生进度正确回传 WebView。
+
+执行：
+
+```bash
+cd /Users/C/dev/luckfox/bridge-app
+yarn test
+yarn lint
+```
+
+### 18.3 硬件测试
+
+至少覆盖：
+
+1. 无 SD 的默认备份和恢复；
+2. 有 SD 且存在迁移音频；
+3. eMMC 与 SD 同时存在相同音频；
+4. 备份过程中拔除 SD；
+5. 备份过程中拔除 USB；
+6. 恢复 `uploading_and_staging`、prepared、commit 各阶段断电；
+7. 恢复后 Agent 会话、记忆、技能、Wi-Fi、音量和用户文件验证；
+8. 同设备身份恢复及重启；
+9. 跨设备 portable 恢复；
+10. 跨设备 identity 恢复被拒绝；
+11. 从旧 schema 归档恢复到新固件；
+12. 恶意归档和超大展开归档被拒绝；
+13. 备份完成后 OTA、SD 迁移和所有原 active 服务恢复正常；
+14. 恢复 user_home 和 BlueZ 后 bind mount 立即显示新内容，rollback 清理不影响 mount；
+15. 已存在 deferred restart 时持续轮询任务，Agent 在维护期间不会被拉起；
+16. 空间接近 warning/critical/emergency 阈值时上传被安全中止，未选择恢复的录音、记忆和 Python 环境不被清理；
+17. pending OTA boot 存在时 identity 恢复被拒绝，原槽位健康确认正常；
+18. 无密码备份包含全部 advanced components，明文 frame 损坏和旧加密格式提示正确；
+19. 刷机后恢复接近 userdata 容量的数据集，确认没有完整 upload 文件的额外空间占用；
+20. SD fallback 和未恢复 agent_config 的场景，确认媒体不会在首次启动时被意外驱逐。
+
+硬件断电测试应在事务日志写入、目录 rename、父目录 fsync 等故障点加入可控 fault injection。
+
+## 19. 验收标准
+
+第一版上线需要同时满足：
+
+1. 能从 App 和电脑通过 USB ECM 创建、下载和校验备份。
+2. 备份文件未写入外置 SD。
+3. 默认备份覆盖 Agent 配置、环境变量、网络、OTA 用户设置、技能、记忆、会话、用户目录、偏好、身份和双存储层音频。
+4. 无写入服务运行时才读取关联数据。
+5. 任意备份失败或客户端断开后，设备服务可以自动恢复。
+6. 恢复正式提交前完成全部认证、路径、哈希、schema 和容量校验。
+7. 恢复任意阶段掉电后能够继续提交或回滚，不遗留无法启动的半完成目录。
+8. 旧 OTA 运行状态不会覆盖新固件状态。
+9. 跨设备恢复不会复制 machine-id、SSH 主机密钥或蓝牙配对密钥。
+10. 恶意归档无法写出组件根目录，也无法创建设备节点或 setuid 文件。
+11. 1 GiB 级归档传输期间，Config Web 和 App 的内存占用保持有界。
+12. 设备端和客户端日志不包含口令、token、密钥或 Wi-Fi 密码。
+13. 截图中的 Backup & Restore 卡片能够完成完整备份和恢复，不需要跳转到独立业务页面。
+14. 现有 TOML 配置备份仍可从高级入口使用，API 与文件格式保持兼容。
+15. 普通电脑浏览器和 Bridge App WebView 使用同一套页面及任务 API。
+16. 页面刷新或重新进入后能够恢复当前任务状态，不会重复创建任务。
+17. 恢复流式写入暂存树，不保存完整归档；中断后正式数据不变。
+18. bind mount 组件提交后立即指向新目录，旧目录释放前不得删除 rollback。
+19. 维护期间的自动重启和存储自动清理均被可靠阻止。
+20. identity 恢复不会破坏 pending OTA 健康确认，自动重启后可幂等完成事务。
+
+## 20. 实施阶段
+
+各阶段完成情况见 §22。
+
+### 阶段一：设备端导出和 Config Web 页面
+
+- 建立 `internal/backup`、组件表和 manifest；
+- 实现维护锁、服务编排和 SD snapshot lease；
+- 实现无需密码的全量明文流式导出和完整性校验；
+- 增加维护会话、capability、backup job 和状态 API；
+- 将现有 Backup & Restore 卡片接入创建备份向导；
+- 保留 TOML 配置导入导出高级入口；
+- 实现普通浏览器的流式下载路径；
+- 完成备份中断及服务恢复测试。
+
+### 阶段二：事务式恢复
+
+- 实现按序分块上传、首部 manifest 规划和直接流式暂存；
+- 实现存储保护租约及空间预留，无法提供租约时从上传前停止 Agent；
+- 实现分区内暂存、提交、rollback 和事务日志；
+- 实现 bind mount 组件的卸载、交换、重新挂载和校验；
+- 增加启动恢复服务；
+- 实现组件 schema handler；
+- 复用 TOML 导入内部逻辑并增加 ota_settings 白名单 merge；
+- 接入 pending boot 检查、machine-id provisioning 和自动重启续接；
+- 将 Restore backup 向导接入分块上传、validate 和 apply；
+- 完成断电故障注入测试。
+
+### 阶段三：Bridge App WebView 桥接
+
+- 扩展 `BoardWebViewScreen` 的非终端消息处理；
+- 实现 Android/iOS 原生文件流；
+- 接入文件安全存储和明文敏感数据提示；
+- 增加后台、取消、断连和重连处理；
+- 完成 Config Web 页面、App WebView 与真实板卡集成测试。
+
+### 阶段四：电脑 CLI 与增强能力
+
+- 实现 `aiden-backup inspect/create/verify/restore`；
+- 可恢复的备份下载；
+- 自动全量整卡用户文件；
+- 自动依赖重建；
+- 备份历史与保留策略；
+- 经配对认证的 Wi-Fi 备份；
+- 批量设备运维集成。
+
+## 21. 关键设计决策汇总
+
+| 决策 | 结论 |
+| --- | --- |
+| API 承载者 | Config Web 80 端口，核心逻辑独立 package |
+| 用户入口 | Storage Settings 中现有 Backup & Restore 卡片 |
+| TOML 配置备份 | 保留 `/api/config/backup`，移动到高级入口 |
+| 完整数据 API | 使用 `/api/backup/*` 和 `/api/restore/*` |
+| 页面复用 | 电脑浏览器与 Bridge App WebView 使用同一页面 |
+| Agent 状态 | 备份及恢复提交期间优雅停止；恢复上传需存储保护租约，缺少租约时也停止 |
+| 备份落点 | App 或电脑文件系统，设备端直接流式导出 |
+| SD 默认范围 | Aiden 音频和整卡普通用户文件，保留原有路径排除 |
+| 归档保护 | 不加密、无需密码；frame、文件、footer SHA-256 损坏检测，不提供来源认证 |
+| 压缩 | tar + 低等级 gzip |
+| 单文件系统提交 | 普通组件 rename；bind mount 组件先卸载、交换后重新挂载并校验 |
+| 跨文件系统一致性 | 持久化事务日志和启动恢复服务 |
+| 默认身份模式 | 固定同设备，不提供模式选择 |
+| OTA 数据 | 旧运行状态排除，ota_settings 白名单合并；pending boot 时禁止 identity 恢复 |
+| 恢复空间 | 直接认证解包到 new，空间预算不包含完整归档，rollback 只计算额外分配 |
+| TOML 恢复 | 原始字节 + 既有验证/应用逻辑，仅显式 schema 迁移可改写 |
+| 媒体保留策略 | agent_config 先于媒体提交，所有媒体写入服务最后启动 |
+| deferred restart | 维护期间排队，退出维护后统一处理 |
+| 恢复上传续传 | v1 中断后从头开始，未来独立 frame/checkpoint 才支持续传 |
+| 浏览器大文件传输 | 下载管理器直连归档 URL，恢复使用 `File.slice()` 分块上传 |
+| App 大文件传输 | WebView 消息桥 + Android/iOS 原生流式 I/O |
+
+## 22. 实现状态（2026-09-17）
+
+| 范围 | 状态 | 说明 |
+| --- | --- | --- |
+| `internal/backup` 明文校验格式、旧加密兼容、planner、流式解包 | 完成 | 覆盖无密码往返、损坏、截断、路径攻击、OTA 白名单、SD 去重、事务提交/回滚/恢复 |
+| 维护锁、维护会话、transfer token、423 互斥、deferred restart 排队 | 完成 | `TestMaintenanceBlocksConflictingAPIsAndDefersAgentRestart` |
+| 备份 job：quiesce → 计划 → syncfs → 流式导出 → 恢复服务；120 s 无进展与 4 h 上限 | 完成 | `TestBackupJobStreamsVerifiableArchive` |
+| 恢复 job：分块摄取、manifest 暂停、plan、精确容量预检、暂存、validate、apply | 完成 | `TestRestoreJobEndToEnd`、`TestRestoreMultiChunkPausesForPlanAndStreamsToStaging` |
+| restore_ingest 期间停止 Agent；任意终态统一恢复服务 | 完成 | 见 §8.1 实现说明 |
+| 事务日志（envelope + SHA-256）、普通单元 rename 提交、回滚 | 完成 | `transaction_test.go` |
+| `user_home` / BlueZ bind mount：findmnt 校验 → umount → 交换 → 重新挂载 → inode 校验 | 完成 | 假挂载控制器测试覆盖卸载失败与来源不符时不动正式目录 |
+| 启动恢复服务（`agent backup-recover`）、Config Web 启动扫描、失败标记阻止 Agent | 完成 | 缺 SD 时保留 rollback 副本并报告 `waiting` |
+| pending boot 拒绝 identity 恢复、硬件 ID 不可用时要求显式确认、跨设备拒绝 | 完成 | `TestRestorePlanRejectsIdentityDuringPendingBootAndOnForeignDevice` |
+| identity 提交后执行 `ota provision-identity`，`reboot_required` 时先落盘再自动重启 | 完成 | 设备端未经硬件验证 |
+| `agent_config` 复用 TOML 导入校验，提交后重新应用 frame/storage 配置；`system_environment` 恢复后重启 `aiden-environment.service` | 完成 | |
+| Config Web 页面：自动全量同设备备份、无密码、单页一键上传/校验/恢复、自动 plan、文字状态且无进度条及 Hide、刷新重绑、HTTP UUID/SHA-256 后备、会话续建、维护互斥、EN/ZH 文案 | 完成 | 本次修改的验证结果见测试记录；原有全链路验证需随运行实例更新重跑 |
+| 电脑 CLI | 完成 | 新版创建固定全量同设备，create/verify/restore 不提示密码；旧版加密归档需要原客户端 |
+| Bridge App WebView 原生桥接（阶段三） | 未实现 | 页面已按 §14.6 的消息协议预留 `host-transfer.js` 适配层 |
+| 硬件测试（§18.3）、断电故障注入 | 未执行 | 新归档不使用 Argon2id；仍需真实板卡容量和断电验证 |
+| 可恢复的备份下载、备份历史、Wi-Fi 配对认证（阶段四增强） | 未实现 | |
+
+### 22.1 本次变更回归验证
+
+Ubuntu 源码目录：`/home/miaomiao/dev/luckfox/hardware-demo`。
+
+```bash
+cd src/agent
+go test ./...
+go vet ./internal/backup ./internal/configweb ./cmd/aiden-backup
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build ./cmd/daemon
+go build ./cmd/aiden-backup
+cd ../..
+node --test src/config_web/web/tests/backup-http.test.mjs
+git diff --check
+```
+
+新增测试覆盖无密码归档往返、frame 损坏和 footer 截断、全部 advanced components 默认纳入、CLI 无密码校验、HTTP cookie 与 UUID v4，以及 HTTP 下 SHA-256 和会话续建。HTTP 前端回归测试为 4 项。此记录只证明源码和构建验证；运行中的板卡需要部署新的 Agent 二进制和 Config Web 资源后才会生效，部署后应重新验证真实设备备份链路。不要使用真实用户数据执行破坏性恢复测试。
+
+### 22.2 2026-09-18 单页恢复交互验证
+
+Ubuntu 上执行 `node --test src/config_web/web/tests/backup-http.test.mjs`，6 项测试全部通过。新增单页恢复测试覆盖浏览器成功链路、取消开始确认时不创建任务、身份计划拒绝与完整性校验拒绝时清理任务且不 apply，以及原生传输适配路径。DOM 检查覆盖单一 Restore 按钮、无中间计划页、运行页无 Hide/取消按钮和页面无进度条。修改的 JavaScript 模块语法检查及 `git diff --check` 通过。本次仅更新 Config Web 源码和文档，不修改归档格式及后端事务协议；尚未部署到板卡或执行真实数据恢复测试。

@@ -13,14 +13,38 @@ import (
 	"sync"
 	"time"
 
+	"aiden-agent/internal/logging"
+
 	"github.com/gorilla/websocket"
 )
 
 const (
 	DefaultGeminiLiveEndpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 	DefaultGeminiLiveModel    = "gemini-3.1-flash-live-preview"
+	Gemini38LiveModel         = "gemini-3.8-live"
+	Gemini38ThinkingModel     = "gemini-3.8-live-extended-thinking"
 	geminiVertexLivePath      = "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
 )
+
+func geminiModelID(model string) string {
+	model = strings.TrimSpace(model)
+	if index := strings.LastIndex(model, "/"); index >= 0 {
+		model = model[index+1:]
+	}
+	return model
+}
+
+// geminiExtendedThinkingModelIDs lists Gemini Live models that use the
+// extended-thinking wire protocol. Backend-agent routing is configured
+// independently.
+var geminiExtendedThinkingModelIDs = map[string]struct{}{
+	Gemini38ThinkingModel: {},
+}
+
+func IsGemini38ExtendedThinkingModel(model string) bool {
+	_, ok := geminiExtendedThinkingModelIDs[geminiModelID(model)]
+	return ok
+}
 
 // GeminiProvider is the native Google Gemini Live adapter. AuthMode selects
 // the Gemini Developer API (api_key) or Vertex AI (vertex/OAuth) wire path.
@@ -74,11 +98,18 @@ func (p GeminiProvider) Open(ctx context.Context, cfg SessionConfig) (Session, e
 	s := &geminiSession{
 		jsonWebSocketTransport: transport,
 		toolNames:              make(map[string]string),
-		info:                   newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{}),
-		inputRate:              inputRate,
+		info: newPCM16SessionInfo(cfg.SessionID, inputRate, outputRate, Capabilities{
+			ServerAuthoritativeInterruption: IsGemini38ExtendedThinkingModel(model),
+		}),
+		inputRate:        inputRate,
+		extendedThinking: IsGemini38ExtendedThinkingModel(model),
 	}
 	transport.start(s.translate)
-	if err := s.writeJSON(ctx, buildGeminiSetup(cfg, setupModel)); err != nil {
+	setupMsg := buildGeminiSetup(cfg, setupModel)
+	if debugJSON, err := json.Marshal(setupMsg); err == nil {
+		logging.Debugf("agent", "gemini", "setup message: session_id=%s json=%s", cfg.SessionID, string(debugJSON))
+	}
+	if err := s.writeJSON(ctx, setupMsg); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -221,8 +252,13 @@ type geminiSetup struct {
 }
 
 type geminiGenerationConfig struct {
-	ResponseModalities []string            `json:"responseModalities"`
-	SpeechConfig       *geminiSpeechConfig `json:"speechConfig,omitempty"`
+	ResponseModalities []string              `json:"responseModalities"`
+	SpeechConfig       *geminiSpeechConfig   `json:"speechConfig,omitempty"`
+	ThinkingConfig     *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type geminiThinkingConfig struct {
+	ThinkingLevel string `json:"thinkingLevel"`
 }
 
 type geminiSpeechConfig struct {
@@ -252,6 +288,8 @@ type geminiTool struct {
 type geminiFunctionDeclaration struct {
 	Name                 string          `json:"name"`
 	Description          string          `json:"description,omitempty"`
+	Behavior             string          `json:"behavior,omitempty"`
+	Parameters           json.RawMessage `json:"parameters,omitempty"`
 	ParametersJSONSchema json.RawMessage `json:"parametersJsonSchema,omitempty"`
 }
 
@@ -273,6 +311,15 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 		InputAudioTranscription:  map[string]any{},
 		OutputAudioTranscription: map[string]any{},
 	}
+	// Thinking is a model capability and is independent of backend-agent routing.
+	if IsGemini38ExtendedThinkingModel(model) {
+		level := strings.ToUpper(strings.TrimSpace(cfg.ThinkingLevel))
+		if level == "" {
+			level = "LOW"
+		}
+		setup.GenerationConfig.ThinkingConfig = &geminiThinkingConfig{ThinkingLevel: level}
+		logging.Infof("agent", "gemini", "extended thinking model detected: model=%s thinking_level=%s", model, level)
+	}
 	if strings.TrimSpace(cfg.Voice) != "" {
 		setup.GenerationConfig.SpeechConfig = &geminiSpeechConfig{VoiceConfig: geminiVoiceConfig{PrebuiltVoiceConfig: geminiPrebuiltVoiceConfig{VoiceName: cfg.Voice}}}
 	}
@@ -280,10 +327,19 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 		setup.SystemInstruction = &geminiSystemInstruction{Parts: []geminiTextPart{{Text: cfg.Instructions}}}
 	}
 	for _, tool := range cfg.Tools {
-		// Shared tool definitions use JSON Schema. Gemini's parameters field is
-		// a restricted OpenAPI Schema protobuf and rejects JSON Schema keywords
-		// such as additionalProperties; parametersJsonSchema accepts them.
-		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{{Name: tool.Name, Description: tool.Description, ParametersJSONSchema: tool.Parameters}}})
+		declaration := geminiFunctionDeclaration{Name: tool.Name, Description: tool.Description}
+		if IsGemini38ExtendedThinkingModel(model) {
+			// Extended Thinking currently follows the Live API's restricted Schema
+			// wire shape. Sending parametersJsonSchema is accepted by setup but the
+			// model treats its internal tool plan as text instead of emitting toolCall.
+			declaration.Behavior = "NON_BLOCKING"
+			declaration.Parameters = geminiRestrictedParameters(tool.Parameters)
+		} else {
+			// Other Gemini Live models accept full JSON Schema here. Keep this path
+			// unchanged so richer schemas and their existing tool behavior remain intact.
+			declaration.ParametersJSONSchema = tool.Parameters
+		}
+		setup.Tools = append(setup.Tools, geminiTool{FunctionDeclarations: []geminiFunctionDeclaration{declaration}})
 	}
 	if cfg.TurnDetection == "disabled" {
 		setup.RealtimeInputConfig = &geminiRealtimeInputConfig{AutomaticActivityDetection: &geminiAutomaticActivityDetection{Disabled: true}}
@@ -291,10 +347,55 @@ func buildGeminiSetup(cfg SessionConfig, model string) geminiSetupMessage {
 	return geminiSetupMessage{Setup: setup}
 }
 
+func geminiRestrictedParameters(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return raw
+	}
+	normalized := normalizeGeminiRestrictedSchema(schema)
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func normalizeGeminiRestrictedSchema(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		normalized := make(map[string]any, len(typed))
+		for key, child := range typed {
+			switch key {
+			case "additionalProperties", "examples", "exclusiveMinimum", "exclusiveMaximum":
+				continue
+			case "type":
+				if schemaType, ok := child.(string); ok {
+					normalized[key] = strings.ToUpper(schemaType)
+					continue
+				}
+			}
+			normalized[key] = normalizeGeminiRestrictedSchema(child)
+		}
+		return normalized
+	case []any:
+		normalized := make([]any, len(typed))
+		for index, child := range typed {
+			normalized[index] = normalizeGeminiRestrictedSchema(child)
+		}
+		return normalized
+	default:
+		return value
+	}
+}
+
 type geminiSession struct {
 	*jsonWebSocketTransport
 	info                SessionInfo
 	inputRate           int
+	extendedThinking    bool
 	infoMu              sync.RWMutex
 	responseMu          sync.Mutex
 	responseActive      bool
@@ -360,7 +461,12 @@ func (s *geminiSession) SendToolResult(ctx context.Context, id, output string) e
 	s.toolMu.Lock()
 	name := s.toolNames[id]
 	s.toolMu.Unlock()
-	functionResponse := map[string]any{"id": id, "response": map[string]any{"result": response}}
+	responseBody := map[string]any{"result": response}
+	if s.extendedThinking {
+		// NON_BLOCKING tools need scheduling; INTERRUPT surfaces the result immediately.
+		responseBody["scheduling"] = "INTERRUPT"
+	}
+	functionResponse := map[string]any{"id": id, "response": responseBody}
 	if name != "" {
 		functionResponse["name"] = name
 	}
@@ -497,6 +603,13 @@ func (s *geminiSession) translate(body []byte) []Event {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return []Event{{Kind: EventError, Error: fmt.Errorf("gemini live: decode event: %w", err)}}
 	}
+	// Raw frames can contain transcripts, tool arguments, and audio data; only
+	// emit them when explicitly requested for a local protocol investigation.
+	if len(body) <= 4000 {
+		logging.Debugf("agent", "gemini", "raw response: %s", string(body))
+	} else {
+		logging.Debugf("agent", "gemini", "raw response (truncated): %s", string(body[:4000]))
+	}
 	if len(envelope.SetupComplete) > 0 {
 		return []Event{{Kind: EventReady}}
 	}
@@ -582,13 +695,28 @@ func (s *geminiSession) translate(body []byte) []Event {
 				usageEmitted = true
 			}
 			s.responseMu.Lock()
-			if s.responseInterrupted {
-				events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
+			if s.extendedThinking {
+				// IDLE completes the interaction; REQUIRES_ACTION is a deprecated alias.
+				if content.InteractionStatus == "IDLE" || content.InteractionStatus == "REQUIRES_ACTION" {
+					if s.responseInterrupted {
+						events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
+					} else {
+						events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
+					}
+					s.responseActive = false
+					s.responseInterrupted = false
+				}
+				// IN_PROGRESS or an absent status keeps the interaction open.
 			} else {
-				events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
+				// Regular Gemini Live models complete directly on turnComplete.
+				if s.responseInterrupted {
+					events = append(events, Event{Kind: EventResponseCancelled, Status: "cancelled"})
+				} else {
+					events = append(events, Event{Kind: EventResponseDone, Status: "completed"})
+				}
+				s.responseActive = false
+				s.responseInterrupted = false
 			}
-			s.responseActive = false
-			s.responseInterrupted = false
 			s.responseMu.Unlock()
 		}
 	}
@@ -665,6 +793,7 @@ type geminiServerContent struct {
 	OutputTranscription *geminiTranscription `json:"outputTranscription"`
 	TurnComplete        bool                 `json:"turnComplete"`
 	Interrupted         bool                 `json:"interrupted"`
+	InteractionStatus   string               `json:"interactionStatus,omitempty"` // IDLE | IN_PROGRESS (Gemini 3.8 Extended Thinking)
 }
 
 type geminiModelTurn struct {

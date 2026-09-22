@@ -467,6 +467,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"voice_model.provider", defaults.VoiceModel.Provider},
 		{"voice_model_providers.model", defaults.VoiceModel.Model},
 		{"voice_model_providers.region", defaults.VoiceModel.Region},
+		{"voice_model_providers.turn_detection", defaults.VoiceModel.TurnDetection},
 		{"voice_model_providers.voice", defaults.VoiceModel.Voice},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
@@ -944,8 +945,36 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 func TestConfigMeta_VoiceModelRequiresRealtimeInputMode(t *testing.T) {
 	idx := fieldIndex(t)
 	for _, section := range ConfigMeta().Sections {
-		if section.Name == "voice_model" && (len(section.Fields) != 1 || section.Fields[0].Key != "provider") {
-			t.Fatalf("voice_model fields = %#v, want only the provider reference", section.Fields)
+		if section.Name == "voice_model" {
+			want := map[string]bool{"provider": true, "use_backend_agent": true}
+			if len(section.Fields) != len(want) || section.Fields[0].Key != "provider" {
+				t.Fatalf("voice_model fields = %#v, want provider + use_backend_agent", section.Fields)
+			}
+			for _, field := range section.Fields {
+				want[field.Key] = false
+			}
+			for key, seen := range want {
+				if seen {
+					t.Errorf("voice_model missing metadata field %s", key)
+				}
+			}
+			agentSwitch := idx["voice_model.use_backend_agent"]
+			if !agentSwitch.Advanced {
+				t.Fatal("voice_model.use_backend_agent must be an advanced field")
+			}
+			if enabled, ok := agentSwitch.Default.(bool); !ok || enabled {
+				t.Fatalf("voice_model.use_backend_agent default = %#v, want false", agentSwitch.Default)
+			}
+			if agentSwitch.VisibleWhen == nil {
+				t.Fatal("voice_model.use_backend_agent has no visibleWhen rule")
+			}
+			for _, cond := range agentSwitch.VisibleWhen.All {
+				if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "realtime" {
+					goto backendSwitchVisible
+				}
+			}
+			t.Fatal("voice_model.use_backend_agent must require realtime input mode")
+		backendSwitchVisible:
 		}
 	}
 
@@ -968,6 +997,8 @@ providerVisible:
 		"voice_model_providers.region", "voice_model_providers.auth_mode",
 		"voice_model_providers.project_id", "voice_model_providers.location", "voice_model_providers.endpoint",
 		"voice_model_providers.realtime_protocol", "voice_model_providers.base_url", "voice_model_providers.voice",
+		"voice_model_providers.turn_detection", "voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
 	} {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("missing metadata field %s", path)
@@ -995,6 +1026,8 @@ providerVisible:
 		"voice_model_providers.agent_id", "voice_model_providers.workspace_id",
 		"voice_model_providers.endpoint", "voice_model_providers.base_url",
 		"voice_model_providers.region", "voice_model_providers.realtime_protocol",
+		"voice_model_providers.turn_detection", "voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
 	} {
 		if !idx[path].Advanced {
 			t.Errorf("%s must be collapsed under advanced settings", path)
