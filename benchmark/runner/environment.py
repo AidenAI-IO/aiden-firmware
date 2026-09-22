@@ -818,6 +818,11 @@ def ensure_docker_image(
     popen_kwargs: dict[str, Any] = {}
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
+    
+    # Disable BuildKit for this build to avoid requiring buildx plugin
+    build_env = os.environ.copy()
+    build_env["DOCKER_BUILDKIT"] = "0"
+    popen_kwargs["env"] = build_env
 
     with log_path.open("ab") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, **popen_kwargs)
