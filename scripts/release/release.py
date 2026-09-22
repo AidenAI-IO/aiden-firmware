@@ -154,15 +154,20 @@ def verify(directory):
     platform = read_json(directory / "platform-contract.json")
     if platform.get("runtime_config", 0) != record.get("runtime_config", 0):
         raise ValueError("Platform runtime configuration ownership differs from release plan")
-    major = int(record["platform"]["contract"].split(".")[0])
-    if manifest["required_platform_contract"] != {"min": f"{major}.0.0", "max_exclusive": f"{major + 1}.0.0"}:
+    contract = record["platform"]["contract"]
+    required = manifest["required_platform_contract"]
+    if (not isinstance(required, dict)
+            or any(type(required.get(k)) is not int for k in ("min", "max_exclusive"))
+            or required != {"min": contract, "max_exclusive": contract + 1}):
         raise ValueError("Package contract range differs from the plan")
     if (manifest["business_release"], manifest["package_revision"]) != (record["version"], "1"):
         raise ValueError("Package manifest version mismatch")
-    if manifest.get("platform") != platform or any(platform.get(k) != v for k, v in {
+    if (type(platform.get("platform_contract")) is not int
+            or type(manifest.get("platform", {}).get("platform_contract")) is not int
+            or manifest.get("platform") != platform or any(platform.get(k) != v for k, v in {
         "platform_contract": record["platform"]["contract"], "base_release": record["platform"]["base_release"],
         "channel": record["channel"], "system_fingerprint": record["fingerprints"]["system"],
-    }.items()):
+    }.items())):
         raise ValueError("Package/platform binding differs from the release plan")
     if record["kind"] == "ota":
         verify_ota(directory, record)
@@ -219,8 +224,8 @@ def assert_current(record, history):
     if version_tuple(record["version"]) <= latest:
         raise ValueError("Release version is no longer newer than published versions")
     if record["kind"] == "ota":
-        major = max([int(r["platform"]["contract"].split(".")[0]) for r in history] + [0]) + 1
-        if record["platform"]["contract"] != f"{major}.0.0":
+        contract = max([r["platform"]["contract"] for r in history] + [0]) + 1
+        if record["platform"]["contract"] != contract:
             raise ValueError("OTA contract is not the next global contract")
 
 
