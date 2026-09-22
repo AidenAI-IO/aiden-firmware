@@ -146,12 +146,13 @@ def test_workflow_schedules_all_runnable_cases_on_monday_wednesday_friday() -> N
         Path(__file__).resolve().parents[2] / ".github" / "workflows" / "benchmark.yml"
     ).read_text(encoding="utf-8")
 
-    assert "  push:\n" not in workflow
+    assert "  push:\n    branches:\n      - feat/benchmark-ci\n" in workflow
     assert "- cron: '17 18 * * 0,2,4'" in workflow
     assert "if: ${{ startsWith(github.ref, 'refs/heads/') }}" in workflow
     assert "github.ref == 'refs/heads/main'" not in workflow
     assert (
-        'elif [[ "$EVENT_NAME" == "schedule" ]]; then\n            profile="runnable"'
+        'elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "push" ]]; then\n'
+        '            profile="runnable"'
         in workflow
     )
 
