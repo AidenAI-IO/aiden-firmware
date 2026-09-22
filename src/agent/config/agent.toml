@@ -31,9 +31,8 @@
 ################################################################################
 
 [conversation_settings.agent]
-# Custom instructions
-# custom_instruction = ""
-# additional_prompt = ""
+# Prompt appended after the built-in Agent instruction
+# prompt = ""
 
 # Maximum tool-call iterations
 # max_iterations = -1

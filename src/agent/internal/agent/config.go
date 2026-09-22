@@ -308,8 +308,8 @@ type Config struct {
 	LiveActivity               LiveActivityConfig            `toml:"live_activity,omitempty"`
 	Locale                     string                        `toml:"locale,omitempty"`
 	Timezone                   string                        `toml:"timezone,omitempty"`
-	Instruction                string                        `toml:"custom_instruction,omitempty"`
-	AdditionalPrompt           string                        `toml:"additional_prompt,omitempty"`
+	Instruction                string                        `toml:"-"` // Built-in runtime instruction; the legacy custom_instruction key is read but ignored (see applyRuntimeInstructionDefault).
+	Prompt                     string                        `toml:"prompt,omitempty"`
 	InputMode                  string                        `toml:"input_mode,omitempty"`  // "stt" or "realtime"
 	VADBackend                 string                        `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                        `toml:"vad_model_path,omitempty"`
@@ -886,10 +886,10 @@ func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction      string
-	AdditionalPrompt string
-	Locale           string
-	Timezone         string
+	Instruction string
+	Prompt      string
+	Locale      string
+	Timezone    string
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -963,6 +963,7 @@ func LoadConfig(path string) (Config, error) {
 	if _, err := decodeConfigFile(path, &cfg); err != nil {
 		return Config{}, err
 	}
+	applyRuntimeInstructionDefault(&cfg)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -1374,6 +1375,11 @@ func inspectConfigFilePath(path string) (bool, error) {
 	return true, nil
 }
 
+// applyRuntimeInstructionDefault pins Config.Instruction to the built-in runtime
+// instruction. The field is no longer file-configurable (the legacy
+// `custom_instruction` key is read and ignored), so this is the single place
+// that decides the base instruction for every loader, including the ones that
+// do not start from DefaultConfig.
 func applyRuntimeInstructionDefault(cfg *Config) {
 	if cfg == nil {
 		return
@@ -1463,6 +1469,16 @@ func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface
 		}
 	}
 	mergeRootTable(grouped, result, []string{"conversation_settings", "agent"})
+	// `additional_prompt` was the pre-rename spelling. Resolve it only at the
+	// file boundary so existing configurations keep working while all new
+	// writes and runtime state use the canonical `prompt` field. The new key
+	// wins when both spellings are present.
+	if _, hasPrompt := result["prompt"]; !hasPrompt {
+		if legacyPrompt, ok := result["additional_prompt"]; ok {
+			result["prompt"] = legacyPrompt
+		}
+	}
+	delete(result, "additional_prompt")
 	moveTable([]string{"conversation_settings", "search"}, "search")
 	moveTable([]string{"conversation_settings", "termination_policy"}, "termination_policy")
 	moveTable([]string{"model_settings", "model"}, "model")

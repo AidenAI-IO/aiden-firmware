@@ -2233,10 +2233,10 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langtools.Tool) RoleProfile {
 	return buildProfile(
 		AgentConfig{
-			Instruction:      r.ConfigSnapshot().Instruction,
-			AdditionalPrompt: r.ConfigSnapshot().AdditionalPrompt,
-			Locale:           r.ConfigSnapshot().LocaleOrDefault(),
-			Timezone:         r.ConfigSnapshot().TimezoneOrDefault(),
+			Instruction: r.ConfigSnapshot().Instruction,
+			Prompt:      r.ConfigSnapshot().Prompt,
+			Locale:      r.ConfigSnapshot().LocaleOrDefault(),
+			Timezone:    r.ConfigSnapshot().TimezoneOrDefault(),
 		},
 		skills,
 		availableTools,
