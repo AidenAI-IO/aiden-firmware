@@ -3,6 +3,7 @@ package agenttask
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -60,6 +61,20 @@ type UserAction struct {
 }
 
 type userActionHandlerContextKey struct{}
+type steerControlContextKey struct{}
+
+type SteerMessage struct {
+	ID        string
+	Content   string
+	Timestamp time.Time
+	Revision  uint64
+}
+
+type steerControl struct {
+	provider    func(context.Context) (SteerMessage, bool)
+	interrupt   func() <-chan struct{}
+	acknowledge func(SteerMessage)
+}
 
 func WithUserActionHandler(ctx context.Context, handler func(UserAction)) context.Context {
 	return context.WithValue(ctx, userActionHandlerContextKey{}, handler)
@@ -73,6 +88,43 @@ func UserActionHandlerFromContext(ctx context.Context) func(UserAction) {
 	return h
 }
 
+func withSteerControl(
+	ctx context.Context,
+	provider func(context.Context) (SteerMessage, bool),
+	interrupt func() <-chan struct{},
+	acknowledge func(SteerMessage),
+) context.Context {
+	return context.WithValue(ctx, steerControlContextKey{}, steerControl{
+		provider:    provider,
+		interrupt:   interrupt,
+		acknowledge: acknowledge,
+	})
+}
+
+func SteerProviderFromContext(ctx context.Context) func(context.Context) (SteerMessage, bool) {
+	if ctx == nil {
+		return nil
+	}
+	control, _ := ctx.Value(steerControlContextKey{}).(steerControl)
+	return control.provider
+}
+
+func SteerInterruptFromContext(ctx context.Context) func() <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	control, _ := ctx.Value(steerControlContextKey{}).(steerControl)
+	return control.interrupt
+}
+
+func SteerAcknowledgerFromContext(ctx context.Context) func(SteerMessage) {
+	if ctx == nil {
+		return nil
+	}
+	control, _ := ctx.Value(steerControlContextKey{}).(steerControl)
+	return control.acknowledge
+}
+
 // Runner is the narrow boundary between task orchestration and an agent
 // implementation. The manager does not depend on the legacy agent package.
 type Runner interface {
@@ -80,12 +132,24 @@ type Runner interface {
 }
 
 type entry struct {
-	task           Task
-	cancel         context.CancelFunc
-	nextPrompt     string
-	actionNotified bool
-	resumeQueued   bool
+	task            Task
+	cancel          context.CancelFunc
+	nextPrompt      string
+	actionNotified  bool
+	resumeQueued    bool
+	goalRevision    uint64
+	appliedRevision uint64
+	pendingSteer    *SteerMessage
+	steerSignal     chan struct{}
 }
+
+type terminalNotificationState uint8
+
+const (
+	terminalNotificationQueued terminalNotificationState = iota + 1
+	terminalNotificationClaimed
+	terminalNotificationDelivering
+)
 
 // Manager serializes background work and keeps create, cancel, and query
 // operations independent from task execution latency.
@@ -98,14 +162,14 @@ type Manager struct {
 	queue  chan string
 	wg     sync.WaitGroup
 
-	mu              sync.RWMutex
-	tasks           map[string]*entry
-	terminal        []Task
-	terminalSeq     uint64
-	terminalChanged chan struct{}
-	wakeChanged     chan struct{}
-	actionChanged   chan struct{}
-	closed          bool
+	mu                    sync.RWMutex
+	tasks                 map[string]*entry
+	terminalNotifications map[string]terminalNotificationState
+	terminalSeq           uint64
+	terminalChanged       chan struct{}
+	wakeChanged           chan struct{}
+	actionChanged         chan struct{}
+	closed                bool
 }
 
 func NewManager(runner Runner) *Manager {
@@ -121,15 +185,16 @@ func newManager(runner Runner, queueSize int, now func() time.Time) *Manager {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		runner:          runner,
-		now:             now,
-		ctx:             ctx,
-		cancel:          cancel,
-		queue:           make(chan string, queueSize),
-		tasks:           make(map[string]*entry),
-		terminalChanged: make(chan struct{}, 1),
-		wakeChanged:     make(chan struct{}, 1),
-		actionChanged:   make(chan struct{}, 1),
+		runner:                runner,
+		now:                   now,
+		ctx:                   ctx,
+		cancel:                cancel,
+		queue:                 make(chan string, queueSize),
+		tasks:                 make(map[string]*entry),
+		terminalNotifications: make(map[string]terminalNotificationState),
+		terminalChanged:       make(chan struct{}, 1),
+		wakeChanged:           make(chan struct{}, 1),
+		actionChanged:         make(chan struct{}, 1),
 	}
 	m.wg.Add(1)
 	go m.worker()
@@ -159,7 +224,7 @@ func (m *Manager) Create(prompt string) (Task, error) {
 		return Task{}, errors.New("agent task manager is closed")
 	}
 	task.Status = StatusQueued
-	m.tasks[task.ID] = &entry{task: task}
+	m.tasks[task.ID] = &entry{task: task, goalRevision: 1}
 	select {
 	case m.queue <- task.ID:
 		m.mu.Unlock()
@@ -196,14 +261,10 @@ func (m *Manager) Outstanding() []Task {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	undelivered := make(map[string]struct{}, len(m.terminal))
-	for _, task := range m.terminal {
-		undelivered[task.ID] = struct{}{}
-	}
 	var tasks []Task
 	for id, item := range m.tasks {
 		if item.task.Status.terminal() {
-			if _, waiting := undelivered[id]; !waiting {
+			if _, waiting := m.terminalNotifications[id]; !waiting {
 				continue
 			}
 		}
@@ -218,23 +279,24 @@ func (m *Manager) Outstanding() []Task {
 	return tasks
 }
 
-func (m *Manager) Cancel(taskID string) (Task, error) {
+func (m *Manager) Cancel(taskID string) (Task, bool, error) {
 	if m == nil {
-		return Task{}, errors.New("agent task manager is unavailable")
+		return Task{}, false, errors.New("agent task manager is unavailable")
 	}
 	taskID = strings.TrimSpace(taskID)
 	m.mu.Lock()
 	item, ok := m.tasks[taskID]
 	if !ok {
 		m.mu.Unlock()
-		return Task{}, errors.New("agent task not found")
+		return Task{}, false, errors.New("agent task not found")
 	}
 	var cancel context.CancelFunc
+	var notificationCleared bool
 	switch item.task.Status {
 	case StatusCreated, StatusQueued:
 		m.finishLocked(item, StatusCancelled, "", "")
 	case StatusRunning:
-		if item.task.PendingUserAction != nil {
+		if item.task.PendingUserAction != nil || item.cancel == nil {
 			m.finishLocked(item, StatusCancelled, "", "")
 			break
 		}
@@ -242,14 +304,80 @@ func (m *Manager) Cancel(taskID string) (Task, error) {
 		item.task.UpdatedAt = m.now().UTC()
 		cancel = item.cancel
 	case StatusCancelling, StatusCancelled, StatusFailed, StatusCompleted:
-		// Cancellation is idempotent for tasks already stopping or terminal.
+		// Cancellation is idempotent for tasks already stopping or terminal. For a
+		// terminal task it also means "do not announce this result" while delivery
+		// is still owned by the manager or claimed by a foreground session.
+		if item.task.Status.terminal() {
+			notificationCleared = m.suppressTerminalNotificationLocked(taskID)
+		}
 	}
 	task := item.task
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	return task, nil
+	return task, notificationCleared, nil
+}
+
+func (m *Manager) Update(taskID, prompt string) (Task, error) {
+	if m == nil {
+		return Task{}, errors.New("agent task manager is unavailable")
+	}
+	taskID, prompt = strings.TrimSpace(taskID), strings.TrimSpace(prompt)
+	if prompt == "" {
+		return Task{}, errors.New("task is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, ok := m.tasks[taskID]
+	if !ok {
+		return Task{}, errors.New("agent task not found")
+	}
+	oldPrompt := item.task.Prompt
+	switch item.task.Status {
+	case StatusCreated, StatusQueued:
+		m.updateGoalLocked(item, prompt)
+	case StatusRunning:
+		if item.task.PendingUserAction != nil {
+			select {
+			case m.queue <- taskID:
+				m.updateGoalLocked(item, prompt)
+				item.task.PendingUserAction = nil
+				item.actionNotified = false
+				item.nextPrompt = formatUpdatedTaskPrompt(oldPrompt, prompt)
+				item.resumeQueued = true
+			default:
+				return Task{}, errors.New("agent task queue is full")
+			}
+			break
+		}
+		m.updateGoalLocked(item, prompt)
+		if item.resumeQueued || item.cancel == nil {
+			nextPrompt := formatUpdatedTaskPrompt(oldPrompt, prompt)
+			if item.nextPrompt != "" {
+				nextPrompt = item.nextPrompt + "\n\n" + nextPrompt
+			}
+			item.nextPrompt = nextPrompt
+			break
+		}
+		message := SteerMessage{
+			ID:        fmt.Sprintf("%s_goal_%d", taskID, item.goalRevision),
+			Content:   formatUpdatedTaskPrompt(oldPrompt, prompt),
+			Timestamp: item.task.UpdatedAt,
+			Revision:  item.goalRevision,
+		}
+		if item.pendingSteer == nil && item.steerSignal != nil {
+			close(item.steerSignal)
+		}
+		item.pendingSteer = &message
+	case StatusCancelling:
+		return Task{}, errors.New("agent task is cancelling")
+	case StatusCancelled, StatusFailed, StatusCompleted:
+		return Task{}, errors.New("agent task is already finished")
+	default:
+		return Task{}, fmt.Errorf("agent task cannot be updated from status %q", item.task.Status)
+	}
+	return item.task, nil
 }
 
 func (m *Manager) Continue(taskID, userMessage string) (Task, error) {
@@ -386,15 +514,81 @@ func (m *Manager) PendingUserActionTasks() []Task {
 	return result
 }
 
+// DrainTerminalTasks claims all queued terminal updates for one foreground
+// session. A claim remains outstanding until CompleteTaskUpdateDelivery
+// acknowledges it, and RestoreTerminalTasks releases it if the session ends.
 func (m *Manager) DrainTerminalTasks() []Task {
 	if m == nil {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := append([]Task(nil), m.terminal...)
-	m.terminal = nil
+	result := make([]Task, 0, len(m.terminalNotifications))
+	for id, state := range m.terminalNotifications {
+		if state != terminalNotificationQueued {
+			continue
+		}
+		item, ok := m.tasks[id]
+		if !ok || !item.task.Status.terminal() {
+			delete(m.terminalNotifications, id)
+			continue
+		}
+		m.terminalNotifications[id] = terminalNotificationClaimed
+		result = append(result, item.task)
+	}
+	sortTerminalTasks(result)
 	return result
+}
+
+// BeginTaskUpdateDelivery resolves claimed snapshots against current manager
+// state immediately before the foreground injects them. Cancel and Update can
+// invalidate a snapshot after it was drained, so callers must only format the
+// returned tasks.
+func (m *Manager) BeginTaskUpdateDelivery(tasks []Task) []Task {
+	if m == nil || len(tasks) == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]Task, 0, len(tasks))
+	for _, snapshot := range tasks {
+		item, ok := m.tasks[snapshot.ID]
+		if !ok {
+			continue
+		}
+		if snapshot.Status.terminal() {
+			if m.terminalNotifications[snapshot.ID] != terminalNotificationClaimed {
+				continue
+			}
+			m.terminalNotifications[snapshot.ID] = terminalNotificationDelivering
+			result = append(result, item.task)
+			continue
+		}
+		if item.task.Status == StatusRunning && item.task.PendingUserAction != nil && item.actionNotified {
+			result = append(result, item.task)
+		}
+	}
+	return result
+}
+
+// CompleteTaskUpdateDelivery acknowledges updates after the foreground has
+// successfully submitted the response request to its realtime provider.
+func (m *Manager) CompleteTaskUpdateDelivery(tasks []Task) {
+	if m == nil || len(tasks) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, snapshot := range tasks {
+		if snapshot.Status.terminal() {
+			if m.terminalNotifications[snapshot.ID] == terminalNotificationDelivering {
+				delete(m.terminalNotifications, snapshot.ID)
+			}
+			continue
+		}
+		// User-action updates remain marked as notified until the next session or
+		// until the task changes state; they need no separate terminal-style ack.
+	}
 }
 
 // TerminalState returns the terminal updates still waiting for delivery
@@ -408,18 +602,43 @@ func (m *Manager) TerminalState() ([]Task, uint64) {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]Task(nil), m.terminal...), m.terminalSeq
+	result := make([]Task, 0, len(m.terminalNotifications))
+	for id, state := range m.terminalNotifications {
+		if state != terminalNotificationQueued {
+			continue
+		}
+		if item, ok := m.tasks[id]; ok && item.task.Status.terminal() {
+			result = append(result, item.task)
+		}
+	}
+	sortTerminalTasks(result)
+	return result, m.terminalSeq
 }
 
-// RestoreTerminalTasks returns updates to the front of the delivery queue when
-// a foreground session ends before it can inject them.
+// RestoreTerminalTasks makes updates claimable again when a foreground session
+// ends before it can inject them.
 func (m *Manager) RestoreTerminalTasks(tasks []Task) {
 	if m == nil || len(tasks) == 0 {
 		return
 	}
 	m.mu.Lock()
-	m.terminal = append(append([]Task(nil), tasks...), m.terminal...)
-	m.signalTerminalLocked()
+	restored := false
+	for _, task := range tasks {
+		state := m.terminalNotifications[task.ID]
+		if state != terminalNotificationClaimed && state != terminalNotificationDelivering {
+			continue
+		}
+		item, ok := m.tasks[task.ID]
+		if !ok || !item.task.Status.terminal() {
+			delete(m.terminalNotifications, task.ID)
+			continue
+		}
+		m.terminalNotifications[task.ID] = terminalNotificationQueued
+		restored = true
+	}
+	if restored {
+		m.signalTerminalLocked()
+	}
 	m.mu.Unlock()
 }
 
@@ -438,7 +657,7 @@ func (m *Manager) Close() {
 		case StatusCreated, StatusQueued:
 			m.finishLocked(item, StatusCancelled, "", "")
 		case StatusRunning:
-			if item.task.PendingUserAction != nil {
+			if item.task.PendingUserAction != nil || item.cancel == nil {
 				m.finishLocked(item, StatusCancelled, "", "")
 				continue
 			}
@@ -467,71 +686,101 @@ func (m *Manager) worker() {
 }
 
 func (m *Manager) runTask(taskID string) {
-	m.mu.Lock()
-	item, ok := m.tasks[taskID]
-	if !ok || (item.task.Status != StatusQueued && (item.task.Status != StatusRunning || item.task.PendingUserAction != nil)) {
-		m.mu.Unlock()
-		return
-	}
-	if m.runner == nil {
-		m.finishLocked(item, StatusFailed, "", "background agent is unavailable")
-		m.mu.Unlock()
-		return
-	}
-	taskCtx, cancel := context.WithCancel(m.ctx)
-	startedAt := m.now().UTC()
-	item.cancel = cancel
-	item.resumeQueued = false
-	item.task.Status = StatusRunning
-	item.task.StartedAt = &startedAt
-	item.task.UpdatedAt = startedAt
-	prompt := item.nextPrompt
-	if prompt == "" {
-		prompt = item.task.Prompt
-	}
-	item.nextPrompt = ""
-	m.mu.Unlock()
-
-	result, err := m.runner.Run(WithUserActionHandler(taskCtx, func(action UserAction) {
+	for {
 		m.mu.Lock()
-		if current, exists := m.tasks[taskID]; exists && current.task.Status == StatusRunning {
-			current.task.PendingUserAction = &action
-			current.actionNotified = false
-			current.task.UpdatedAt = m.now().UTC()
-			select {
-			case m.actionChanged <- struct{}{}:
-			default:
-			}
+		item, ok := m.tasks[taskID]
+		if !ok || (item.task.Status != StatusQueued && (item.task.Status != StatusRunning || item.task.PendingUserAction != nil)) {
+			m.mu.Unlock()
+			return
 		}
+		if m.runner == nil {
+			m.finishLocked(item, StatusFailed, "", "background agent is unavailable")
+			m.mu.Unlock()
+			return
+		}
+		taskCtx, cancel := context.WithCancel(m.ctx)
+		startedAt := m.now().UTC()
+		item.cancel = cancel
+		item.resumeQueued = false
+		item.task.Status = StatusRunning
+		if item.task.StartedAt == nil {
+			item.task.StartedAt = &startedAt
+		}
+		item.task.UpdatedAt = startedAt
+		prompt := item.nextPrompt
+		if prompt == "" {
+			prompt = item.task.Prompt
+		}
+		item.nextPrompt = ""
+		item.appliedRevision = item.goalRevision
+		item.pendingSteer = nil
+		item.steerSignal = make(chan struct{})
 		m.mu.Unlock()
-	}), prompt)
-	cancel()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	item, ok = m.tasks[taskID]
-	if !ok {
+		runCtx := WithUserActionHandler(taskCtx, func(action UserAction) {
+			m.mu.Lock()
+			if current, exists := m.tasks[taskID]; exists && current.task.Status == StatusRunning && !current.resumeQueued {
+				current.task.PendingUserAction = &action
+				current.actionNotified = false
+				current.task.UpdatedAt = m.now().UTC()
+				select {
+				case m.actionChanged <- struct{}{}:
+				default:
+				}
+			}
+			m.mu.Unlock()
+		})
+		runCtx = withSteerControl(runCtx, func(context.Context) (SteerMessage, bool) {
+			return m.pendingSteerMessage(taskID)
+		}, func() <-chan struct{} {
+			return m.steerInterrupt(taskID)
+		}, func(message SteerMessage) {
+			m.acknowledgeSteer(taskID, message)
+		})
+		result, err := m.runner.Run(runCtx, prompt)
+		cancel()
+
+		m.mu.Lock()
+		item, ok = m.tasks[taskID]
+		if !ok {
+			m.mu.Unlock()
+			return
+		}
+		item.cancel = nil
+		if item.task.Status == StatusCancelled || item.task.Status == StatusFailed || item.task.Status == StatusCompleted {
+			m.mu.Unlock()
+			return
+		}
+		if item.task.Status == StatusCancelling || errors.Is(err, context.Canceled) {
+			m.finishLocked(item, StatusCancelled, "", "")
+			m.mu.Unlock()
+			return
+		}
+		if item.resumeQueued {
+			m.mu.Unlock()
+			return
+		}
+		if item.pendingSteer != nil || item.appliedRevision < item.goalRevision {
+			item.task.PendingUserAction = nil
+			item.actionNotified = false
+			item.pendingSteer = nil
+			item.nextPrompt = formatUpdatedTaskPrompt("", item.task.Prompt)
+			m.mu.Unlock()
+			continue
+		}
+		if item.task.PendingUserAction != nil {
+			m.mu.Unlock()
+			return
+		}
+		if err != nil {
+			m.finishLocked(item, StatusFailed, "", err.Error())
+			m.mu.Unlock()
+			return
+		}
+		m.finishLocked(item, StatusCompleted, limitText(result, maxResultRunes), "")
+		m.mu.Unlock()
 		return
 	}
-	item.cancel = nil
-	if item.task.Status == StatusCancelled || item.task.Status == StatusFailed || item.task.Status == StatusCompleted {
-		return
-	}
-	if item.resumeQueued {
-		return
-	}
-	if item.task.PendingUserAction != nil {
-		return
-	}
-	if item.task.Status == StatusCancelling || errors.Is(err, context.Canceled) {
-		m.finishLocked(item, StatusCancelled, "", "")
-		return
-	}
-	if err != nil {
-		m.finishLocked(item, StatusFailed, "", err.Error())
-		return
-	}
-	m.finishLocked(item, StatusCompleted, limitText(result, maxResultRunes), "")
 }
 
 func (m *Manager) finishLocked(item *entry, status Status, result, taskError string) {
@@ -548,10 +797,84 @@ func (m *Manager) finishLocked(item *entry, status Status, result, taskError str
 	// action request for a task that is no longer running.
 	item.task.PendingUserAction = nil
 	item.actionNotified = false
+	item.pendingSteer = nil
 	m.terminalSeq++
-	m.terminal = append(m.terminal, item.task)
+	m.terminalNotifications[item.task.ID] = terminalNotificationQueued
 	m.signalTerminalLocked()
 	m.signalWakeLocked()
+}
+
+func (m *Manager) pendingSteerMessage(taskID string) (SteerMessage, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, ok := m.tasks[taskID]
+	if !ok || item.task.Status != StatusRunning || item.pendingSteer == nil {
+		return SteerMessage{}, false
+	}
+	return *item.pendingSteer, true
+}
+
+func (m *Manager) acknowledgeSteer(taskID string, message SteerMessage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, ok := m.tasks[taskID]
+	if !ok || item.task.Status != StatusRunning {
+		return
+	}
+	if message.Revision > item.appliedRevision {
+		item.appliedRevision = message.Revision
+	}
+	if item.pendingSteer != nil && item.pendingSteer.ID == message.ID {
+		item.pendingSteer = nil
+		item.steerSignal = make(chan struct{})
+	}
+}
+
+func (m *Manager) updateGoalLocked(item *entry, prompt string) {
+	item.task.Prompt = prompt
+	item.goalRevision++
+	item.task.UpdatedAt = m.now().UTC()
+}
+
+func (m *Manager) steerInterrupt(taskID string) <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, ok := m.tasks[taskID]
+	if !ok || item.task.Status != StatusRunning {
+		return nil
+	}
+	if item.steerSignal == nil {
+		item.steerSignal = make(chan struct{})
+	}
+	return item.steerSignal
+}
+
+func (m *Manager) suppressTerminalNotificationLocked(taskID string) bool {
+	state, ok := m.terminalNotifications[taskID]
+	if !ok {
+		return false
+	}
+	delete(m.terminalNotifications, taskID)
+	return state == terminalNotificationQueued || state == terminalNotificationClaimed
+}
+
+func sortTerminalTasks(tasks []Task) {
+	slices.SortFunc(tasks, func(a, b Task) int {
+		if order := a.CompletedAt.Compare(*b.CompletedAt); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+}
+
+func formatUpdatedTaskPrompt(oldPrompt, newPrompt string) string {
+	var output strings.Builder
+	output.WriteString("The task goal has been updated. Replace the previous goal with this complete new goal:\n")
+	output.WriteString(strings.TrimSpace(newPrompt))
+	if oldPrompt = strings.TrimSpace(oldPrompt); oldPrompt != "" {
+		fmt.Fprintf(&output, "\n\nPrevious goal (no longer authoritative):\n%s", oldPrompt)
+	}
+	return output.String()
 }
 
 func (m *Manager) signalTerminalLocked() {
