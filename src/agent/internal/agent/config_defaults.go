@@ -152,7 +152,6 @@ func DefaultConfig() Config {
 			Provider:          defaultVoiceModelProvider,
 			Model:             defaultVoiceModelModel,
 			Voice:             defaultVoiceModelVoice,
-			Instructions:      DefaultRealtimeVoiceInstructions,
 			InputAudioFormat:  "pcm",
 			OutputAudioFormat: "pcm",
 			TurnDetection:     defaultVoiceModelTurnDetection,

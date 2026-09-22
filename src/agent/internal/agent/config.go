@@ -437,7 +437,6 @@ type VoiceModelConfig struct {
 	RealtimeProtocol       string   `toml:"realtime_protocol,omitempty"`
 	ThinkingLevel          string   `toml:"thinking_level,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
-	Instructions           string   `toml:"instructions,omitempty"`
 	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
 	InputAudioFormat       string   `toml:"input_audio_format,omitempty"`
 	OutputAudioFormat      string   `toml:"output_audio_format,omitempty"`
@@ -1469,16 +1468,6 @@ func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface
 		}
 	}
 	mergeRootTable(grouped, result, []string{"conversation_settings", "agent"})
-	// `additional_prompt` was the pre-rename spelling. Resolve it only at the
-	// file boundary so existing configurations keep working while all new
-	// writes and runtime state use the canonical `prompt` field. The new key
-	// wins when both spellings are present.
-	if _, hasPrompt := result["prompt"]; !hasPrompt {
-		if legacyPrompt, ok := result["additional_prompt"]; ok {
-			result["prompt"] = legacyPrompt
-		}
-	}
-	delete(result, "additional_prompt")
 	moveTable([]string{"conversation_settings", "search"}, "search")
 	moveTable([]string{"conversation_settings", "termination_policy"}, "termination_policy")
 	moveTable([]string{"model_settings", "model"}, "model")
@@ -1487,7 +1476,9 @@ func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface
 	mergeRootTable(grouped, result, []string{"voice_settings", "mode"})
 	mergeRootTable(grouped, result, []string{"voice_settings", "classic", "runtime"})
 	if realtime, ok := tableAt(grouped, "voice_settings", "realtime"); ok {
-		copyWithoutKey(realtime, result, "voice_model", "providers")
+		// Realtime session instructions now come from the built-in base plus
+		// conversation_settings.agent.prompt, not this removed voice field.
+		copyWithoutKey(realtime, result, "voice_model", "providers", "instructions")
 	}
 	moveTable([]string{"voice_settings", "classic", "stt"}, "stt")
 	moveTable([]string{"voice_settings", "classic", "stt", "providers"}, "stt_providers")

@@ -37,14 +37,13 @@ func TestDaemonDeviceTypeFlag(t *testing.T) {
 	}
 }
 
-func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
+func TestRealtimeSessionConfigUsesAgentPrompt(t *testing.T) {
 	emotion := false
 	cfg := agent.Config{
-		Instruction: "be concise",
+		Prompt: "speak naturally",
 		VoiceModel: agent.VoiceModelConfig{
 			Provider:               realtimevoice.ProviderQwen,
 			Voice:                  "custom-voice",
-			Instructions:           "speak naturally",
 			EnableSpeechEmotion:    &emotion,
 			InputAudioFormat:       "pcm",
 			OutputAudioFormat:      "pcm",
@@ -54,7 +53,8 @@ func TestRealtimeSessionConfigUsesVoiceModelSettings(t *testing.T) {
 		},
 	}
 	got := realtimeProviderSessionConfig(cfg, nil)
-	if got.Voice != "custom-voice" || !strings.HasPrefix(got.Instructions, "speak naturally") || got.TurnDetection != "smart_turn" {
+	wantInstructionsPrefix := agent.DefaultRealtimeToolExecutionInstructions + "\n\n" + cfg.Prompt
+	if got.Voice != "custom-voice" || !strings.HasPrefix(got.Instructions, wantInstructionsPrefix) || got.TurnDetection != "smart_turn" {
 		t.Fatalf("unexpected realtime session config: %+v", got)
 	}
 	if got.TurnDetectionSilenceMs != 900 || got.TurnDetectionThresh == nil || *got.TurnDetectionThresh != 0.2 {
@@ -284,12 +284,13 @@ func TestRealtimeDelegatedToolSchemasMatchRuntimeTools(t *testing.T) {
 }
 
 func TestRealtimeSessionConfigUsesDedicatedDefaultInstructions(t *testing.T) {
-	cfg := agent.Config{Instruction: "legacy phone automation prompt"}
+	cfg := agent.Config{Instruction: "legacy phone automation prompt", Prompt: "Use concise replies."}
 	got := realtimeProviderSessionConfig(cfg, nil)
-	if !strings.HasPrefix(got.Instructions, agent.DefaultRealtimeToolExecutionInstructions) {
-		t.Fatalf("instructions = %q, want direct-tool default followed by shared guidance", got.Instructions)
+	wantPrefix := agent.DefaultRealtimeToolExecutionInstructions + "\n\n" + cfg.Prompt
+	if !strings.HasPrefix(got.Instructions, wantPrefix) {
+		t.Fatalf("instructions = %q, want direct-tool default followed by configured prompt and shared guidance", got.Instructions)
 	}
-	if got.Instructions == cfg.Instruction {
+	if strings.Contains(got.Instructions, cfg.Instruction) {
 		t.Fatal("realtime session reused the legacy agent instruction")
 	}
 }
@@ -302,7 +303,7 @@ func TestRealtimeSessionConfigIncludesConfiguredResponseLanguage(t *testing.T) {
 		{locale: "en-US", language: "English"},
 	} {
 		t.Run(tc.locale, func(t *testing.T) {
-			cfg := agent.Config{Locale: tc.locale, VoiceModel: agent.VoiceModelConfig{Instructions: "speak naturally"}}
+			cfg := agent.Config{Locale: tc.locale, Prompt: "speak naturally"}
 			got := realtimeProviderSessionConfig(cfg, nil)
 			if !strings.Contains(got.Instructions, "The configured response locale is "+tc.locale+".") {
 				t.Fatalf("realtime instructions missing configured locale: %q", got.Instructions)
