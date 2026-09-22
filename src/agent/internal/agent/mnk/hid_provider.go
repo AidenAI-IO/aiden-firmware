@@ -2,6 +2,7 @@ package mnk
 
 import (
 	"aiden-agent/internal/agent/screen"
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -60,6 +61,9 @@ type HIDProvider struct {
 const (
 	defaultTapHoldMs                = 60               // iOS drops faster events
 	defaultSwipeSteps               = 24               // Smooth interpolation
+	defaultSwipeSmoothMotionMinMs   = 180              // Allow acceleration and braking to reach the phone
+	defaultSwipeReleaseTailMs       = 100              // Keep real low-speed motion samples before release
+	defaultSwipeReleaseTailDistance = 2.0              // Normalized units; bounded by half the final segment
 	defaultSwipeGestureHoldBeforeMs = 0                // Start moving immediately to avoid long-press recognition
 	defaultCursorSettleMs           = 80               // iOS cursor animation
 	defaultReleaseRepeatCount       = 3                // USB polling workaround
@@ -174,7 +178,7 @@ func (p *HIDProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, b
 		return err
 	}
 	return runPointerGate(p.gate, ctx, func() error {
-		return p.swipeLockedWithOptions(path, button, options)
+		return p.swipeLockedWithOptions(ctx, path, button, options)
 	})
 }
 
@@ -493,7 +497,7 @@ func waitForContext(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-func (p *HIDProvider) swipeLockedWithOptions(path [][2]float64, button string, options SwipeOptions) error {
+func (p *HIDProvider) swipeLockedWithOptions(ctx context.Context, path [][2]float64, button string, options SwipeOptions) error {
 	if len(path) < 2 {
 		return InvalidArgumentsf("swipe path must contain at least 2 points, got %d", len(path))
 	}
@@ -550,31 +554,72 @@ func (p *HIDProvider) swipeLockedWithOptions(path [][2]float64, button string, o
 		return err
 	}
 
-	// Hold before starting movement
-	if options.HoldBeforeMs > 0 {
-		time.Sleep(time.Duration(options.HoldBeforeMs) * time.Millisecond)
+	// iOS AssistiveTouch retains fling velocity through an unchanged-coordinate
+	// hold. Reserve a tiny part of the path for real low-speed motion instead.
+	// Use the same trajectory for mouse and touchscreen reports; preserve
+	// explicit end holds and edge gestures.
+	start := path[0]
+	controlledRelease := options.HoldAfterMs == 0 && start[0] > 10 && start[0] < 990 && start[1] > 10 && start[1] < 990
+	endpoint := absPath[len(absPath)-1]
+	if controlledRelease {
+		// Skip duplicate trailing points when locating the final moving segment.
+		last := len(path) - 1
+		previous := last - 1
+		for previous > 0 && path[previous] == path[last] {
+			previous--
+		}
+		dx, dy := path[last][0]-path[previous][0], path[last][1]-path[previous][1]
+		fraction := math.Min(0.5, defaultSwipeReleaseTailDistance/math.Hypot(dx, dy))
+		x, y, convertErr := p.normalizedToAbsolute(path[last][0]-dx*fraction, path[last][1]-dy*fraction)
+		if convertErr != nil {
+			_ = p.releasePointerRepeated(absPath[0][0], absPath[0][1])
+			return convertErr
+		}
+		absPath = absPath[:previous+2]
+		absPath[len(absPath)-1] = [2]int{x, y}
 	}
-
-	// Interpolate and move through each segment
-	if err := p.moveAlongPathWithSteps(absPath, buttonByte, options.DurationMs, options.Steps); err != nil {
-		// Attempt to release even if movement failed.
-		_ = p.releasePointerRepeated(absPath[len(absPath)-1][0], absPath[len(absPath)-1][1])
+	if err := waitForContext(ctx, time.Duration(options.HoldBeforeMs)*time.Millisecond); err != nil {
+		_ = p.releasePointerRepeated(absPath[0][0], absPath[0][1])
 		return err
 	}
-
-	// Hold at end
-	if options.HoldAfterMs > 0 {
-		time.Sleep(time.Duration(options.HoldAfterMs) * time.Millisecond)
+	motionDurationMs := options.DurationMs
+	if controlledRelease && motionDurationMs < defaultSwipeSmoothMotionMinMs {
+		motionDurationMs = defaultSwipeSmoothMotionMinMs
 	}
-
-	// Release at final position
-	endPoint := absPath[len(absPath)-1]
-	return p.releasePointerRepeated(endPoint[0], endPoint[1])
+	motionStarted := time.Now()
+	x, y, err := p.moveAlongPathWithSteps(ctx, absPath, buttonByte, motionDurationMs, options.Steps, controlledRelease)
+	if err != nil {
+		_ = p.releasePointerRepeated(x, y)
+		return err
+	}
+	motionFinished := time.Now()
+	if controlledRelease {
+		x, y, err = p.movePointerInterpolated(ctx, x, y, endpoint[0], endpoint[1], buttonByte, defaultSwipeReleaseTailMs)
+	} else {
+		err = waitForContext(ctx, time.Duration(options.HoldAfterMs)*time.Millisecond)
+	}
+	releaseStarted := time.Now()
+	// Cancellation/write failure must release at the last successful position.
+	releaseErr := p.releasePointerRepeated(x, y)
+	logging.Infof("agent", "mnk", "swipe_release controlled=%t touchscreen=%t start_norm=(%.1f,%.1f) end_norm=(%.1f,%.1f) requested_motion_ms=%d motion_ms=%.1f tail_or_hold_ms=%.1f tail_error=%v release_error=%v",
+		controlledRelease, p.touchscreen, start[0], start[1], path[len(path)-1][0], path[len(path)-1][1], options.DurationMs,
+		float64(motionFinished.Sub(motionStarted))/float64(time.Millisecond), float64(releaseStarted.Sub(motionFinished))/float64(time.Millisecond), err, releaseErr)
+	if err != nil {
+		return err
+	}
+	return releaseErr
 }
 
-func (p *HIDProvider) moveAlongPathWithSteps(absPath [][2]int, buttonByte uint8, durationMs, steps int) error {
+func (p *HIDProvider) moveAlongPathWithSteps(ctx context.Context, absPath [][2]int, buttonByte uint8, durationMs, steps int, smoothRelease bool) (int, int, error) {
+	lastX, lastY := absPath[0][0], absPath[0][1]
 	// Calculate total path length for timing distribution
 	totalLength := pathLength(absPath)
+	if totalLength == 0 {
+		return lastX, lastY, ctx.Err()
+	}
+	motionStarted := time.Now()
+	motionDuration := time.Duration(durationMs) * time.Millisecond
+	completedLength := 0.0
 
 	// Distribute steps proportionally across segments
 	for i := 1; i < len(absPath); i++ {
@@ -599,21 +644,45 @@ func (p *HIDProvider) moveAlongPathWithSteps(absPath [][2]int, buttonByte uint8,
 		}
 
 		for step := 1; step <= segmentSteps; step++ {
+			if err := ctx.Err(); err != nil {
+				return lastX, lastY, err
+			}
 			progress := float64(step) / float64(segmentSteps)
+			if smoothRelease {
+				// Schedule every movement interval against one clock, including
+				// the first step and segment boundaries, without rounding to ms.
+				fraction := (completedLength + segmentLength*progress) / totalLength
+				due := time.Duration(float64(motionDuration) * fraction)
+				if i == len(absPath)-1 && step == segmentSteps {
+					due = motionDuration
+				}
+				if err := waitForContext(ctx, time.Until(motionStarted.Add(due))); err != nil {
+					return lastX, lastY, err
+				}
+			}
+			if smoothRelease && i == len(absPath)-1 {
+				// Quintic smoothstep: gently accelerate and brake; zero velocity
+				// and acceleration at the ends of the main movement.
+				progress = progress * progress * progress * (10 + progress*(-15+6*progress))
+			}
 			x := start[0] + int(math.Round(dx*progress))
 			y := start[1] + int(math.Round(dy*progress))
 
 			if err := p.movePointer(x, y, buttonByte); err != nil {
-				return err
+				return lastX, lastY, err
 			}
+			lastX, lastY = x, y
 
-			if step < segmentSteps && stepDelayMs > 0 {
-				time.Sleep(time.Duration(stepDelayMs) * time.Millisecond)
+			if !smoothRelease && step < segmentSteps && stepDelayMs > 0 {
+				if err := waitForContext(ctx, time.Duration(stepDelayMs)*time.Millisecond); err != nil {
+					return lastX, lastY, err
+				}
 			}
 		}
+		completedLength += segmentLength
 	}
 
-	return nil
+	return lastX, lastY, nil
 }
 
 func pathLength(path [][2]int) float64 {
