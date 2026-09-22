@@ -120,6 +120,24 @@ jobs:
         run: |
           uv python install 3.12
           uv sync --frozen --python 3.12
+      - name: Install Docker Compose V2
+        run: |
+          set -euo pipefail
+          # Check if docker compose plugin is already available
+          if docker compose version >/dev/null 2>&1; then
+            echo "Docker Compose V2 is already installed"
+            docker compose version
+            exit 0
+          fi
+
+          # Install docker-compose-plugin
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+          else
+            echo "::error::Unable to install docker-compose-plugin: apt-get not available"
+            exit 1
+          fi
       - name: Validate Docker runtime
         run: |
           set -euo pipefail
@@ -203,6 +221,24 @@ jobs:
         run: |
           uv python install 3.12
           uv sync --frozen --python 3.12
+      - name: Install Docker Compose V2
+        run: |
+          set -euo pipefail
+          # Check if docker compose plugin is already available
+          if docker compose version >/dev/null 2>&1; then
+            echo "Docker Compose V2 is already installed"
+            docker compose version
+            exit 0
+          fi
+
+          # Install docker-compose-plugin
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+          else
+            echo "::error::Unable to install docker-compose-plugin: apt-get not available"
+            exit 1
+          fi
       - name: Validate benchmark credentials
         env:
           REQUIRED_VALUES: >-
