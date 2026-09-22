@@ -353,7 +353,11 @@ func (m *Manager) Update(taskID, prompt string) (Task, error) {
 		}
 		m.updateGoalLocked(item, prompt)
 		if item.resumeQueued || item.cancel == nil {
-			item.nextPrompt = formatUpdatedTaskPrompt(oldPrompt, prompt)
+			nextPrompt := formatUpdatedTaskPrompt(oldPrompt, prompt)
+			if item.nextPrompt != "" {
+				nextPrompt = item.nextPrompt + "\n\n" + nextPrompt
+			}
+			item.nextPrompt = nextPrompt
 			break
 		}
 		message := SteerMessage{

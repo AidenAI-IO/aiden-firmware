@@ -524,6 +524,36 @@ func TestManagerPausesAndContinuesAfterUserAction(t *testing.T) {
 	}
 }
 
+func TestManagerUpdatePreservesQueuedUserActionContinuation(t *testing.T) {
+	const (
+		taskID      = "task-paused"
+		oldGoal     = "open the app"
+		newGoal     = "open settings after login"
+		userMessage = "用户已完成登录并回到首页"
+	)
+	manager := &Manager{
+		now: time.Now,
+		tasks: map[string]*entry{
+			taskID: {
+				task:         Task{ID: taskID, Prompt: oldGoal, Status: StatusRunning},
+				nextPrompt:   userMessage,
+				resumeQueued: true,
+			},
+		},
+	}
+
+	if _, err := manager.Update(taskID, newGoal); err != nil {
+		t.Fatal(err)
+	}
+	got := manager.tasks[taskID].nextPrompt
+	if !strings.HasPrefix(got, userMessage+"\n\n") {
+		t.Fatalf("queued prompt lost user-action continuation: %q", got)
+	}
+	if !strings.Contains(got, "complete new goal:\n"+newGoal) {
+		t.Fatalf("queued prompt lost updated goal: %q", got)
+	}
+}
+
 func TestManagerCancelsPausedUserActionTask(t *testing.T) {
 	runner := &userActionRunner{started: make(chan string, 1)}
 	manager := newManager(runner, 4, time.Now)
