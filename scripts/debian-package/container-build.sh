@@ -7,9 +7,13 @@ readonly VERSION=${AIDEN_BUSINESS_VERSION}
 readonly REVISION=${AIDEN_BUSINESS_REVISION}
 readonly PACKAGE_VERSION=${VERSION}-${REVISION}
 readonly PACKAGE_NAME=aiden-business
+readonly BINARIES=(
+  agent audio_service audio_service_cli ble_service cpu_vad frame_service
+  frame_service_cli rknn_vad ota abctl aiden-environment ttyd
+)
 rm -rf "${PKG_ROOT}" "${OUTPUT_DIR}/${PACKAGE_NAME}_"*.deb
 install -d -m 0755 "${PKG_ROOT}/DEBIAN" "${PKG_ROOT}/usr/lib/aiden" "${PKG_ROOT}/usr/share/aiden/config-web" "${PKG_ROOT}/usr/share/aiden/skills" "${PKG_ROOT}/usr/share/aiden/audio" "${PKG_ROOT}/usr/lib/aiden/models" "${PKG_ROOT}/usr/share/doc/${PACKAGE_NAME}"
-for binary in agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd; do
+for binary in "${BINARIES[@]}"; do
   test -x "${APPS_DIR}/bin/${binary}" || { echo "missing application binary: ${binary}" >&2; exit 1; }
   install -m 0755 "${APPS_DIR}/bin/${binary}" "${PKG_ROOT}/usr/lib/aiden/${binary}"
 done
@@ -36,7 +40,7 @@ python3 "${REPO_ROOT}/scripts/release/contract.py" package \
     "${PKG_ROOT}/usr/share/doc/${PACKAGE_NAME}/release-manifest.json"
 find "${PKG_ROOT}" -type d -exec chmod 0755 {} +
 find "${PKG_ROOT}" -type f ! -path '*/DEBIAN/*' -exec chmod 0644 {} +
-for binary in agent audio_service audio_service_cli ble_service cpu_vad frame_service frame_service_cli rknn_vad ota abctl aiden-environment ttyd; do chmod 0755 "${PKG_ROOT}/usr/lib/aiden/${binary}"; done
+for binary in "${BINARIES[@]}"; do chmod 0755 "${PKG_ROOT}/usr/lib/aiden/${binary}"; done
 python3 "${REPO_ROOT}/scripts/debian-package/system_config.py" stage "${PKG_ROOT}"
 dpkg-deb --build --root-owner-group "${PKG_ROOT}" "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb"
 dpkg-deb --info "${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_armhf.deb" >"${OUTPUT_DIR}/${PACKAGE_NAME}.deb.info"
