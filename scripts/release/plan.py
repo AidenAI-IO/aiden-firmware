@@ -170,8 +170,16 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
     fingerprints = source_fingerprints(root, commit, policy)
     previous = next((r for r in reversed(records) if r["channel"] == channel), None)
     if previous:
-        subprocess.run(["git", "merge-base", "--is-ancestor", previous["source_commit"], commit],
-                       cwd=root, check=True)
+        # A squash merge or rebase can preserve released content without
+        # preserving its commit as an ancestor. Compare the two release trees,
+        # using ancestry only to reject older commits and unrelated histories.
+        common = subprocess.run(["git", "merge-base", previous["source_commit"], commit],
+                                cwd=root, capture_output=True, text=True, timeout=300)
+        if common.returncode == 1:
+            raise ValueError(f"Release source is unrelated to {previous['tag']}; choose a source with shared Git history")
+        common.check_returncode()
+        if common.stdout.strip() == commit and commit != previous["source_commit"]:
+            raise ValueError(f"Release source is older than {previous['tag']}; choose the current source")
         raw = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", "-z",
                                        previous["source_commit"], commit, "--"], cwd=root)
         paths = [p.decode() for p in raw.split(b"\0") if p]

@@ -149,12 +149,79 @@ class PlannerTests(GitFixture):
         self.assertEqual(self.make(force_ota=True)["kind"], "ota")
         self.assertEqual(self.make(force_ota=True)["platform"]["contract"], "2.0.0")
 
-    def test_cannot_release_old_or_divergent_source(self):
+    def test_cannot_release_older_ancestor(self):
         old = self.git("rev-parse", "HEAD")
         self.commit({"src/agent/main.go": "next"})
         self.publish()
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.make(ref=old)
+        for force_ota in (False, True):
+            with self.subTest(force_ota=force_ota), self.assertRaisesRegex(ValueError, "older than"):
+                self.make(ref=old, force_ota=force_ota)
+
+    def squash_published_branch(self):
+        base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-qb", "release-candidate")
+        self.commit({"overlay-debian/etc/config": "released system", "src/agent/main.go": "released business"})
+        previous = self.publish()
+        self.git("checkout", "-qb", "squashed-main", base)
+        self.git("merge", "--squash", "release-candidate")
+        self.git("commit", "-qm", "feat: squash released changes")
+        self.assertNotEqual(self.git("rev-parse", "HEAD"), previous["source_commit"])
+        return previous
+
+    def test_squash_with_identical_tree_does_not_release(self):
+        previous = self.squash_published_branch()
+        record = self.make()
+        self.assertEqual(record["kind"], "none")
+        self.assertEqual(record["source_tree"], previous["source_tree"])
+        self.assertEqual(record["platform"], previous["platform"])
+        self.assertEqual(record["previous_commit"], previous["source_commit"])
+        self.assertTrue(all(not paths for paths in record["changes"].values()))
+        self.commit({"docs/readme.md": "documentation after squash"})
+        self.assertEqual(self.make()["kind"], "none")
+
+    def test_business_after_squash_compares_published_tree(self):
+        previous = self.squash_published_branch()
+        self.commit({"src/agent/main.go": "business after squash"})
+        record = self.make()
+        self.assertEqual(record["kind"], "business")
+        self.assertEqual(record["platform"], previous["platform"])
+        self.assertEqual(record["previous_tag"], previous["tag"])
+        self.assertEqual(record["changes"]["business"], ["src/agent/main.go"])
+        self.assertEqual(record["changes"]["system"], [])
+        self.assertIn(f"/compare/{previous['tag']}..{record['tag']})", release.notes(record))
+        release.assert_current(record, self.history)
+
+    def test_system_removal_after_squash_requires_new_contract(self):
+        previous = self.squash_published_branch()
+        self.commit({"overlay-debian/etc/config": None})
+        record = self.make()
+        self.assertEqual(record["kind"], "ota")
+        self.assertEqual(record["previous_commit"], previous["source_commit"])
+        self.assertEqual(record["platform"]["contract"], "2.0.0")
+        self.assertEqual(record["changes"]["system"], ["overlay-debian/etc/config"])
+        release.assert_current(record, self.history)
+
+    def test_rebased_release_with_only_docs_changes_does_not_release(self):
+        base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-qb", "release-candidate")
+        self.commit({"src/agent/main.go": "released business"})
+        previous = self.publish()
+        self.git("checkout", "-qb", "new-base", base)
+        self.commit({"docs/readme.md": "new main documentation"})
+        self.git("checkout", "release-candidate")
+        self.git("rebase", "new-base")
+        self.assertNotEqual(self.git("rev-parse", "HEAD"), previous["source_commit"])
+        record = self.make()
+        self.assertEqual(record["kind"], "none")
+        self.assertEqual(record["changes"]["ignore"], ["docs/readme.md"])
+
+    def test_unrelated_history_is_rejected(self):
+        self.publish()
+        self.git("checkout", "--orphan", "unrelated")
+        self.commit({"src/agent/main.go": "unrelated business"})
+        for force_ota in (False, True):
+            with self.subTest(force_ota=force_ota), self.assertRaisesRegex(ValueError, "unrelated"):
+                self.make(force_ota=force_ota)
 
     def test_versions_must_increase_across_channels(self):
         self.publish(version="1.2.3")

@@ -48,7 +48,7 @@ def notes(plan):
             f"Source: `{plan['source_commit']}`. Previous release: `{plan['previous_tag'] or 'none'}`.\n\n"
             f"Platform contract: `{plan['platform']['contract']}`; base OTA: `{plan['platform']['base_release']}`.\n\n")
     if plan["previous_tag"]:
-        text += f"[Full comparison](https://github.com/{plan['repo']}/compare/{plan['previous_tag']}...{plan['tag']})\n\n"
+        text += f"[Full comparison](https://github.com/{plan['repo']}/compare/{plan['previous_tag']}..{plan['tag']})\n\n"
     if plan["kind"] == "ota":
         text += "Install the signed boot + rootfs OTA together, or flash update.img. This establishes a new base contract.\n\n"
     elif plan["kind"] == "business":
