@@ -71,6 +71,13 @@ plain `aiden` user can run the diagnostic CLIs against them. A socket that shows
 up as `0755 root:root`, or a client that gets `TRANSPORT_ERROR`, means the unit
 lost those group settings or the process ran under an unexpected umask.
 
+Login shells for both `root` and `aiden` append `/usr/lib/aiden` to `PATH` via
+`/etc/profile.d/aiden-path.sh`. `/etc/sudoers.d/20-aiden-path` also includes it in
+sudo's `secure_path`, so installed tools can be called by name, including
+`sudo ota status`. Reconnect SSH or the Web terminal after installing this
+configuration; an existing shell can load it with
+`. /etc/profile.d/aiden-path.sh`. Child shells inherit the exported path.
+
 ## Configuration Sources
 
 | File | Description |
