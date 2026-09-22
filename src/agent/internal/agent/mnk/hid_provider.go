@@ -61,9 +61,6 @@ type HIDProvider struct {
 const (
 	defaultTapHoldMs                = 60               // iOS drops faster events
 	defaultSwipeSteps               = 24               // Smooth interpolation
-	defaultSwipeSmoothMotionMinMs   = 180              // Allow acceleration and braking to reach the phone
-	defaultSwipeReleaseTailMs       = 100              // Keep real low-speed motion samples before release
-	defaultSwipeReleaseTailDistance = 2.0              // Normalized units; bounded by half the final segment
 	defaultSwipeGestureHoldBeforeMs = 0                // Start moving immediately to avoid long-press recognition
 	defaultCursorSettleMs           = 80               // iOS cursor animation
 	defaultReleaseRepeatCount       = 3                // USB polling workaround
@@ -319,14 +316,14 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 	if err := p.rejectActiveDrag("atomic touch actions"); err != nil {
 		return err
 	}
+	if err := validateTouchActionLimits(actions); err != nil {
+		return err
+	}
+	actions = withTouchReleaseTails(actions)
+	if err := validateTouchActionLimits(actions); err != nil {
+		return InvalidArgumentsf("profiled touch program exceeds limits: %v", err)
+	}
 	return runPointerGate(p.gate, ctx, func() error {
-		if len(actions) == 0 {
-			return InvalidArguments("touch actions must not be empty")
-		}
-		if len(actions) > 128 {
-			return InvalidArguments("touch actions must contain at most 128 atomic actions")
-		}
-
 		active := false
 		activeButton := ButtonLeft
 		currentX, currentY := p.getCurrentPosition()
@@ -337,20 +334,6 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 			}
 			return err
 		}
-		totalDurationMs := 0
-		for index, action := range actions {
-			if action.DurationMs < 0 || action.DurationMs > 30000 {
-				return releaseOnError(InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", index))
-			}
-			switch strings.ToLower(strings.TrimSpace(action.Type)) {
-			case "wait", "move_to":
-				totalDurationMs += action.DurationMs
-				if totalDurationMs > 60000 {
-					return releaseOnError(InvalidArguments("total duration in touch actions must not exceed 60000 ms"))
-				}
-			}
-		}
-
 		for index, action := range actions {
 			if err := ctx.Err(); err != nil {
 				return releaseOnError(err)
@@ -380,7 +363,11 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 					buttons = p.mouseButtonByte(activeButton)
 				}
 				var moveErr error
-				currentX, currentY, moveErr = p.movePointerInterpolated(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs)
+				// Atomic programs that keep a contact down are still continuous
+				// finger gestures. Apply the same controlled acceleration and
+				// braking as the standard swipe path when they specify a duration.
+				smooth := active && action.DurationMs > 0 && !action.releaseTail && !action.linear
+				currentX, currentY, moveErr = p.movePointerInterpolatedWithProfile(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs, smooth)
 				if moveErr != nil {
 					return releaseOnError(moveErr)
 				}
@@ -441,6 +428,10 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 }
 
 func (p *HIDProvider) movePointerInterpolated(ctx context.Context, fromX, fromY, toX, toY int, buttons uint8, durationMs int) (int, int, error) {
+	return p.movePointerInterpolatedWithProfile(ctx, fromX, fromY, toX, toY, buttons, durationMs, false)
+}
+
+func (p *HIDProvider) movePointerInterpolatedWithProfile(ctx context.Context, fromX, fromY, toX, toY int, buttons uint8, durationMs int, smooth bool) (int, int, error) {
 	lastX, lastY := fromX, fromY
 	if durationMs <= 0 || (fromX == toX && fromY == toY) {
 		if err := p.movePointer(toX, toY, buttons); err != nil {
@@ -455,6 +446,9 @@ func (p *HIDProvider) movePointerInterpolated(ctx context.Context, fromX, fromY,
 	distance := math.Sqrt(float64((toX-fromX)*(toX-fromX) + (toY-fromY)*(toY-fromY)))
 	if distance < float64(steps) {
 		steps = int(math.Max(1, math.Round(distance)))
+	}
+	if smooth {
+		return p.moveAlongPathWithSteps(ctx, [][2]int{{fromX, fromY}, {toX, toY}}, buttons, durationMs, steps, true)
 	}
 	// Emit the first move immediately, then span the full requested duration
 	// across the remaining interpolation reports.
@@ -559,7 +553,7 @@ func (p *HIDProvider) swipeLockedWithOptions(ctx context.Context, path [][2]floa
 	// Use the same trajectory for mouse and touchscreen reports; preserve
 	// explicit end holds and edge gestures.
 	start := path[0]
-	controlledRelease := options.HoldAfterMs == 0 && start[0] > 10 && start[0] < 990 && start[1] > 10 && start[1] < 990
+	controlledRelease := controlledReleaseAllowed(Point{start[0], start[1]}, options.HoldAfterMs)
 	endpoint := absPath[len(absPath)-1]
 	if controlledRelease {
 		// Skip duplicate trailing points when locating the final moving segment.
@@ -568,9 +562,8 @@ func (p *HIDProvider) swipeLockedWithOptions(ctx context.Context, path [][2]floa
 		for previous > 0 && path[previous] == path[last] {
 			previous--
 		}
-		dx, dy := path[last][0]-path[previous][0], path[last][1]-path[previous][1]
-		fraction := math.Min(0.5, defaultSwipeReleaseTailDistance/math.Hypot(dx, dy))
-		x, y, convertErr := p.normalizedToAbsolute(path[last][0]-dx*fraction, path[last][1]-dy*fraction)
+		tailStart := releaseTailStart(Point{path[previous][0], path[previous][1]}, Point{path[last][0], path[last][1]})
+		x, y, convertErr := p.normalizedToAbsolute(tailStart.X, tailStart.Y)
 		if convertErr != nil {
 			_ = p.releasePointerRepeated(absPath[0][0], absPath[0][1])
 			return convertErr
@@ -663,7 +656,7 @@ func (p *HIDProvider) moveAlongPathWithSteps(ctx context.Context, absPath [][2]i
 			if smoothRelease && i == len(absPath)-1 {
 				// Quintic smoothstep: gently accelerate and brake; zero velocity
 				// and acceleration at the ends of the main movement.
-				progress = progress * progress * progress * (10 + progress*(-15+6*progress))
+				progress = quinticSmoothStep(progress)
 			}
 			x := start[0] + int(math.Round(dx*progress))
 			y := start[1] + int(math.Round(dy*progress))

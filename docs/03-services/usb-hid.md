@@ -149,8 +149,32 @@ session and must release every contact before returning. Example:
 `move_to.speed` is optional and uses normalized coordinate units per second.
 When both `speed` and `duration_ms` are present, `duration_ms` takes precedence;
 omitting both preserves the existing immediate-move behavior.
-Each `wait` is limited to 30 seconds, and cumulative wait time across one
-atomic program is limited to 60 seconds.
+While contact is held, timed atomic moves use the same quintic acceleration
+and braking curve as HID swipe main motion. For a known interior contact,
+a timed move immediately followed by release also reserves the last two
+normalized units (at most half the segment) for 100ms of real low-speed
+movement, with a 180ms minimum main motion, matching the standard HID swipe.
+This adds release time to the requested main-motion duration; it is not a
+stationary endpoint hold. Edge-origin gestures, explicit end waits, immediate
+moves and releases that specify a different endpoint preserve their timing.
+The main curve also covers timed movements in predefined quick actions.
+The profile is shared in `mnk/motion_profile.go`; new touch tools should call
+`SwipeWithOptions` or `TouchActions` rather than implement their own curve.
+
+The Agent's ADB input backend executes standard swipes as one continuous
+DOWN/MOVE/UP program using `sendevent`, with `input motionevent` as a fallback.
+Both paths use the same curve and eligible release tail for timed moves.
+For a standard multi-point swipe, the 180ms minimum applies once to the entire
+eligible main path, followed by one 100ms release tail. Intermediate segments
+remain linear; only the final main segment uses the braking curve, matching HID.
+`steps` controls interpolation, and optional holds occur while contact is down.
+ADB command and injection overhead can extend wall-clock duration.
+These changes do not affect mouse-wheel events, ADB `mouse_scroll` approximation,
+the dedicated drag interfaces, or the separate benchmark bridge backends.
+Atomic programs are limited to 128 actions, 30 seconds per declared action
+duration, and 60 seconds for the sum of declared durations. HID and ADB check
+both the submitted program and the expanded motion profile, including its
+release tails, before sending any input.
 
 Supported one-object `type` forms are the default for normal quick actions and
 scripts; `type:"drag"` is not supported.
