@@ -319,45 +319,54 @@ classified, which prevents a new suite from being silently omitted. A suite can
 be represented by more than one case when its tasks need different platforms;
 `connection_capabilities_v1.json` is currently split into iOS and Android cases.
 
-The default trigger policy is intentionally tiered:
+The execution policy is based only on whether CI can prepare the environment:
 
 | Trigger | Profile | Purpose |
 | --- | --- | --- |
-| Push to `main` touching benchmark/agent code | `smoke` | Post-merge regression check |
-| Tue-Sun schedule | `smoke` | Low-cost deterministic regression signal (5 cases) |
-| Monday schedule | `weekly` | All isolated, mock, and MobileGym cases (14 cases) |
+| Monday, Wednesday, Friday schedule | `runnable` | Every case CI can run without external hardware (14 cases) |
+| Manual dispatch | `runnable` | Rerun all isolated, mock, and MobileGym cases |
 | Manual dispatch | `hardware` | ADB, VPhone, desktop, and real-phone bridge cases (12 cases) |
 | Manual dispatch | `all` | Every catalog case; requires all configured environments |
 
-Hardware cases are not part of the schedule because they require a connected
-device or a long-lived external environment bridge and cannot be made reliable
-on a generic GitHub runner. The weekly sweep includes the 100-task MobileGym
-calibration suite; if its cost becomes too high, it can be moved from `weekly`
-to `hardware` without changing the runner.
+The scheduled sweep runs at 02:17 Asia/Shanghai on Monday, Wednesday, and
+Friday. It selects every case whose environment is `isolated` or `mobilegym`.
+The workflow starts Android MobileGym environments in Docker; isolated and mock
+suites run with isolated Agent workers and need no external device.
+VPhone is currently excluded because it requires a separately hosted macOS
+Apple Silicon bridge; it remains available through manual `hardware`/`all`
+dispatch once `BENCHMARK_VPHONE_ENVIRONMENT_URL` points to a reachable bridge.
+
+The scheduled sweep includes the 100-task MobileGym calibration suite because
+the `runnable` profile deliberately includes every locally runnable case. A
+manual single-suite run must use the matching `runnable` or `hardware` profile;
+use `all` when intentionally overriding that boundary.
 
 Pull requests run the catalog and planner tests in the normal `CI` workflow, but
 do not receive Agent/Judge/Langfuse secrets and therefore do not operate a
-device. The real smoke benchmark runs after merge on `main`. Manual dispatch is
-restricted to `main` for the same secret-isolation reason.
+device. Real benchmark execution comes from the Monday/Wednesday/Friday schedule
+on the default branch or a manual dispatch on any repository branch. Manual
+dispatch remains unavailable to pull request and fork refs.
 
-Treat the first two weeks as a baseline period. Review the recorded run duration,
-Langfuse cost, and failure class before changing cadence: keep smoke cases when
-their p95 duration is within 30 minutes and infrastructure-failure rate is under
-5%; move a case to weekly when it exceeds either threshold. Only promote an
-external hardware case into a schedule after its bridge has at least 99% health
+Treat the first two weeks as a baseline period. Review each scheduled case's run
+duration, Langfuse cost, and failure class before deciding whether the policy of
+running every locally runnable case needs to change. Only add VPhone or another
+external environment to the schedule after its bridge has at least 99% health
 availability over that baseline period.
 
-The workflow expects these GitHub configuration values in addition to the
-existing Langfuse variables:
+The workflow expects these GitHub configuration values. GitHub-facing names omit
+the `AIDEN_` prefix; the workflow maps them to the runner variables documented
+below.
 
-- Variables: `AIDEN_BENCHMARK_AGENT_PROVIDER`, `AIDEN_BENCHMARK_AGENT_MODEL`,
-  `AIDEN_BENCHMARK_AGENT_BASE_URL`, `AIDEN_BENCHMARK_JUDGE_MODEL`,
-  `AIDEN_BENCHMARK_JUDGE_BASE_URL`, `AIDEN_DAEMON_IMAGE`, `ANDROID_SERIAL`, and
-  the bridge URLs named by `environment_variable` in `benchmark/ci/suites.json`.
-- Secrets: `AIDEN_BENCHMARK_AGENT_API_KEY`,
-  `AIDEN_BENCHMARK_JUDGE_API_KEY`, `LANGFUSE_PUBLIC_KEY`, and
-  `LANGFUSE_SECRET_KEY`.
-- Variable: `LANGFUSE_BASE_URL`.
+- Variables: `BENCHMARK_AGENT_PROVIDER`, `BENCHMARK_AGENT_MODEL`,
+  `BENCHMARK_AGENT_BASE_URL`, `BENCHMARK_JUDGE_MODEL`,
+  `BENCHMARK_JUDGE_BASE_URL`, `DAEMON_IMAGE`, `ANDROID_SERIAL`,
+  `LANGFUSE_BASE_URL`, `BENCHMARK_PHONE_ENVIRONMENT_URL`,
+  `BENCHMARK_IOS_ENVIRONMENT_URL`, `BENCHMARK_MAC_ENVIRONMENT_URL`,
+  `BENCHMARK_VPHONE_ENVIRONMENT_URL`,
+  `BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL`, and
+  `BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL`.
+- Secrets: `BENCHMARK_AGENT_API_KEY`, `BENCHMARK_JUDGE_API_KEY`,
+  `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`.
 
 The benchmark job uses the dedicated `aiden-hosted-01` runner because the
 MobileGym and agent-daemon paths require Docker. It runs matrix cases one at a
@@ -368,7 +377,7 @@ from artifacts because they contain materialized Agent credentials. A failed
 Langfuse upload can be retried from the safe artifact without re-running the
 device task.
 
-## Environment Variables
+## Runner and Local CLI Environment Variables
 
 - `AIDEN_BENCHMARK_AGENT_PROVIDER` - Agent provider type for the default config template.
 - `AIDEN_BENCHMARK_AGENT_MODEL` - Agent model for the default config template and run manifest.

@@ -15,7 +15,7 @@ def test_catalog_rejects_an_unclassified_suite(tmp_path: Path) -> None:
     catalog_path.write_text(
         '{"version":1,"cases":['
         '{"id":"known","suite":"suites/known.json",'
-        '"environment":"isolated","cadence":"smoke"}'
+        '"environment":"isolated"}'
         '] }',
         encoding="utf-8",
     )
@@ -24,18 +24,26 @@ def test_catalog_rejects_an_unclassified_suite(tmp_path: Path) -> None:
         load_catalog(catalog_path=catalog_path, suites_dir=suites_dir)
 
 
-def test_weekly_profile_excludes_hardware_and_all_keeps_every_case() -> None:
+def test_runnable_profile_excludes_hardware_and_all_keeps_every_case() -> None:
     catalog = load_catalog()
 
-    weekly = select_cases(catalog, profile="weekly")
+    runnable = select_cases(catalog, profile="runnable")
     hardware = select_cases(catalog, profile="hardware")
     all_cases = select_cases(catalog, profile="all")
 
-    assert weekly
+    assert runnable
     assert hardware
     assert all_cases == catalog.cases
-    assert not any(case.cadence == "hardware" for case in weekly)
-    assert {case.suite for case in weekly} | {case.suite for case in hardware} == {
+    assert len(runnable) == 14
+    assert len(hardware) == 12
+    assert len(all_cases) == 26
+    assert not any(case.environment in {"adb", "external"} for case in runnable)
+    assert {case.environment for case in runnable} <= {"isolated", "mobilegym"}
+    assert {case.environment for case in hardware} <= {"adb", "external"}
+    assert {case.environment for case in runnable}.isdisjoint(
+        {case.environment for case in hardware}
+    )
+    assert {case.suite for case in runnable} | {case.suite for case in hardware} == {
         case.suite for case in catalog.cases
     }
 
@@ -50,6 +58,17 @@ def test_selecting_a_suite_preserves_platform_specific_cases() -> None:
     )
 
     assert {case.target_platform for case in selected} == {"ios", "android"}
+
+
+def test_suite_selection_must_match_profile_unless_all() -> None:
+    catalog = load_catalog()
+
+    with pytest.raises(CatalogError, match="outside the runnable profile"):
+        select_cases(
+            catalog,
+            profile="runnable",
+            suite="suites/vphone_ios_basic.json",
+        )
 
 
 def test_external_case_reads_its_named_environment_variable() -> None:
@@ -120,3 +139,49 @@ def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None
 
     assert "cli-services" not in artifact_paths
     assert "workers" not in artifact_paths
+
+
+def test_workflow_schedules_all_runnable_cases_on_monday_wednesday_friday() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "benchmark.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "  push:\n" not in workflow
+    assert "- cron: '17 18 * * 0,2,4'" in workflow
+    assert "if: ${{ startsWith(github.ref, 'refs/heads/') }}" in workflow
+    assert "github.ref == 'refs/heads/main'" not in workflow
+    assert (
+        'elif [[ "$EVENT_NAME" == "schedule" ]]; then\n            profile="runnable"'
+        in workflow
+    )
+
+
+def test_workflow_maps_unprefixed_github_configuration_to_runner_environment() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "benchmark.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "${{ vars.AIDEN_" not in workflow
+    assert "${{ secrets.AIDEN_" not in workflow
+    expected_mappings = {
+        "AIDEN_BENCHMARK_AGENT_PROVIDER": "vars.BENCHMARK_AGENT_PROVIDER",
+        "AIDEN_BENCHMARK_AGENT_MODEL": "vars.BENCHMARK_AGENT_MODEL",
+        "AIDEN_BENCHMARK_AGENT_BASE_URL": "vars.BENCHMARK_AGENT_BASE_URL",
+        "AIDEN_BENCHMARK_AGENT_API_KEY": "secrets.BENCHMARK_AGENT_API_KEY",
+        "AIDEN_BENCHMARK_JUDGE_MODEL": "vars.BENCHMARK_JUDGE_MODEL",
+        "AIDEN_BENCHMARK_JUDGE_BASE_URL": "vars.BENCHMARK_JUDGE_BASE_URL",
+        "AIDEN_BENCHMARK_JUDGE_API_KEY": "secrets.BENCHMARK_JUDGE_API_KEY",
+        "AIDEN_DAEMON_IMAGE": "vars.DAEMON_IMAGE",
+        "AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL": "vars.BENCHMARK_PHONE_ENVIRONMENT_URL",
+        "AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL": "vars.BENCHMARK_IOS_ENVIRONMENT_URL",
+        "AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL": "vars.BENCHMARK_MAC_ENVIRONMENT_URL",
+        "AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL": "vars.BENCHMARK_VPHONE_ENVIRONMENT_URL",
+        "AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL": (
+            "vars.BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL"
+        ),
+        "AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL": (
+            "vars.BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL"
+        ),
+    }
+    for environment_name, github_expression in expected_mappings.items():
+        assert f"{environment_name}: ${{{{ {github_expression}" in workflow

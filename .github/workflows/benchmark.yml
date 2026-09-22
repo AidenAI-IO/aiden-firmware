@@ -1,28 +1,18 @@
 name: Benchmark
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'benchmark/**'
-      - 'src/agent/**'
-      - '.github/workflows/benchmark.yml'
   schedule:
-    # 02:17 Asia/Shanghai, Tuesday through Sunday.
-    - cron: '17 18 * * 1-6'
-    # 02:43 Asia/Shanghai every Monday; weekly includes the smoke suites.
-    - cron: '43 18 * * 0'
+    # 02:17 Asia/Shanghai on Monday, Wednesday, and Friday.
+    - cron: '17 18 * * 0,2,4'
   workflow_dispatch:
     inputs:
       profile:
         description: Suite profile
         required: true
-        default: smoke
+        default: runnable
         type: choice
         options:
-          - smoke
-          - weekly
+          - runnable
           - hardware
           - all
       suite:
@@ -52,15 +42,15 @@ jobs:
         env:
           DISPATCH_PROFILE: ${{ inputs.profile }}
           EVENT_NAME: ${{ github.event_name }}
-          SCHEDULE: ${{ github.event.schedule }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            profile="${DISPATCH_PROFILE:-smoke}"
-          elif [[ "$SCHEDULE" == "43 18 * * 0" ]]; then
-            profile="weekly"
+            profile="${DISPATCH_PROFILE:-runnable}"
+          elif [[ "$EVENT_NAME" == "schedule" ]]; then
+            profile="runnable"
           else
-            profile="smoke"
+            echo "Unsupported benchmark workflow event: $EVENT_NAME" >&2
+            exit 1
           fi
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
       - id: matrix
@@ -91,7 +81,7 @@ jobs:
 
   run:
     needs: plan
-    if: ${{ startsWith(github.ref, 'refs/heads/') && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    if: ${{ startsWith(github.ref, 'refs/heads/') }}
     runs-on: aiden-hosted-01
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
@@ -99,24 +89,24 @@ jobs:
       max-parallel: 1
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      AIDEN_BENCHMARK_AGENT_PROVIDER: ${{ vars.AIDEN_BENCHMARK_AGENT_PROVIDER }}
-      AIDEN_BENCHMARK_AGENT_MODEL: ${{ vars.AIDEN_BENCHMARK_AGENT_MODEL }}
-      AIDEN_BENCHMARK_AGENT_BASE_URL: ${{ vars.AIDEN_BENCHMARK_AGENT_BASE_URL }}
-      AIDEN_BENCHMARK_AGENT_API_KEY: ${{ secrets.AIDEN_BENCHMARK_AGENT_API_KEY }}
-      AIDEN_BENCHMARK_JUDGE_MODEL: ${{ vars.AIDEN_BENCHMARK_JUDGE_MODEL || 'anthropic/claude-sonnet-4-6' }}
-      AIDEN_BENCHMARK_JUDGE_BASE_URL: ${{ vars.AIDEN_BENCHMARK_JUDGE_BASE_URL || 'https://openrouter.ai/api/v1' }}
-      AIDEN_BENCHMARK_JUDGE_API_KEY: ${{ secrets.AIDEN_BENCHMARK_JUDGE_API_KEY }}
-      AIDEN_DAEMON_IMAGE: ${{ vars.AIDEN_DAEMON_IMAGE || 'aiden-agent-daemon:local' }}
+      AIDEN_BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
+      AIDEN_BENCHMARK_AGENT_MODEL: ${{ vars.BENCHMARK_AGENT_MODEL }}
+      AIDEN_BENCHMARK_AGENT_BASE_URL: ${{ vars.BENCHMARK_AGENT_BASE_URL }}
+      AIDEN_BENCHMARK_AGENT_API_KEY: ${{ secrets.BENCHMARK_AGENT_API_KEY }}
+      AIDEN_BENCHMARK_JUDGE_MODEL: ${{ vars.BENCHMARK_JUDGE_MODEL || 'anthropic/claude-sonnet-4-6' }}
+      AIDEN_BENCHMARK_JUDGE_BASE_URL: ${{ vars.BENCHMARK_JUDGE_BASE_URL || 'https://openrouter.ai/api/v1' }}
+      AIDEN_BENCHMARK_JUDGE_API_KEY: ${{ secrets.BENCHMARK_JUDGE_API_KEY }}
+      AIDEN_DAEMON_IMAGE: ${{ vars.DAEMON_IMAGE || 'aiden-agent-daemon:local' }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
       ANDROID_SERIAL: ${{ vars.ANDROID_SERIAL }}
-      AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL }}
-      AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL: ${{ vars.AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_PHONE_ENVIRONMENT_URL: ${{ vars.BENCHMARK_PHONE_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_IOS_ENVIRONMENT_URL: ${{ vars.BENCHMARK_IOS_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_MAC_ENVIRONMENT_URL: ${{ vars.BENCHMARK_MAC_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_VPHONE_ENVIRONMENT_URL: ${{ vars.BENCHMARK_VPHONE_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL: ${{ vars.BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL }}
+      AIDEN_BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL: ${{ vars.BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL }}
     steps:
       - name: Reclaim persistent runner workspace
         shell: bash

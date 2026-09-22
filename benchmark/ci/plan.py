@@ -11,9 +11,15 @@ BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG_PATH = Path(__file__).with_name("suites.json")
 DEFAULT_SUITES_DIR = BENCHMARK_ROOT / "suites"
 ENVIRONMENTS = {"isolated", "mobilegym", "adb", "external"}
-CADENCES = {"smoke", "weekly", "hardware"}
-PROFILES = {"smoke", "weekly", "hardware", "all"}
+RUNNABLE_ENVIRONMENTS = {"isolated", "mobilegym"}
+HARDWARE_ENVIRONMENTS = {"adb", "external"}
+PROFILES = {"runnable", "hardware", "all"}
 TARGET_PLATFORMS = {"auto", "ios", "android", "mac", "windows", "linux"}
+
+if RUNNABLE_ENVIRONMENTS & HARDWARE_ENVIRONMENTS:
+    raise RuntimeError("runnable and hardware environments must be disjoint")
+if RUNNABLE_ENVIRONMENTS | HARDWARE_ENVIRONMENTS != ENVIRONMENTS:
+    raise RuntimeError("runnable and hardware environments must cover all environments")
 
 
 class CatalogError(ValueError):
@@ -25,7 +31,6 @@ class SuiteCase:
     id: str
     suite: str
     environment: str
-    cadence: str
     environment_variable: str = ""
     target_platform: str = "auto"
     max_concurrency: int = 1
@@ -61,8 +66,6 @@ def _case_from_raw(raw: Any, index: int) -> SuiteCase:
         raise CatalogError(f"invalid suite path for {case.id}: {case.suite!r}")
     if case.environment not in ENVIRONMENTS:
         raise CatalogError(f"unsupported environment for {case.id}: {case.environment}")
-    if case.cadence not in CADENCES:
-        raise CatalogError(f"unsupported cadence for {case.id}: {case.cadence}")
     if case.target_platform not in TARGET_PLATFORMS:
         raise CatalogError(
             f"unsupported target platform for {case.id}: {case.target_platform}"
@@ -120,13 +123,26 @@ def select_cases(
         selected = tuple(case for case in catalog.cases if case.suite == suite)
         if not selected:
             raise CatalogError(f"suite is not in the CI catalog: {suite}")
+        if profile != "all":
+            allowed_environments = (
+                RUNNABLE_ENVIRONMENTS
+                if profile == "runnable"
+                else HARDWARE_ENVIRONMENTS
+            )
+            if any(case.environment not in allowed_environments for case in selected):
+                raise CatalogError(
+                    f"suite {suite} is outside the {profile} profile; "
+                    "select the matching profile or all"
+                )
         return selected
-    if profile == "smoke":
-        return tuple(case for case in catalog.cases if case.cadence == "smoke")
-    if profile == "weekly":
-        return tuple(case for case in catalog.cases if case.cadence != "hardware")
+    if profile == "runnable":
+        return tuple(
+            case for case in catalog.cases if case.environment in RUNNABLE_ENVIRONMENTS
+        )
     if profile == "hardware":
-        return tuple(case for case in catalog.cases if case.cadence == "hardware")
+        return tuple(
+            case for case in catalog.cases if case.environment in HARDWARE_ENVIRONMENTS
+        )
     return catalog.cases
 
 
