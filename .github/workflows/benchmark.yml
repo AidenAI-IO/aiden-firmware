@@ -1,9 +1,6 @@
 name: Benchmark
 
 on:
-  push:
-    branches:
-      - feat/benchmark-ci
   schedule:
     # 02:17 Asia/Shanghai on Monday, Wednesday, and Friday.
     - cron: '17 18 * * 0,2,4'
@@ -49,7 +46,7 @@ jobs:
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             profile="${DISPATCH_PROFILE:-runnable}"
-          elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "push" ]]; then
+          elif [[ "$EVENT_NAME" == "schedule" ]]; then
             profile="runnable"
           else
             echo "Unsupported benchmark workflow event: $EVENT_NAME" >&2
