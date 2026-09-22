@@ -1,13 +1,209 @@
 package mnk
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestADBSwipeProfilesWholePathWithinDurationBudget(t *testing.T) {
+	for _, points := range []int{2, 3, 10, 125} {
+		path := make([][2]float64, points)
+		for i := range path {
+			path[i] = [2]float64{500, 800 - 600*float64(i)/float64(points-1)}
+		}
+		for _, duration := range []int{40, 180, 301} {
+			t.Run(fmt.Sprintf("points=%d/duration=%d", points, duration), func(t *testing.T) {
+				assertADBSwipeProgram(t, path, SwipeOptions{DurationMs: duration, HoldBeforeMs: 31}, max(duration, 180)+100+31)
+			})
+		}
+	}
+	for _, tc := range []struct {
+		name         string
+		path         [][2]float64
+		options      SwipeOptions
+		wantDuration int
+	}{
+		{"duplicate waypoints", [][2]float64{{500, 800}, {500, 500}, {500, 500}, {500, 200}, {500, 200}}, SwipeOptions{DurationMs: 180}, 280},
+		{"tiny final segment", [][2]float64{{500, 800}, {500, 200.01}, {500, 200}}, SwipeOptions{DurationMs: 180}, 280},
+		{"end hold", [][2]float64{{500, 800}, {500, 500}, {500, 200}}, SwipeOptions{DurationMs: 40, HoldBeforeMs: 31, HoldAfterMs: 43}, 114},
+		{"edge origin", [][2]float64{{500, 1000}, {500, 700}, {500, 500}}, SwipeOptions{DurationMs: 40}, 40},
+	} {
+		t.Run(tc.name, func(t *testing.T) { assertADBSwipeProgram(t, tc.path, tc.options, tc.wantDuration) })
+	}
+}
+
+// Inspect both injection scripts, including their actual sleep totals and
+// DOWN/UP boundaries, rather than relying only on the planner's duration field.
+func assertADBSwipeProgram(t *testing.T, path [][2]float64, options SwipeOptions, wantDuration int) {
+	t.Helper()
+	original := append([][2]float64(nil), path...)
+	actions, err := adbSwipeActions(path, ButtonLeft, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(path, original) {
+		t.Fatal("mutated caller path")
+	}
+	prepared := withTouchReleaseTails(actions)
+	if len(prepared) != len(actions) {
+		t.Fatal("profile applied twice")
+	}
+	if err := validateADBTouchActions(prepared); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []bool{false, true} {
+		script, duration := adbProfileTestScript(t, prepared, raw)
+		if duration != wantDuration || adbScriptSleepMillis(t, script) != wantDuration {
+			t.Fatalf("raw=%t duration=%d sleeps=%d, want %d", raw, duration, adbScriptSleepMillis(t, script), wantDuration)
+		}
+		points, downs, ups := adbProfileTestPoints(script, raw)
+		if downs != 1 || ups != 1 {
+			t.Fatalf("raw=%t split contact: down=%d up=%d", raw, downs, ups)
+		}
+		end := path[len(path)-1]
+		if len(points) == 0 || points[len(points)-1] != [2]int{int(math.Round(end[0])), int(math.Round(end[1]))} {
+			t.Fatalf("raw=%t lost endpoint: %v", raw, points)
+		}
+	}
+}
+
+func TestADBSwipeDoesNotBrakeAtIntermediateWaypoints(t *testing.T) {
+	actions, err := adbSwipeActions([][2]float64{{500, 800}, {500, 500}, {500, 200}}, ButtonLeft, SwipeOptions{DurationMs: 180, Steps: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []bool{false, true} {
+		script, _ := adbProfileTestScript(t, withTouchReleaseTails(actions), raw)
+		points, _, _ := adbProfileTestPoints(script, raw)
+		want := [][2]int{{500, 800}, {500, 725}, {500, 650}, {500, 575}, {500, 500}}
+		if len(points) < 9 || !slices.Equal(points[:5], want) {
+			t.Fatalf("raw=%t intermediate segment braked: %v", raw, points)
+		}
+		first := points[4][1] - points[5][1]
+		middle := points[5][1] - points[6][1]
+		last := points[7][1] - points[8][1]
+		if first >= middle/2 || last >= middle/2 {
+			t.Fatalf("raw=%t final segment lacks easing: %v", raw, points)
+		}
+	}
+}
+
+func adbProfileTestScript(t *testing.T, actions []TouchAction, raw bool) (string, int) {
+	t.Helper()
+	var script string
+	var duration int
+	var err error
+	if raw {
+		script, duration, err = buildADBTouchScript(adbTouchDevice{path: "/dev/input/event3", xMax: 1000, yMax: 1000, hasAbsXY: true, hasBtnTouch: true}, actions, 1)
+	} else {
+		script, duration, err = buildADBInputMotionScript(actions, adbInputScreenSize{1001, 1001})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script, duration
+}
+
+func adbProfileTestPoints(script string, raw bool) (points [][2]int, downs, ups int) {
+	script = script[strings.Index(script, " EXIT\n")+len(" EXIT\n"):]
+	x, y, active := 0, 0, false
+	for _, line := range strings.Split(script, "\n") {
+		f := strings.Fields(line)
+		if raw && len(f) == 5 && f[0] == "sendevent" {
+			value, _ := strconv.Atoi(f[4])
+			switch f[2] + ":" + f[3] {
+			case "3:0":
+				x = value
+			case "3:1":
+				y = value
+			case "1:330":
+				active = value == 1
+				if active {
+					downs++
+				} else {
+					ups++
+				}
+			case "0:0":
+				if active {
+					points = append(points, [2]int{x, y})
+				}
+			}
+		} else if !raw && len(f) == 6 && f[0] == "input" {
+			x, _ = strconv.Atoi(f[4])
+			y, _ = strconv.Atoi(f[5])
+			switch f[3] {
+			case "DOWN":
+				downs++
+				points = append(points, [2]int{x, y})
+			case "MOVE":
+				points = append(points, [2]int{x, y})
+			case "UP":
+				ups++
+			}
+		}
+	}
+	return
+}
+
+func TestTouchProvidersRejectExpandedProgramBeforeInput(t *testing.T) {
+	tooMany := []TouchAction{{Type: "touch_down", Point: &Point{500, 800}}}
+	for len(tooMany) < 126 {
+		tooMany = append(tooMany, TouchAction{Type: "wait"})
+	}
+	tooMany = append(tooMany, TouchAction{Type: "move_to", Point: &Point{500, 200}, DurationMs: 300}, TouchAction{Type: "touch_up"})
+	for _, tc := range []struct {
+		name    string
+		actions []TouchAction
+	}{
+		{"expanded count", tooMany},
+		{"expanded duration", []TouchAction{{Type: "touch_down", Point: &Point{500, 800}}, {Type: "wait", DurationMs: 30000}, {Type: "wait", DurationMs: 29999}, {Type: "move_to", Point: &Point{500, 200}, DurationMs: 1}, {Type: "touch_up"}}},
+		{"movement budget", []TouchAction{{Type: "touch_down", Point: &Point{500, 800}}, {Type: "move_to", Point: &Point{500, 600}, DurationMs: 30000}, {Type: "move_to", Point: &Point{500, 400}, DurationMs: 30000}, {Type: "move_to", Point: &Point{500, 200}, DurationMs: 1}, {Type: "touch_up"}}},
+		{"release hold budget", []TouchAction{{Type: "touch_down", Point: &Point{500, 800}}, {Type: "move_to", Point: &Point{500, 400}, DurationMs: 30000}, {Type: "wait", DurationMs: 30000}, {Type: "touch_up", Point: &Point{500, 200}, DurationMs: 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			pointer := &layoutCaptureDevice{}
+			hid := NewHIDProvider(pointer, nil, nil, nil, true, "qwerty", nil)
+			err := hid.TouchActions(ctx, tc.actions)
+			if got := AsError(err); got == nil || got.Kind != ErrInvalidArguments {
+				t.Fatalf("HID error=%v, want invalid arguments", err)
+			}
+			if len(pointer.bytes()) != 0 {
+				t.Fatal("HID sent input before rejecting program")
+			}
+			runner := &adbTestRunner{}
+			adb := newTestADBProvider(t, runner)
+			err = adb.TouchActions(ctx, tc.actions)
+			if got := AsError(err); got == nil || got.Kind != ErrInvalidArguments {
+				t.Fatalf("ADB error=%v, want invalid arguments", err)
+			}
+			if len(runner.commands) != 0 {
+				t.Fatal("ADB ran commands before rejecting program")
+			}
+		})
+	}
+	// Exact execution limits remain valid; do not wait a minute to test them.
+	actions := []TouchAction{{Type: "touch_down", Point: &Point{500, 800}}, {Type: "wait", DurationMs: 30000}, {Type: "wait", DurationMs: 29720}, {Type: "move_to", Point: &Point{500, 200}, DurationMs: 80}, {Type: "touch_up"}}
+	if err := validateTouchActionLimits(withTouchReleaseTails(actions)); err != nil {
+		t.Fatalf("exact 60000ms budget rejected: %v", err)
+	}
+	oneLess := append(append([]TouchAction(nil), tooMany[:1]...), tooMany[2:]...)
+	prepared := withTouchReleaseTails(oneLess)
+	if len(prepared) != 128 {
+		t.Fatalf("expected exactly 128 expanded actions, got %d", len(prepared))
+	}
+	if err := validateTouchActionLimits(prepared); err != nil {
+		t.Fatalf("128 expanded actions rejected: %v", err)
+	}
+}
 
 func TestTouchReleaseTailEligibility(t *testing.T) {
 	for _, tc := range []struct {

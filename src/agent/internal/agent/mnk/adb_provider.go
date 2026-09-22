@@ -209,7 +209,7 @@ func (p *ADBProvider) SwipeWithOptions(ctx context.Context, path [][2]float64, b
 	if err := p.rejectActiveDrag("swipe"); err != nil {
 		return err
 	}
-	options.DurationMs = p.clampDuration(options.DurationMs, defaultSwipeGestureDurationMs, defaultSwipeSmoothMotionMinMs)
+	options.DurationMs = p.clampDuration(options.DurationMs, defaultSwipeGestureDurationMs, 1)
 	actions, err := adbSwipeActions(path, button, options)
 	if err != nil {
 		return err
@@ -229,6 +229,7 @@ func adbSwipeActions(path [][2]float64, button string, options SwipeOptions) ([]
 	}
 	lengths := make([]float64, len(path))
 	total := 0.0
+	lastMoving := 0
 	for i, point := range path {
 		if err := validateADBTouchPoint(Point{X: point[0], Y: point[1]}); err != nil {
 			return nil, InvalidArgumentsf("invalid point %d: %v", i, err)
@@ -236,10 +237,27 @@ func adbSwipeActions(path [][2]float64, button string, options SwipeOptions) ([]
 		if i > 0 {
 			lengths[i] = math.Hypot(point[0]-path[i-1][0], point[1]-path[i-1][1])
 			total += lengths[i]
+			if lengths[i] > 0 {
+				lastMoving = i
+			}
 		}
 	}
 	if total == 0 {
 		return nil, InvalidArguments("swipe requires distinct start and end points")
+	}
+	// Profile the whole path before distributing its duration. The generic
+	// atomic transformer must not floor the final segment again, or treat
+	// intermediate waypoints as independent acceleration/braking cycles.
+	controlledRelease := controlledReleaseAllowed(Point{path[0][0], path[0][1]}, options.HoldAfterMs)
+	endpoint := Point{path[lastMoving][0], path[lastMoving][1]}
+	mainEnd := endpoint
+	if controlledRelease {
+		options.DurationMs = max(options.DurationMs, defaultSwipeSmoothMotionMinMs)
+		previous := Point{path[lastMoving-1][0], path[lastMoving-1][1]}
+		mainEnd = releaseTailStart(previous, endpoint)
+		mainLength := math.Hypot(mainEnd.X-previous.X, mainEnd.Y-previous.Y)
+		total += mainLength - lengths[lastMoving]
+		lengths[lastMoving] = mainLength
 	}
 	actions := []TouchAction{{Type: "touch_down", Point: &Point{X: path[0][0], Y: path[0][1]}}}
 	if options.HoldBeforeMs > 0 {
@@ -250,18 +268,27 @@ func adbSwipeActions(path [][2]float64, button string, options SwipeOptions) ([]
 		steps = adbTouchMoveSteps
 	}
 	completed, elapsed := 0.0, 0
-	for i := 1; i < len(path); i++ {
+	for i := 1; i <= lastMoving; i++ {
 		if lengths[i] == 0 {
 			continue
 		}
 		completed += lengths[i]
 		due := int(math.Round(float64(options.DurationMs) * completed / total))
+		point := Point{X: path[i][0], Y: path[i][1]}
+		if i == lastMoving {
+			point = mainEnd
+			due = options.DurationMs
+		}
 		actions = append(actions, TouchAction{
-			Type: "move_to", Point: &Point{X: path[i][0], Y: path[i][1]},
+			Type: "move_to", Point: &point,
 			DurationMs: due - elapsed,
 			steps:      max(1, int(math.Round(float64(steps)*lengths[i]/total))),
+			linear:     !controlledRelease || i != lastMoving,
 		})
 		elapsed = due
+	}
+	if controlledRelease {
+		actions = append(actions, TouchAction{Type: "move_to", Point: &endpoint, DurationMs: defaultSwipeReleaseTailMs, releaseTail: true})
 	}
 	if options.HoldAfterMs > 0 {
 		actions = append(actions, TouchAction{Type: "wait", DurationMs: options.HoldAfterMs})
@@ -389,6 +416,9 @@ func (p *ADBProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 		return err
 	}
 	actions = withTouchReleaseTails(actions)
+	if err := validateTouchActionLimits(actions); err != nil {
+		return InvalidArgumentsf("profiled touch program exceeds limits: %v", err)
+	}
 
 	p.touchMu.Lock()
 	defer p.touchMu.Unlock()
@@ -461,14 +491,10 @@ func (p *ADBProvider) runADBInputMotionActions(ctx context.Context, actions []To
 }
 
 func validateADBTouchActions(actions []TouchAction) error {
-	if len(actions) == 0 {
-		return InvalidArguments("touch actions must contain at least one atomic action")
-	}
-	if len(actions) > 128 {
-		return InvalidArguments("touch actions must contain at most 128 atomic actions")
+	if err := validateTouchActionLimits(actions); err != nil {
+		return err
 	}
 	active := false
-	totalWaitMs := 0
 	for i, action := range actions {
 		actionType := strings.ToLower(strings.TrimSpace(action.Type))
 		if actionType == "" {
@@ -476,9 +502,6 @@ func validateADBTouchActions(actions []TouchAction) error {
 		}
 		if action.Button != "" && action.Button != ButtonLeft && action.Button != "left" {
 			return InvalidArgumentsf("adb only supports left-button touch semantics, got %q", action.Button)
-		}
-		if action.DurationMs < 0 || action.DurationMs > 30000 {
-			return InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", i)
 		}
 		if action.Point != nil {
 			if err := validateADBTouchPoint(*action.Point); err != nil {
@@ -500,10 +523,6 @@ func validateADBTouchActions(actions []TouchAction) error {
 				return InvalidArgumentsf("touch action %d move_to requires point", i)
 			}
 		case "wait":
-			totalWaitMs += action.DurationMs
-			if totalWaitMs > 60000 {
-				return InvalidArguments("total wait time in touch actions must not exceed 60000 ms")
-			}
 		case "touch_up":
 			if !active {
 				return InvalidArgumentsf("touch action %d touch_up without an active contact", i)
@@ -699,7 +718,7 @@ func buildADBTouchScript(device adbTouchDevice, actions []TouchAction, trackingI
 			x, y := adbTouchPointToDevice(device, *action.Point)
 			duration := action.DurationMs
 			if duration > 0 {
-				appendADBMotion(&script, currentX, currentY, x, y, duration, action.steps, active && !action.releaseTail, func(stepX, stepY int) {
+				appendADBMotion(&script, currentX, currentY, x, y, duration, action.steps, active && !action.releaseTail && !action.linear, func(stepX, stepY int) {
 					appendADBTouchPosition(&script, device, stepX, stepY, active)
 				})
 				totalDurationMs += duration
@@ -926,7 +945,7 @@ func buildADBInputMotionScript(actions []TouchAction, size adbInputScreenSize) (
 			x, y := adbInputPointToPixel(*action.Point, size)
 			duration := action.DurationMs
 			if duration > 0 && active {
-				appendADBMotion(&script, currentX, currentY, x, y, duration, action.steps, !action.releaseTail, func(stepX, stepY int) {
+				appendADBMotion(&script, currentX, currentY, x, y, duration, action.steps, !action.releaseTail && !action.linear, func(stepX, stepY int) {
 					emit("MOVE", stepX, stepY)
 				})
 				totalDurationMs += duration

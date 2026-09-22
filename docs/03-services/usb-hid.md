@@ -163,13 +163,18 @@ The profile is shared in `mnk/motion_profile.go`; new touch tools should call
 
 The Agent's ADB input backend executes standard swipes as one continuous
 DOWN/MOVE/UP program using `sendevent`, with `input motionevent` as a fallback.
-Both paths use the same curve and eligible release tail for timed moves;
-swipe main motion has a 180ms minimum, `steps` controls interpolation, and optional holds occur while contact
-is down. ADB command and injection overhead can extend wall-clock duration.
+Both paths use the same curve and eligible release tail for timed moves.
+For a standard multi-point swipe, the 180ms minimum applies once to the entire
+eligible main path, followed by one 100ms release tail. Intermediate segments
+remain linear; only the final main segment uses the braking curve, matching HID.
+`steps` controls interpolation, and optional holds occur while contact is down.
+ADB command and injection overhead can extend wall-clock duration.
 These changes do not affect mouse-wheel events, ADB `mouse_scroll` approximation,
 the dedicated drag interfaces, or the separate benchmark bridge backends.
-Each `wait` is limited to 30 seconds, and cumulative wait time across one
-atomic program is limited to 60 seconds.
+Atomic programs are limited to 128 actions, 30 seconds per declared action
+duration, and 60 seconds for the sum of declared durations. HID and ADB check
+both the submitted program and the expanded motion profile, including its
+release tails, before sending any input.
 
 Supported one-object `type` forms are the default for normal quick actions and
 scripts; `type:"drag"` is not supported.

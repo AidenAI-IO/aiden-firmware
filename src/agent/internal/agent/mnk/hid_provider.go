@@ -316,14 +316,14 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 	if err := p.rejectActiveDrag("atomic touch actions"); err != nil {
 		return err
 	}
+	if err := validateTouchActionLimits(actions); err != nil {
+		return err
+	}
+	actions = withTouchReleaseTails(actions)
+	if err := validateTouchActionLimits(actions); err != nil {
+		return InvalidArgumentsf("profiled touch program exceeds limits: %v", err)
+	}
 	return runPointerGate(p.gate, ctx, func() error {
-		if len(actions) == 0 {
-			return InvalidArguments("touch actions must not be empty")
-		}
-		if len(actions) > 128 {
-			return InvalidArguments("touch actions must contain at most 128 atomic actions")
-		}
-
 		active := false
 		activeButton := ButtonLeft
 		currentX, currentY := p.getCurrentPosition()
@@ -334,21 +334,7 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 			}
 			return err
 		}
-		totalDurationMs := 0
 		for index, action := range actions {
-			if action.DurationMs < 0 || action.DurationMs > 30000 {
-				return releaseOnError(InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", index))
-			}
-			switch strings.ToLower(strings.TrimSpace(action.Type)) {
-			case "wait", "move_to":
-				totalDurationMs += action.DurationMs
-				if totalDurationMs > 60000 {
-					return releaseOnError(InvalidArguments("total duration in touch actions must not exceed 60000 ms"))
-				}
-			}
-		}
-
-		for index, action := range withTouchReleaseTails(actions) {
 			if err := ctx.Err(); err != nil {
 				return releaseOnError(err)
 			}
@@ -380,7 +366,7 @@ func (p *HIDProvider) TouchActions(ctx context.Context, actions []TouchAction) e
 				// Atomic programs that keep a contact down are still continuous
 				// finger gestures. Apply the same controlled acceleration and
 				// braking as the standard swipe path when they specify a duration.
-				smooth := active && action.DurationMs > 0 && !action.releaseTail
+				smooth := active && action.DurationMs > 0 && !action.releaseTail && !action.linear
 				currentX, currentY, moveErr = p.movePointerInterpolatedWithProfile(ctx, currentX, currentY, absX, absY, buttons, action.DurationMs, smooth)
 				if moveErr != nil {
 					return releaseOnError(moveErr)
