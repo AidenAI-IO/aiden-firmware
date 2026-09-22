@@ -266,6 +266,26 @@ func TestRollbackRemountsLiveSourceWhenCheckpointFails(t *testing.T) {
 	}
 }
 
+func TestBindMountRollbackRequiresMountController(t *testing.T) {
+	root := t.TempDir()
+	unit := &TransactionUnit{Key: "userdata:user-home", Component: ComponentUserHome, Layer: LayerUserdata,
+		Target: filepath.Join(root, "userhome"), Staged: filepath.Join(TransactionDir(root, "j"), "new/user-home"),
+		Old: filepath.Join(TransactionDir(root, "j"), "old/user-home"), Directory: true,
+		BindMount: filepath.Join(t.TempDir(), "root"), RemountScript: "/usr/lib/aiden/aiden-root-home",
+		HadOriginal: true, OldMoved: true, NewInstalled: true}
+	mustWrite(t, filepath.Join(unit.Target, ".bashrc"), "new")
+	mustWrite(t, filepath.Join(unit.Old, ".bashrc"), "old")
+	if err := RollbackUnit(unit, nil, nil); err == nil || !strings.Contains(err.Error(), "mount controller") {
+		t.Fatalf("rollback without mount controller = %v", err)
+	}
+	if got := mustRead(t, filepath.Join(unit.Target, ".bashrc")); got != "new" {
+		t.Fatalf("target was exchanged without a mount controller: %q", got)
+	}
+	if !unit.NewInstalled || !unit.OldMoved {
+		t.Fatalf("unit mutated without a mount controller: %+v", unit)
+	}
+}
+
 func TestBindMountUnitUnmountsExchangesAndRemounts(t *testing.T) {
 	root := t.TempDir()
 	mounts := newFakeMounts()

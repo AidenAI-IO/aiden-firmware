@@ -562,7 +562,12 @@ func RollbackUnit(unit *TransactionUnit, mounts MountController, checkpoint func
 		unit.Committed = false
 		return nil
 	}
-	if unit.BindMount != "" && mounts != nil {
+	if unit.BindMount != "" {
+		// Same fail-closed rule as the commit path: a bind-mount unit can only
+		// be exchanged when the mount can be dropped and re-established.
+		if mounts == nil {
+			return fmt.Errorf("unit %s requires a mount controller", unit.Key)
+		}
 		mounted, err := mounts.IsMountPoint(unit.BindMount)
 		if err != nil {
 			return err

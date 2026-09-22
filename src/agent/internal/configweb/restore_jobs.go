@@ -583,6 +583,14 @@ func (s *Server) handleRestoreChunk(w http.ResponseWriter, r *http.Request, suff
 	remaining := job.archiveSize - job.receivedBytes
 	job.mu.Unlock()
 
+	// Chunk requests are long-lived: reading a full block over a slow link and
+	// waiting for the parser to consume it can both exceed the server-wide
+	// 65 s timeouts.  Bound the read by the job's stall limit and let the job
+	// watchdog (stall/idle/total) govern the response instead of a fixed
+	// write deadline, as the backup archive stream already does.
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(restoreStallTimeout))
+	_ = controller.SetWriteDeadline(time.Time{})
 	r.Body = http.MaxBytesReader(w, r.Body, int64(chunkSize)+1)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -944,7 +952,12 @@ func (s *Server) handleRestorePlan(w http.ResponseWriter, r *http.Request, id st
 	}
 	if inputClosed {
 		// The whole archive already arrived: staging finishes without further
-		// uploads, so report the validating state directly.
+		// uploads, so report the validating state directly.  Staging the
+		// remaining frames is bounded by the job watchdog, not the server
+		// write timeout.
+		if controller := http.NewResponseController(w); controller != nil {
+			_ = controller.SetWriteDeadline(time.Time{})
+		}
 		select {
 		case <-job.inputDone:
 		case <-job.done:
