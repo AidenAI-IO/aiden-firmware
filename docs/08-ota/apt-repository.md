@@ -7,7 +7,7 @@ GitHub Pages 托管签名的 `InRelease`、`Release.gpg`、包索引和 `.deb`�
 ## 板子升级
 
 包含此功能的新基础镜像会从 `/usr/lib/aiden/platform/contract.json` 自动选择源。
-例如 dev、契约 `1.0.0` 使用 `dev-c1`；staging/prod 各用自己的契约源。
+例如 dev、契约 `1` 使用 `dev-c1`；staging/prod 各用自己的契约源。
 
 ```bash
 sudo apt update && sudo apt upgrade

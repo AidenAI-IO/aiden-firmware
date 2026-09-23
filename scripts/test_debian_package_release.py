@@ -51,7 +51,7 @@ class ReleaseTests(unittest.TestCase):
         manifest = pkg / "usr/share/doc/aiden-business/release-manifest.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(json.dumps({"business_release": "0.0.1", "package_revision": "1",
-                                        "required_platform_contract": {"min": "1.0.0", "max_exclusive": "2.0.0"}}))
+                                        "required_platform_contract": {"min": 1, "max_exclusive": 2}}))
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(pkg),
                         str(self.output / "aiden-business_0.0.1-1_armhf.deb")], check=True, stdout=subprocess.DEVNULL)
         with patch.dict(os.environ, AIDEN_BUSINESS_VERSION="0.0.1", AIDEN_BUSINESS_REVISION="1"):
