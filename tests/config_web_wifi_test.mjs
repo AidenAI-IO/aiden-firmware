@@ -81,6 +81,7 @@ const stateModule = await loadModule(path.join(moduleRoot, 'state.js'));
 await stateModule.evaluate();
 const {appState, registerRuntime} = stateModule.namespace;
 const requests = [];
+let requestGate = null;
 let requestResult = {
   ok: true,
   wifi: {country: 'CN', networks: [{ssid: 'Office', has_psk: true, priority: 1}]},
@@ -89,6 +90,7 @@ let requestResult = {
 registerRuntime({
   request: async (_url, options) => {
     requests.push({url: _url, options});
+    if (requestGate) await requestGate;
     return requestResult;
   },
   setBanner() {},
@@ -114,6 +116,18 @@ assert.equal(requests[0].url, '/api/network/wifi/connection');
 const body = JSON.parse(requests[0].options.body);
 assert.deepEqual(body, {ssid: 'Office', proxy_mode: 'system'});
 assert.equal(elements.get('wifiModal').className, '', 'saved Wi-Fi should not open the password modal');
+
+requests.length = 0;
+let releaseRequest;
+requestGate = new Promise((resolve) => { releaseRequest = resolve; });
+const firstConnection = wifiModule.namespace.connectSavedWifi('Office');
+assert.equal(elements.get('connectWifiBtn').disabled, true);
+const duplicateConnection = await wifiModule.namespace.connectSavedWifi('Office');
+assert.equal(duplicateConnection, false);
+assert.equal(requests.length, 1, 'a pending saved-network connection must reject duplicate clicks');
+releaseRequest();
+assert.equal(await firstConnection, true);
+requestGate = null;
 
 requests.length = 0;
 appState.wifi = {networks: [{
