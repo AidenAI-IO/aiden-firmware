@@ -148,6 +148,24 @@ audit_rootfs_cli_tools() {
     done <"${ROOTFS_CLI_TOOLS_DIR}/manifest.sha256"
 }
 
+audit_login_sessions() {
+    grep -qx 'UsePAM yes' \
+        "${ROOTFS_MOUNT}/etc/ssh/sshd_config.d/20-aiden.conf" \
+        || fail "SSH PAM session handling is disabled"
+    grep -Eq '^@include[[:space:]]+common-session[[:space:]]*$' \
+        "${ROOTFS_MOUNT}/etc/pam.d/sshd" \
+        || fail "SSH does not include the common PAM session stack"
+    grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_systemd\.so([[:space:]]|$)' \
+        "${ROOTFS_MOUNT}/etc/pam.d/common-session" \
+        || fail "PAM does not register logind sessions"
+    test -s "${ROOTFS_MOUNT}/usr/lib/arm-linux-gnueabihf/security/pam_systemd.so" \
+        || fail "pam_systemd module is missing"
+    test -x "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-ssh-session-tty" \
+        || fail "SSH terminal registration helper is missing"
+    cmp "${ROOTFS_MOUNT}/etc/ssh/sshrc" "${REPO_ROOT}/overlay-debian/etc/ssh/sshrc" \
+        || fail "SSH terminal registration hook is missing or changed"
+}
+
 audit_rootfs() {
     grep -qx 'LANG=C.UTF-8' "${ROOTFS_MOUNT}/etc/locale.conf" \
         || fail "default UTF-8 locale is missing"
@@ -163,6 +181,7 @@ audit_rootfs() {
         || fail "rootfs ownership or mode is invalid"
     test -x "${ROOTFS_MOUNT}/lib/systemd/systemd" || fail "systemd PID 1 is missing"
     test -x "${ROOTFS_MOUNT}/usr/sbin/sshd" || fail "sshd is missing"
+    audit_login_sessions
     grep -qx 'aiden:x:1000:1000::/home/aiden:/bin/bash' \
         "${ROOTFS_MOUNT}/etc/passwd" || fail "aiden login user is missing"
     grep -qx 'aiden:x:1000:' "${ROOTFS_MOUNT}/etc/group" \

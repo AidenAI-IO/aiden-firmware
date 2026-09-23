@@ -126,6 +126,46 @@ systemctl restart aiden-config-web.service
 systemctl status aiden-usb-gadget.service --no-pager
 ```
 
+## SSH Sessions and Shutdown Notifications
+
+The minimal rootfs explicitly installs `libpam-systemd`. With `UsePAM yes`,
+new SSH connections belong to `session-*.scope` units under `user-1000.slice`.
+These scopes are stopped during shutdown. Debian's `ssh.service` retains
+`KillMode=process`, so restarting the SSH listener preserves active connections.
+Installing the package on an existing board only affects new logins; reconnect
+before testing. No SSH service restart is needed.
+
+Session registration alone does not restore shutdown broadcasts on this board.
+Debian armhf systemd 257 is built with `-UTMP`, and OpenSSH opens its PAM session
+before allocating a PTY. The resulting logind session initially has no `TTY`.
+`/etc/ssh/sshrc` runs `aiden-ssh-session-tty` after allocation to register that
+terminal through logind's `SetTTY` API. It runs as the login user, briefly takes
+session control without forcing out another controller, then exits. No daemon
+or additional Python package is needed. Connections without a PTY are skipped;
+registration failures do not prevent login. The hook preserves X11 cookie setup.
+Users with a custom `~/.ssh/rc` must invoke `/usr/lib/aiden/aiden-ssh-session-tty`
+there, because OpenSSH uses the user hook instead of the system hook.
+
+In a fresh interactive SSH login, verify:
+
+```bash
+cat /proc/$$/cgroup
+loginctl show-session "$XDG_SESSION_ID" -p Scope -p TTY
+```
+
+Expect a `session-*.scope` cgroup and `TTY=pts/...`. Test broadcasts without
+powering off using `sudo shutdown -k +1`, then `sudo shutdown -c` in the same
+connection. Keep that connection open: scheduling within five minutes temporarily
+blocks new logins. On systemd 257, `shutdown -k now` does not exercise the same
+scheduled warning path. Both normal `shutdown` and `systemctl poweroff` support
+wall broadcasts unless `--no-wall` is used.
+
+For a real shutdown test, use `sudo shutdown now` from a fresh connection and
+observe the notification and SSH close. Full poweroff timing still requires
+serial-console observation after SSH exits; session cleanup does not prove that
+USB teardown, swapoff or filesystem unmounts finish promptly. `user@1000.service`
+is left enabled (about 3 MB on the tested board).
+
 ## Key Configuration Files
 
 | File | Description |
