@@ -44,10 +44,12 @@ type WriteProgress struct {
 	Complete  bool
 }
 
+// WritePart writes an image to the inactive slot without progress notifications.
 func (w PartitionWriter) WritePart(part string, targetSlot Slot, imagePath string) error {
 	return w.WritePartWithProgress(part, targetSlot, imagePath, nil)
 }
 
+// WritePartWithProgress writes a complete partition image and reports byte progress.
 func (w PartitionWriter) WritePartWithProgress(part string, targetSlot Slot, imagePath string, progress func(WriteProgress)) error {
 	return w.writePartWithProgress(part, targetSlot, imagePath, progress, openPartitionImage)
 }
@@ -63,11 +65,14 @@ func (w PartitionWriter) writePartWithProgressAndVerify(part string, targetSlot 
 	return w.writePart(part, targetSlot, imagePath, progress, openPartitionImageStreaming, expectedSHA256)
 }
 
+// writePartWithProgress writes an image using the supplied opener without checking its digest.
 func (w PartitionWriter) writePartWithProgress(part string, targetSlot Slot, imagePath string, progress func(WriteProgress), openImage func(string) (io.ReadCloser, int64, error)) error {
 	_, err := w.writePart(part, targetSlot, imagePath, progress, openImage, "")
 	return err
 }
 
+// writePart streams an image to the inactive partition, optionally hashing the
+// bytes as written, and returns the uncompressed image size on success.
 func (w PartitionWriter) writePart(part string, targetSlot Slot, imagePath string, progress func(WriteProgress), openImage func(string) (io.ReadCloser, int64, error), expectedSHA256 string) (int64, error) {
 	blockName, err := w.ResolveBlockName(part, targetSlot)
 	if err != nil {
@@ -149,6 +154,8 @@ func (w PartitionWriter) VerifyPart(part string, targetSlot Slot, imagePath stri
 	return w.verifyPartWithSize(part, targetSlot, imageSize, expectedSHA256)
 }
 
+// verifyPartWithSize hashes exactly imageSize bytes from the inactive partition
+// and compares the result with expectedSHA256.
 func (w PartitionWriter) verifyPartWithSize(part string, targetSlot Slot, imageSize int64, expectedSHA256 string) error {
 	blockName, err := w.ResolveBlockName(part, targetSlot)
 	if err != nil {
@@ -180,6 +187,7 @@ func (w PartitionWriter) verifyPartWithSize(part string, targetSlot Slot, imageS
 	return nil
 }
 
+// openPartitionImage validates a complete tar.gz archive before returning its image stream.
 func openPartitionImage(path string) (io.ReadCloser, int64, error) {
 	if isTarGzImagePath(path) {
 		return openTarGzPartitionImage(path)
@@ -263,6 +271,8 @@ func openTarGzPartitionImage(path string) (io.ReadCloser, int64, error) {
 	}
 }
 
+// openTarGzPartitionImageStreaming opens the named image entry and validates
+// remaining archive entries as the returned reader is consumed.
 func openTarGzPartitionImageStreaming(path string) (io.ReadCloser, int64, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -361,6 +371,7 @@ func expectedTarGzImageName(path string) string {
 	return base[:len(base)-len(".tar.gz")]
 }
 
+// verifyPartitionImage hashes the extracted image stream and compares it with the manifest digest.
 func verifyPartitionImage(path string, expectedSHA256 string) error {
 	src, _, err := openPartitionImageStreaming(path)
 	if err != nil {

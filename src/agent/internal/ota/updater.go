@@ -287,6 +287,8 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 	return u.checkOnceLocked(ctx)
 }
 
+// checkOnceLocked performs one update while the caller holds the update lock.
+// It verifies archives before writing, then verifies streamed images and eMMC readback before activation.
 func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	logging.Infof("ota", "updater", "ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
@@ -695,6 +697,8 @@ func (u *Updater) acquireUpdateLock() (func(), error) {
 	}, nil
 }
 
+// verifyCachedArchive checks only the downloaded artifact size and digest.
+// Extracted image validation is deferred to dry-run verification or the streamed write.
 func (u *Updater) verifyCachedArchive(path string, asset ManifestAsset) error {
 	return VerifyFile(path, asset.Size, asset.SHA256)
 }
@@ -718,6 +722,8 @@ func (u *Updater) deleteDownloadCache(path string) error {
 	return nil
 }
 
+// personalizeRootFS applies the persistent machine ID to the written rootfs
+// and records its effective digest over imageSize bytes.
 func (u *Updater) personalizeRootFS(writer PartitionWriter, target Slot, imageSize int64, asset ManifestAsset) (RootFSPersonalization, error) {
 	machineID, err := readPersistentMachineID(u.config.MachineIDPath)
 	if err != nil {
@@ -1425,7 +1431,7 @@ func (u *Updater) recordError(phase string, err error) {
 }
 
 // cleanupOldDownloadCache keeps only verified assets and resumable partials
-// needed for the selected target slot.
+// needed for the selected target slot that are still part of the active plan.
 func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
 	downloadDir := u.config.DownloadDir
 	if downloadDir == "" {

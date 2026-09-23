@@ -26,6 +26,8 @@ type plannedDownloadAsset struct {
 	remainingBytes  int64
 }
 
+// buildDownloadPlan reuses matching target partitions and verified archives,
+// while calculating the remaining download space needed for all other assets.
 func (u *Updater) buildDownloadPlan(assets map[string]ManifestAsset, state State, target Slot) (downloadPlan, error) {
 	plan := downloadPlan{
 		assets: make(map[string]plannedDownloadAsset, len(assets)),
