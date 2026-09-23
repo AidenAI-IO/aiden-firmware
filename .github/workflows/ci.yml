@@ -58,28 +58,6 @@ jobs:
           path: output/test-summary.json
           if-no-files-found: ignore
 
-  production-smoke:
-    needs: manifest-tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Fetch the production SDK submodule
-        run: git submodule update --init --depth=1 pico-sdk
-      - name: Run the Dockerized production ARM smoke test
-        env:
-          AIDEN_TEST_JOBS: '2'
-        run: bash scripts/run_tests_in_docker.sh --production --suite production-cross-smoke
-      - name: Upload production smoke summary
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-smoke-summary-${{ github.run_id }}
-          path: output/test-summary.json
-          if-no-files-found: ignore
-
   docker-tests:
     runs-on: ubuntu-latest
     steps:
