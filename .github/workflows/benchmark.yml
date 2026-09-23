@@ -176,7 +176,7 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 3
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
@@ -192,6 +192,17 @@ jobs:
       MOBILEGYM_NODE_IMAGE: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/node:22-bookworm
       MOBILEGYM_DEBIAN_MIRROR: repo.huaweicloud.com
       BENCHMARK_CI_IMAGES_PREPARED: '1'
+      # The runner reaches openrouter.ai, the Cloudflare-fronted Langfuse host and
+      # GitHub artifact storage through this proxy. Only https is proxied because all
+      # three endpoints are https. Docker builds never inherit it; daemon_compose_env
+      # strips proxy variables so the huaweicloud mirrors keep resolving directly.
+      # Actions treats env keys case-insensitively, so declaring both spellings is a
+      # duplicate-key error. Lowercase is the portable one: urllib and libcurl accept
+      # either, while some tools only read lowercase.
+      https_proxy: ${{ secrets.BENCHMARK_HTTPS_PROXY }}
+      no_proxy: localhost,127.0.0.1,::1,host.docker.internal
+      # A publish that cannot reach Langfuse must not burn the default 11 minutes.
+      LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS: '90'
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
@@ -218,6 +229,39 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Reap orphaned benchmark containers and run directories
+        # Every other cleanup is keyed to this job's RUN_ID, so a cancelled job or a
+        # SIGKILLed runner leaks containers and run directories that nothing collects.
+        # Sweep by prefix and age instead. The threshold is well past the longest suite
+        # timeout (240 min), so concurrent jobs from this same run are never touched.
+        continue-on-error: true
+        env:
+          REAP_AGE_HOURS: '6'
+        run: |
+          set -uo pipefail
+          cutoff=$(( $(date +%s) - REAP_AGE_HOURS * 3600 ))
+          for prefix in aiden-benchmark-agent- aiden-mobilegym-env-; do
+            for id in $(docker ps -aq --filter "name=$prefix"); do
+              # .Created is plain RFC3339. `docker ps --format CreatedAt` instead ends
+              # in a timezone abbreviation that GNU date refuses to parse.
+              created="$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null)" || continue
+              [[ -n "$created" ]] || continue
+              created_epoch="$(date -d "$created" +%s 2>/dev/null)" || continue
+              if (( created_epoch < cutoff )); then
+                name="$(docker inspect -f '{{.Name}}' "$id" 2>/dev/null)"
+                echo "Reaping stale container ${name#/} (created $created)"
+                docker rm -f "$id" >/dev/null 2>&1 || true
+              fi
+            done
+          done
+          # Artifacts live on GitHub and traces in Langfuse, so old run directories are
+          # redundant locally. cli-services is shared across runs, not a run directory.
+          if [[ -d benchmark/runs ]]; then
+            find benchmark/runs -mindepth 1 -maxdepth 1 -type d \
+              -not -name cli-services \
+              -mmin "+$(( REAP_AGE_HOURS * 60 ))" \
+              -print -exec rm -rf {} + 2>/dev/null || true
+          fi
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -317,6 +361,9 @@ jobs:
           fi
       - name: Publish completed run to Langfuse
         if: ${{ always() }}
+        # Observability is a side channel: a publish failure must not mask the
+        # benchmark verdict this job exists to report.
+        continue-on-error: true
         working-directory: benchmark
         env:
           RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
@@ -338,6 +385,9 @@ jobs:
           fi
       - name: Upload benchmark artifacts
         if: ${{ always() }}
+        # No downstream job consumes these; a blob-storage hiccup must not turn a
+        # passing benchmark into a failed job.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
