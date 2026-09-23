@@ -98,8 +98,12 @@ func TestNewAudioVADSelectsHelperFromBackend(t *testing.T) {
 	if scorer.backend != "cpu" {
 		t.Fatalf("backend = %q, want cpu", scorer.backend)
 	}
-	if scorer.helperPath != defaultCPUVADHelperPath {
-		t.Fatalf("helperPath = %q, want %q", scorer.helperPath, defaultCPUVADHelperPath)
+	wantCPUHelper := defaultCPUVADHelperPath
+	if _, err := os.Stat(wantCPUHelper); err != nil {
+		wantCPUHelper = legacyCPUVADHelperPath
+	}
+	if scorer.helperPath != wantCPUHelper {
+		t.Fatalf("helperPath = %q, want %q", scorer.helperPath, wantCPUHelper)
 	}
 
 	defaultVAD, err := NewAudioVAD(AudioVADConfig{})
@@ -113,8 +117,12 @@ func TestNewAudioVADSelectsHelperFromBackend(t *testing.T) {
 	if defaultScorer.backend != "rknn" {
 		t.Fatalf("default backend = %q, want rknn", defaultScorer.backend)
 	}
-	if defaultScorer.helperPath != defaultVADHelperPath {
-		t.Fatalf("default helperPath = %q, want %q", defaultScorer.helperPath, defaultVADHelperPath)
+	wantRKNNHelper := defaultVADHelperPath
+	if _, err := os.Stat(wantRKNNHelper); err != nil {
+		wantRKNNHelper = legacyVADHelperPath
+	}
+	if defaultScorer.helperPath != wantRKNNHelper {
+		t.Fatalf("default helperPath = %q, want %q", defaultScorer.helperPath, wantRKNNHelper)
 	}
 }
 
