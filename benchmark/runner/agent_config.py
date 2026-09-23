@@ -46,7 +46,12 @@ def load_agent_model_config(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         sections.setdefault(section, {})[key.strip()] = _parse_toml_string(value)
 
-    model = dict(sections.get("model_settings.model", {}))
+    # The firmware currently ships the grouped model_settings shape, while
+    # older local configs still use a flat [model] table. Consumers such as
+    # SkillOpt's optimizer and model fallback must read both shapes; callers
+    # that intentionally report only benchmark credentials can still apply
+    # their own policy after this normalized parse.
+    model = dict(sections.get("model_settings.model") or sections.get("model", {}))
     provider_ref = model.get("provider", "").strip()
     if not provider_ref:
         return model

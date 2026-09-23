@@ -446,6 +446,21 @@ jobs:
         bash scripts/test_system_config_package.sh
         python3 scripts/release/release.py build --plan output/release/plan.json
 
+    - name: Verify production ARM build in the pinned test image
+      if: ${{ !inputs.dry_run && inputs.release_plan_artifact == '' }}
+      env:
+        AIDEN_TEST_IMAGE: aiden-firmware-test:build-${{ github.run_id }}
+      run: bash scripts/run_tests_in_docker.sh --production --suite production-cross-smoke
+
+    - name: Upload production smoke summary
+      if: ${{ !inputs.dry_run && inputs.release_plan_artifact == '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: production-smoke-summary-${{ github.run_id }}
+        path: output/test-summary.json
+        if-no-files-found: error
+        retention-days: 7
+
     - name: Upload channel release assets
       if: ${{ !inputs.dry_run && inputs.release_plan_artifact != '' }}
       uses: actions/upload-artifact@v4

@@ -2,68 +2,56 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - 'docs/**'
   push:
     branches:
       - main
-    paths-ignore:
-      - 'docs/**'
 
 permissions:
   contents: read
 
 jobs:
-  github-actions-safety:
+  manifest-tests:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Verify self-hosted runner safety
-        run: bash scripts/test_github_actions_self_hosted_safety.sh
-
-  script-tests:
-    runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # test_debian_only_policy.sh greps active documentation and build paths
-      # with ripgrep, which is not guaranteed on every runner image.
-      - name: Install Debian-only policy dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ripgrep gnupg
-      - name: Verify Debian-only production policy
-        run: bash scripts/test_debian_only_policy.sh
-      - name: Verify release scripts
-        run: |
-          sh scripts/test_release_ci_scripts.sh
-          bash scripts/test_rootfs_cli_tool_catalog.sh
-          bash scripts/test_clean_rootfs_overlay_staging.sh
-          sh scripts/test_build_rootfs_cli_tools.sh
-          sh scripts/test_stage_rootfs_cli_tools.sh
-          bash scripts/test_compress_release_images.sh
-          bash scripts/test_ota_partition_layout.sh
-          sh scripts/test_ota_device_config.sh
-          bash scripts/test_ota_manifest_generation.sh
-          bash scripts/test_github_release_upload.sh
-          bash scripts/test_debian_apt_cache.sh
-          bash scripts/test_reusable_rootfs_release_asset.sh
-          bash scripts/test_debian_package.sh
-          python3 scripts/test_debian_package_release.py
-          python3 scripts/test_debian_package_lifecycle.py
-          bash scripts/test_system_config_package.sh
-          python3 scripts/test_channel_release.py
-          python3 scripts/test_apt_repository.py
-      - name: Verify normalized UI coordinates
-        run: |
-          python3 scripts/check_normalized_coords.py
-          bash scripts/test_check_normalized_coords.sh
-      - name: Verify application build proxy handling with an inherited GOPROXY
+      - name: Fetch benchmark test fixture submodule
+        run: git submodule update --init --depth=1 benchmark/mobilegym/vendor/mobilegym
+      - name: Run the full Docker test manifest
         env:
-          GOPROXY: https://inherited.example
-          RK_JOBS: '2'
-        run: bash scripts/test_debian_apps.sh
+          AIDEN_TEST_JOBS: '2'
+        run: make check-full
+      - name: Upload Docker test summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-test-summary-${{ github.run_id }}
+          path: output/test-summary.json
+          if-no-files-found: ignore
+
+  production-smoke:
+    needs: manifest-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch the production SDK submodule
+        run: git submodule update --init --depth=1 pico-sdk
+      - name: Run the Dockerized production ARM smoke test
+        env:
+          AIDEN_TEST_JOBS: '2'
+        run: bash scripts/run_tests_in_docker.sh --production --suite production-cross-smoke
+      - name: Upload production smoke summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-smoke-summary-${{ github.run_id }}
+          path: output/test-summary.json
+          if-no-files-found: ignore
 
   docker-tests:
     runs-on: ubuntu-latest
@@ -74,65 +62,14 @@ jobs:
       - name: Verify Docker sandbox contract
         timeout-minutes: 25
         run: |
-          python3 -m unittest tests.benchmark.test_docker_sandbox
-          docker compose config --quiet
-          sh scripts/test_docker_sandbox.sh
-
-  cpp-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          bash scripts/run_tests_in_docker.sh \
+            --docker-socket --host-network \
+            --suite docker-package-contract \
+            --suite docker-sandbox-smoke
+      - name: Upload Docker contract summary
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          persist-credentials: false
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: src/agent/go.mod
-          cache-dependency-path: src/agent/go.sum
-      # Host Web UI tests execute JavaScript directly. Declare Node explicitly
-      # instead of relying on the runner image to happen to provide it.
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Run C++ unit tests
-        run: |
-          sudo apt-get update
-          # The host tests only use OpenCV core and imgproc. Installing the
-          # libopencv-dev metapackage pulled 199 MB of unrelated modules into
-          # every clean runner (Java, stitching, video, contrib, and more).
-          # dnsmasq-base keeps the usb0 CTest syntax check from downgrading to
-          # a skip, so that contract needs no separate duplicate test step.
-          sudo apt-get install -y --no-install-recommends \
-            dnsmasq-base \
-            libopencv-core-dev \
-            libopencv-imgproc-dev
-          make test
-
-  go-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: src/agent/go.mod
-          cache-dependency-path: src/agent/go.sum
-      - name: Run Go unit tests
-        working-directory: src/agent
-        run: go test ./...
-
-  web-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Run Agent Web UI tests
-        run: make test-agent-webui
+          name: docker-contract-summary-${{ github.run_id }}
+          path: output/test-summary.json
+          if-no-files-found: ignore

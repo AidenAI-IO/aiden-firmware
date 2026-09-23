@@ -226,8 +226,10 @@ class SkillOptWebApp:
             agent_config = str(agent_config_info.get("content") or "")
             if not agent_config:
                 raise ValueError("Benchmark agent.toml is unavailable. Open the Benchmark WebUI and save an agent config first.")
-            if not agent_config_info.get("api_key_nonempty"):
+            config_path = Path(str(agent_config_info.get("path") or ""))
+            if not resolve_agent_model_api_key(config_path):
                 raise ValueError("Benchmark agent.toml does not contain a model api_key. Open the Benchmark WebUI and save an agent config with an API key first.")
+            agent_config = materialize_benchmark_agent_config(agent_config)
             agent_config_path = run_dir / "agent.toml"
             agent_config_path.write_text(agent_config, encoding="utf-8")
             payload["agent_config"] = str(agent_config_path)
@@ -431,6 +433,11 @@ class SkillOptWebApp:
             info["content"] = content
         return info
 
+    def _benchmark_agent_config_api_key(self) -> str:
+        info = self.benchmark_agent_config_info()
+        path = Path(str(info.get("path") or ""))
+        return resolve_agent_model_api_key(path) or ""
+
     def save_agent_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         content = str(payload.get("content") or "")
         content, source = self.config_manager.save_config(content)
@@ -479,7 +486,7 @@ class SkillOptWebApp:
         sanitized = _sanitize_webui_settings(normalized)
         if self._webui_judge_api_key:
             sanitized["judge"]["has_api_key"] = True
-        elif self.benchmark_agent_config_info().get("api_key_nonempty"):
+        elif self._benchmark_agent_config_api_key():
             sanitized["judge"]["has_api_key"] = True
         _write_json_atomic(self._webui_settings_path(), sanitized)
         return sanitized
@@ -497,7 +504,7 @@ class SkillOptWebApp:
             settings["judge"]["api_key"] = api_key
         elif api_key:
             settings["judge"]["has_api_key"] = True
-        elif self.benchmark_agent_config_info().get("api_key_nonempty"):
+        elif self._benchmark_agent_config_api_key():
             settings["judge"]["has_api_key"] = True
         return settings
 
@@ -762,6 +769,39 @@ def _extract_suites_from_command(command: list[str]) -> dict[str, Any]:
             if suite_name not in suites:
                 suites.append(suite_name)
     return {"suites": suites}
+
+
+def materialize_benchmark_agent_config(content: str) -> str:
+    """Resolve the benchmark provider alias before launching a standalone job."""
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return content
+    model_settings = data.get("model_settings")
+    if not isinstance(model_settings, dict):
+        return content
+    model = model_settings.get("model")
+    providers = model_settings.get("providers")
+    if not isinstance(model, dict) or not isinstance(providers, dict):
+        return content
+    provider_name = str(model.get("provider") or "").strip()
+    provider = providers.get(provider_name)
+    if provider_name != "benchmark" or not isinstance(provider, dict):
+        return content
+    provider_type = str(provider.get("type") or provider.get("provider") or "").strip()
+    if not provider_type or not re.fullmatch(r"[A-Za-z0-9_.-]+", provider_type):
+        return content
+    normalized = re.sub(
+        r"(?m)^\[model_settings\.providers\.benchmark\]\s*$",
+        f"[model_settings.providers.{provider_type}]",
+        content,
+    )
+    return re.sub(
+        r"(?m)^provider\s*=\s*['\"]benchmark['\"]\s*$",
+        f'provider = "{provider_type}"',
+        normalized,
+        count=1,
+    )
 
 
 def agent_config_has_api_key(content: str) -> bool:

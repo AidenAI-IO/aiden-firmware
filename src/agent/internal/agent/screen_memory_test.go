@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tmc/langchaingo/llms"
 	"aiden-agent/internal/agent/screenprovider"
+	"github.com/tmc/langchaingo/llms"
 )
 
 // fakeScreenFrameClient returns a canned JPEG frame.

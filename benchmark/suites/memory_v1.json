@@ -165,6 +165,33 @@
       }
     },
     {
+      "id": "use_procedure_steps",
+      "category": "memory",
+      "description_for_judge": "After a multi-step procedure is saved, the agent must recall the ordered steps and apply them without flattening the procedure into a generic fact.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "记住我的报销流程：先按日期建文件夹，再把发票截图命名为 YYYY-MM-DD-商家-金额，最后汇总到 expense.md。",
+        "timeout_sec": 120
+      },
+      "prompt": "我报销时应该按什么步骤整理发票？",
+      "rubric": [
+        {
+          "id": "called_recall_memory",
+          "check": "The tool trace contains at least one recall_memory call."
+        },
+        {
+          "id": "answer_preserves_order",
+          "check": "The final response preserves the folder, filename, and expense.md steps in order."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 120,
+        "response_required": true
+      }
+    },
+    {
       "id": "recall_saved_fact_after_setup",
       "category": "memory",
       "description_for_judge": "After setup saved a user fact and cleared visible chat history, the agent must recall long-term memory and answer with the saved employee ID and city.",

@@ -166,8 +166,8 @@ def test_fetch_board_model_config_uses_shell_tool(launcher_module):
         thread.join(timeout=2)
 
 
-def test_current_model_label_reads_command_environment(launcher_module):
-    assert launcher_module.current_model_label({"MODEL_NAME": "qwen3.6-35b"}) == "qwen3.6-35b"
+def test_current_model_label_ignores_legacy_command_environment(launcher_module):
+    assert launcher_module.current_model_label({"MODEL_NAME": "qwen3.6-35b"}) == "aiden-go"
 
 
 def test_handler_options_allows_browser_cors(launcher_module, tmp_path):

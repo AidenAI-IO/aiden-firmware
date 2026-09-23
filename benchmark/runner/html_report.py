@@ -85,6 +85,13 @@ def _fmt_time_ms(ms: float | int | str | None) -> str:
     return f"{min_part}m{sec_part:.1f}s"
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _read_excerpt(path: Path, max_chars: int = 6000) -> str:
     try:
         return path.read_text("utf-8", errors="replace")[:max_chars]
@@ -670,7 +677,7 @@ def generate_report_html(run_dir: Path) -> str:
   <td>{_esc(t['category'])}</td>
   <td><span class="badge {badge_cls}">{badge_label}</span></td>
   <td class="mono">{t['rubric_pass']}/{t['rubric_total']}</td>
-  <td class="mono">{int(t['tool_calls_count'])}</td>
+  <td class="mono">{_safe_int(t['tool_calls_count'])}</td>
   <td class="mono">{_fmt_time_ms(t['wall_ms'])}</td>
 </tr>\n"""
 
@@ -1012,7 +1019,7 @@ function openDrawer(i) {{
   document.getElementById("dChips").innerHTML =
     '<span class="chip">' + esc(t.category) + '</span>' +
     '<span class="chip">' + esc(t.status) + '</span>' +
-    '<span class="chip">' + Math.floor(t.tool_calls_count) + ' tools</span>' +
+    '<span class="chip">' + esc(String(t.tool_calls_count)) + ' tools</span>' +
     '<span class="chip">' + formatTime(t.wall_ms) + '</span>' +
     (t.screenshots_taken ? '<span class="chip">' + Math.floor(t.screenshots_taken) + ' screenshots</span>' : '');
   var body = "";
@@ -1023,7 +1030,7 @@ function openDrawer(i) {{
     body += '<div id="fullTrace" class="full-trace" hidden>' + renderFullTrace(t) + '</div>';
   }}
   if (t.tool_calls_detail) {{
-    body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + t.tool_calls_count + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
+    body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + esc(String(t.tool_calls_count)) + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
   }}
   if (t.artifacts_detail) {{
     body += '<div class="block"><div class="block-head"><strong>Artifacts</strong><span>files</span></div><pre class="block-body">' + esc(t.artifacts_detail) + '</pre></div>';
