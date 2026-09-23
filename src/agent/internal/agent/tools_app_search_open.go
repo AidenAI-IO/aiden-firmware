@@ -201,78 +201,119 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 	searchTerms := appSearchFallbackTerms(searchTerm)
 	for index, term := range searchTerms {
-		if err := enterSearchQuery(ctx, cfg, term, index > 0); err != nil {
+		entryRoute, err := enterSearchQueryWithRoute(ctx, cfg, term, index > 0)
+		if err != nil {
 			result.Steps = append(steps, "search query entry failed")
 			return result, err
 		}
+		logging.Infof("agent", "app_search", "search query entered route=%s term=%q", entryRoute, term)
 		steps = append(steps, fmt.Sprintf("searched %q", term))
 		if err := sleep(ctx, appSearchResultSettleDelay); err != nil {
 			result.Steps = append(steps, "wait for search results canceled")
 			return result, err
 		}
 		steps = append(steps, "waited for search results to settle")
-		foundForTerm := false
-		for attempt := 1; attempt <= 2; attempt++ {
-			findResult, calls, err := findSearchOpenAppResult(ctx, cfg, engine, term)
-			result.VLMCalls += calls
-			if err != nil {
-				result.Steps = append(steps, "locate app failed")
-				return result, err
-			}
-			if !findResult.Found {
-				if attempt < 2 {
-					steps = append(steps, fmt.Sprintf("app result not found for %q; rechecking", term))
-					if err := sleep(ctx, 350*time.Millisecond); err != nil {
-						result.Steps = append(steps, "app result recheck wait canceled")
-						return result, err
-					}
-					continue
+		findAndOpen := func() (bool, error) {
+			for attempt := 1; attempt <= 2; attempt++ {
+				findResult, calls, err := findSearchOpenAppResult(ctx, cfg, engine, term)
+				result.VLMCalls += calls
+				if err != nil {
+					logging.Infof("agent", "app_search", "app result lookup failed term=%q attempt=%d error=%v", term, attempt, err)
+					return false, err
 				}
-				steps = append(steps, fmt.Sprintf("app result not found for %q", term))
-				break
-			}
-			foundForTerm = true
-			if findResult.TapPoint == nil {
-				result.Steps = append(steps, "app result is missing tap point")
-				return result, fmt.Errorf("app search result is missing tap_point")
-			}
-			if err := tapSearchOpenResult(ctx, cfg.hw, *findResult.TapPoint); err != nil {
-				result.Steps = append(steps, "tap app result failed")
-				return result, err
-			}
-			if label := strings.TrimSpace(findResult.Label); label != "" {
-				steps = append(steps, fmt.Sprintf("tapped app result %q", label))
-			} else {
-				steps = append(steps, "tapped app result")
-			}
-			if err := sleep(ctx, launchDelay); err != nil {
-				result.Steps = append(steps, "app launch wait canceled")
-				return result, err
-			}
-			opened, calls, err := confirmSearchOpenApp(ctx, cfg, engine, term)
-			result.VLMCalls += calls
-			if err != nil {
-				result.Steps = append(steps, "confirm app open failed")
-				return result, err
-			}
-			if opened.Opened {
-				steps = append(steps, "app open confirmed")
-				if cfg.afterOpenFn != nil {
-					if err := cfg.afterOpenFn(); err != nil {
-						result.Steps = append(steps, "after-open hook failed")
-						return result, err
+				logging.Infof("agent", "app_search", "app result lookup term=%q attempt=%d found=%t label=%q tap_point=%v", term, attempt, findResult.Found, findResult.Label, findResult.TapPoint)
+				if !findResult.Found {
+					if attempt < 2 {
+						steps = append(steps, fmt.Sprintf("app result not found for %q; rechecking", term))
+						if err := sleep(ctx, 350*time.Millisecond); err != nil {
+							result.Steps = append(steps, "app result recheck wait canceled")
+							return false, err
+						}
+						continue
 					}
+					steps = append(steps, fmt.Sprintf("app result not found for %q", term))
+					return false, nil
 				}
-				result.Opened = true
+				if findResult.TapPoint == nil {
+					result.Steps = append(steps, "app result is missing tap point")
+					return false, fmt.Errorf("app search result is missing tap_point")
+				}
+				if err := tapSearchOpenResult(ctx, cfg.hw, *findResult.TapPoint); err != nil {
+					logging.Infof("agent", "app_search", "app result tap failed term=%q label=%q point=%v error=%v", term, findResult.Label, *findResult.TapPoint, err)
+					result.Steps = append(steps, "tap app result failed")
+					return false, err
+				}
+				logging.Infof("agent", "app_search", "app result tapped term=%q label=%q point=%v", term, findResult.Label, *findResult.TapPoint)
+				if label := strings.TrimSpace(findResult.Label); label != "" {
+					steps = append(steps, fmt.Sprintf("tapped app result %q", label))
+				} else {
+					steps = append(steps, "tapped app result")
+				}
+				if err := sleep(ctx, launchDelay); err != nil {
+					result.Steps = append(steps, "app launch wait canceled")
+					return false, err
+				}
+				opened, calls, err := confirmSearchOpenApp(ctx, cfg, engine, term)
+				result.VLMCalls += calls
+				if err != nil {
+					result.Steps = append(steps, "confirm app open failed")
+					return false, err
+				}
+				logging.Infof("agent", "app_search", "app open confirmation term=%q opened=%t reason=%q", term, opened.Opened, opened.Reason)
+				if opened.Opened {
+					steps = append(steps, "app open confirmed")
+					if cfg.afterOpenFn != nil {
+						if err := cfg.afterOpenFn(); err != nil {
+							result.Steps = append(steps, "after-open hook failed")
+							return false, err
+						}
+					}
+					result.Opened = true
+					result.Reason = strings.TrimSpace(opened.Reason)
+					return true, nil
+				}
 				result.Reason = strings.TrimSpace(opened.Reason)
+				steps = append(steps, "app did not open; retrying")
+			}
+			return false, nil
+		}
+		foundForTerm, err := findAndOpen()
+		if err != nil {
+			result.Steps = append(steps, "locate app failed")
+			return result, err
+		}
+		if foundForTerm {
+			result.Steps = steps
+			return result, nil
+		}
+		// A successful clipboard write/paste only proves that the system
+		// accepted a paste. It does not prove that Spotlight committed the
+		// requested app query: iOS may display a pinyin transcription or a
+		// candidate chip, and the vision verifier can conservatively report a
+		// mismatch. Give the target one controlled local retry before moving to
+		// another search term. This is also the only place where the local
+		// input-mode probe (and its temporary "a") is allowed after a paste.
+		if entryRoute == "clipboard" {
+			logging.Infof("agent", "app_search", "clipboard query did not surface target term=%q; retrying local HID input", term)
+			steps = append(steps, "clipboard query did not surface app; retrying local input")
+			if err := enterSearchQueryLocal(ctx, cfg, term, true); err != nil {
+				result.Steps = append(steps, "local search query entry failed")
+				return result, err
+			}
+			steps = append(steps, fmt.Sprintf("searched %q with local input", term))
+			if err := sleep(ctx, appSearchResultSettleDelay); err != nil {
+				result.Steps = append(steps, "wait for local search results canceled")
+				return result, err
+			}
+			foundForTerm, err = findAndOpen()
+			if err != nil {
+				result.Steps = append(steps, "locate app after local retry failed")
+				return result, err
+			}
+			if foundForTerm {
 				result.Steps = steps
 				return result, nil
 			}
-			result.Reason = strings.TrimSpace(opened.Reason)
-			steps = append(steps, "app did not open; retrying")
-		}
-		if foundForTerm {
-			break
 		}
 	}
 	result.Steps = steps
@@ -283,29 +324,43 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 }
 
 func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) error {
+	_, err := enterSearchQueryWithRoute(ctx, cfg, term, clearFirst)
+	return err
+}
+
+func enterSearchQueryWithRoute(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) (string, error) {
 	if cfg.platform == "" {
 		cfg.platform = cfg.entryTool.platform()
 	}
 	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 	if clearFirst {
 		if err := clearSearchQuery(ctx, engine, cfg.platform); err != nil {
-			return err
+			return "", err
 		}
 	}
 	clipboardResult := pasteSearchQuery(ctx, cfg, engine, term)
 	if clipboardResult.Committed {
 		logging.Infof("agent", "app_search", "search query input route=clipboard_paste verified=true")
-		return nil
+		return "clipboard", nil
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
+	}
+	if clipboardResult.Pasted {
+		// The paste action completed, but screenshot/OCR verification may be
+		// inconclusive (for example, iOS renders 微信 as weixin). Keep the
+		// query in place and let the app-result lookup validate it. If the
+		// requested app is absent, runAppSearchOpenFlow will clear the field
+		// and perform one explicit local retry.
+		logging.Infof("agent", "app_search", "search query input route=clipboard_paste verification_deferred field=%q error=%v", clipboardResult.FieldText, clipboardResult.Err)
+		return "clipboard", nil
 	}
 	if clipboardResult.Attempted {
 		logging.Infof("agent", "app_search", "search query input route=local_hid reason=clipboard_failed error=%v", clipboardResult.Err)
 		// The paste may have inserted partial or stale text. Replace it before
 		// falling back, while the system search field still owns keyboard focus.
 		if err := clearSearchQuery(ctx, engine, cfg.platform); err != nil {
-			return err
+			return "", err
 		}
 	} else {
 		logging.Infof("agent", "app_search", "search query input route=local_hid reason=background_clipboard_unavailable")
@@ -316,14 +371,41 @@ func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term str
 	}
 	out, err := cfg.entryTool.enterTextInner(ctx, jsonString(input), true)
 	if err != nil {
+		return "", err
+	}
+	var result enterTextToolResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return "", fmt.Errorf("parse search entry result: %w", err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("enter search query: %s", strings.TrimSpace(result.Suggestion))
+	}
+	return "local_hid", nil
+}
+
+func enterSearchQueryLocal(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) error {
+	if cfg.platform == "" {
+		cfg.platform = cfg.entryTool.platform()
+	}
+	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
+	if clearFirst {
+		if err := clearSearchQuery(ctx, engine, cfg.platform); err != nil {
+			return err
+		}
+	}
+	out, err := cfg.entryTool.enterTextInner(ctx, jsonString(map[string]any{
+		"text":  term,
+		"focus": map[string]any{"x": 500, "y": 120},
+	}), true)
+	if err != nil {
 		return err
 	}
 	var result enterTextToolResult
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		return fmt.Errorf("parse search entry result: %w", err)
+		return fmt.Errorf("parse local search entry result: %w", err)
 	}
 	if !result.OK {
-		return fmt.Errorf("enter search query: %s", strings.TrimSpace(result.Suggestion))
+		return fmt.Errorf("local search query: %s", strings.TrimSpace(result.Suggestion))
 	}
 	return nil
 }
@@ -378,6 +460,7 @@ func pasteSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, engine *
 	if _, _, result.Err = bridgeTool.pasteClipboard(ctx, platform); result.Err != nil {
 		return result
 	}
+	result.Pasted = true
 	if result.Err = bridgeTool.sleepAfterPaste(ctx); result.Err != nil {
 		return result
 	}
@@ -393,9 +476,21 @@ func pasteSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, engine *
 	})
 	result.Err = err
 	if err == nil {
-		result.Committed, result.FieldText = evaluateFieldCommit(analysis)
+		result.FieldText = strings.TrimSpace(analysis.FieldText)
+		result.Committed, _ = evaluateFieldCommit(analysis)
+		// Spotlight may normalize a pasted CJK app name to pinyin (for
+		// example, "微信" is displayed as "weixin") or keep the committed
+		// text in a candidate chip. In either case the paste has reached the
+		// focused search field even though target_matched is false. Treat a
+		// non-empty field as a successful paste and let the app-result lookup
+		// decide whether it is the requested app. Only an empty field should
+		// trigger immediate local typing.
+		if !result.Committed && result.FieldText != "" {
+			result.Committed = true
+			logging.Infof("agent", "app_search", "clipboard paste visible but vision target mismatch target=%q field=%q; defer validation to app result lookup", term, result.FieldText)
+		}
 		if !result.Committed {
-			result.Err = fmt.Errorf("pasted search query did not match target")
+			result.Err = fmt.Errorf("pasted search query did not appear in focused field")
 		}
 	}
 	return result
@@ -450,14 +545,70 @@ func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, e
 	if err != nil {
 		return bridgeSearchResult{}, 1, err
 	}
-	var result bridgeSearchResult
-	if err := decodeStrictJSONObject(raw, &result); err != nil {
+	result, err := decodeAppSearchResult(raw)
+	if err != nil {
 		return bridgeSearchResult{}, 1, fmt.Errorf("parse app search result: %w", err)
 	}
 	if result.Found && result.TapPoint == nil {
 		return bridgeSearchResult{}, 1, fmt.Errorf("parse app search result: found result is missing tap_point")
 	}
 	return result, 1, nil
+}
+
+// decodeAppSearchResult accepts the normal strict JSON response and also
+// recovers a single balanced object when a vision provider surrounds JSON
+// with prose or emits a second trailing object. A malformed provider response
+// should cause one lookup retry, not skip the tap path entirely.
+func decodeAppSearchResult(raw string) (bridgeSearchResult, error) {
+	var result bridgeSearchResult
+	if err := decodeStrictJSONObject(raw, &result); err == nil {
+		return result, nil
+	}
+	object, ok := firstBalancedJSONObject(raw)
+	if !ok {
+		return bridgeSearchResult{}, fmt.Errorf("expected app search JSON object")
+	}
+	if err := json.Unmarshal([]byte(object), &result); err != nil {
+		return bridgeSearchResult{}, err
+	}
+	return result, nil
+}
+
+func firstBalancedJSONObject(raw string) (string, bool) {
+	start := strings.IndexByte(raw, '{')
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for index := start; index < len(raw); index++ {
+		char := raw[index]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if char == '\\' {
+				escaped = true
+			} else if char == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch char {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return raw[start : index+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 func buildAppSearchResultPrompt(searchTerm string) string {
