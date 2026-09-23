@@ -6,6 +6,8 @@ import subprocess
 import threading
 import tomllib
 
+import pytest
+
 from skillopt import webui
 from skillopt.webui import INDEX_HTML, SkillOptJob, SkillOptWebApp, SkillOptWebUIConfig, build_skillopt_command
 
@@ -644,6 +646,46 @@ model = "openrouter/test-model"
     assert "voice_progress_speech_enabled = false" in content
     assert 'provider = "openrouter"' in content
     assert 'api_key = "sk-test"' in content
+
+
+def test_materialize_benchmark_config_preserves_comments_and_rewrites_both_references():
+    content = """
+[model_settings.providers.benchmark] # selected by Benchmark WebUI
+type = "openrouter"
+api_key = "sk-test"
+
+[model_settings.model] # active model
+provider = "benchmark" # provider alias
+model = "openrouter/test-model"
+""".lstrip()
+
+    materialized = webui.materialize_benchmark_agent_config(content)
+    parsed = tomllib.loads(materialized)
+
+    assert parsed["model_settings"]["model"]["provider"] == "openrouter"
+    assert parsed["model_settings"]["providers"]["openrouter"]["api_key"] == "sk-test"
+    assert "[model_settings.providers.openrouter] # selected by Benchmark WebUI" in materialized
+    assert 'provider = "openrouter" # provider alias' in materialized
+    assert "model_settings.providers.benchmark" not in materialized
+
+
+def test_materialize_benchmark_config_rejects_existing_provider_collision():
+    content = """
+[model_settings.providers.benchmark]
+type = "openrouter"
+api_key = "sk-benchmark"
+
+[model_settings.providers.openrouter]
+type = "openrouter"
+api_key = "sk-existing"
+
+[model_settings.model]
+provider = "benchmark"
+model = "openrouter/test-model"
+""".lstrip()
+
+    with pytest.raises(ValueError, match="already contains"):
+        webui.materialize_benchmark_agent_config(content)
 
 
 def test_grouped_agent_config_reports_provider_api_key():

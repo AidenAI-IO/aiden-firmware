@@ -30,7 +30,7 @@ type SessionConfig struct {
 	EnableSpeechEmotion    *bool
 	// ThinkingLevel sets thinkingConfig; only models that support thinking use it.
 	ThinkingLevel string
-	Tools          []Tool
+	Tools         []Tool
 }
 
 // AudioFormat describes the media exchanged with a realtime provider. The

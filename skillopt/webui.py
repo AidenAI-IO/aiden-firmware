@@ -226,8 +226,10 @@ class SkillOptWebApp:
             agent_config = str(agent_config_info.get("content") or "")
             if not agent_config:
                 raise ValueError("Benchmark agent.toml is unavailable. Open the Benchmark WebUI and save an agent config first.")
-            if not agent_config_info.get("api_key_nonempty"):
+            config_path = Path(str(agent_config_info.get("path") or ""))
+            if not resolve_agent_model_api_key(config_path):
                 raise ValueError("Benchmark agent.toml does not contain a model api_key. Open the Benchmark WebUI and save an agent config with an API key first.")
+            agent_config = materialize_benchmark_agent_config(agent_config)
             agent_config_path = run_dir / "agent.toml"
             agent_config_path.write_text(agent_config, encoding="utf-8")
             payload["agent_config"] = str(agent_config_path)
@@ -431,6 +433,11 @@ class SkillOptWebApp:
             info["content"] = content
         return info
 
+    def _benchmark_agent_config_api_key(self) -> str:
+        info = self.benchmark_agent_config_info()
+        path = Path(str(info.get("path") or ""))
+        return resolve_agent_model_api_key(path) or ""
+
     def save_agent_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         content = str(payload.get("content") or "")
         content, source = self.config_manager.save_config(content)
@@ -479,7 +486,7 @@ class SkillOptWebApp:
         sanitized = _sanitize_webui_settings(normalized)
         if self._webui_judge_api_key:
             sanitized["judge"]["has_api_key"] = True
-        elif self.benchmark_agent_config_info().get("api_key_nonempty"):
+        elif self._benchmark_agent_config_api_key():
             sanitized["judge"]["has_api_key"] = True
         _write_json_atomic(self._webui_settings_path(), sanitized)
         return sanitized
@@ -497,7 +504,7 @@ class SkillOptWebApp:
             settings["judge"]["api_key"] = api_key
         elif api_key:
             settings["judge"]["has_api_key"] = True
-        elif self.benchmark_agent_config_info().get("api_key_nonempty"):
+        elif self._benchmark_agent_config_api_key():
             settings["judge"]["has_api_key"] = True
         return settings
 
@@ -762,6 +769,106 @@ def _extract_suites_from_command(command: list[str]) -> dict[str, Any]:
             if suite_name not in suites:
                 suites.append(suite_name)
     return {"suites": suites}
+
+
+def materialize_benchmark_agent_config(content: str) -> str:
+    """Resolve the benchmark provider alias before launching a standalone job."""
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return content
+    model_settings = data.get("model_settings")
+    if not isinstance(model_settings, dict):
+        return content
+    model = model_settings.get("model")
+    providers = model_settings.get("providers")
+    if not isinstance(model, dict) or not isinstance(providers, dict):
+        return content
+    provider_name = str(model.get("provider") or "").strip()
+    provider = providers.get(provider_name)
+    if provider_name != "benchmark" or not isinstance(provider, dict):
+        return content
+    provider_type = str(provider.get("type") or provider.get("provider") or "").strip()
+    if not provider_type or not re.fullmatch(r"[A-Za-z0-9_.-]+", provider_type):
+        raise ValueError("benchmark provider type is missing or invalid")
+    if provider_type == "benchmark":
+        raise ValueError("benchmark provider type cannot refer to itself")
+
+    lines = content.splitlines(keepends=True)
+    section = ""
+    sections: set[str] = set()
+    benchmark_header_index: int | None = None
+    model_provider_index: int | None = None
+    header_pattern = re.compile(r"^[ \t]*\[([^\]]+)\][ \t]*(?:#.*)?(?:\r?\n)?$")
+    benchmark_header_pattern = re.compile(
+        r"^(?P<indent>[ \t]*)\[model_settings\.providers\.benchmark\]"
+        r"(?P<suffix>[ \t]*(?:#.*)?)(?P<newline>\r?\n)?$"
+    )
+    model_provider_pattern = re.compile(
+        r"^(?P<prefix>[ \t]*provider[ \t]*=[ \t]*)"
+        r"(?P<quote>[\"'])benchmark(?P=quote)"
+        r"(?P<suffix>[ \t]*(?:#.*)?)(?P<newline>\r?\n)?$"
+    )
+
+    for index, line in enumerate(lines):
+        header = header_pattern.match(line)
+        if header:
+            section = header.group(1).strip()
+            sections.add(section)
+            if section == "model_settings.providers.benchmark":
+                if benchmark_header_index is not None:
+                    raise ValueError("agent config contains duplicate benchmark provider tables")
+                benchmark_header_index = index
+            continue
+        if section == "model_settings.model" and model_provider_pattern.match(line):
+            if model_provider_index is not None:
+                raise ValueError("agent config contains duplicate model provider references")
+            model_provider_index = index
+
+    target_section = f"model_settings.providers.{provider_type}"
+    if target_section in sections:
+        raise ValueError(
+            f"agent config already contains [{target_section}]; "
+            "cannot materialize the benchmark provider without a duplicate table"
+        )
+    if benchmark_header_index is None or model_provider_index is None:
+        raise ValueError(
+            "agent config benchmark alias must contain both "
+            "[model_settings.providers.benchmark] and model_settings.model.provider"
+        )
+
+    header_match = benchmark_header_pattern.match(lines[benchmark_header_index])
+    model_match = model_provider_pattern.match(lines[model_provider_index])
+    if header_match is None or model_match is None:
+        raise ValueError("agent config benchmark alias could not be rewritten safely")
+
+    header_newline = header_match.group("newline") or ""
+    lines[benchmark_header_index] = (
+        f"{header_match.group('indent')}[{target_section}]"
+        f"{header_match.group('suffix')}{header_newline}"
+    )
+    model_newline = model_match.group("newline") or ""
+    lines[model_provider_index] = (
+        f"{model_match.group('prefix')}{model_match.group('quote')}"
+        f"{provider_type}{model_match.group('quote')}"
+        f"{model_match.group('suffix')}{model_newline}"
+    )
+    materialized = "".join(lines)
+
+    try:
+        materialized_data = tomllib.loads(materialized)
+        materialized_settings = materialized_data["model_settings"]
+        materialized_model = materialized_settings["model"]
+        materialized_providers = materialized_settings["providers"]
+    except (KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError("materialized benchmark agent config is invalid") from exc
+    if (
+        materialized_model.get("provider") != provider_type
+        or provider_type not in materialized_providers
+        or "benchmark" in materialized_providers
+    ):
+        raise ValueError("materialized benchmark agent config did not rewrite both provider references")
+    return materialized
 
 
 def agent_config_has_api_key(content: str) -> bool:

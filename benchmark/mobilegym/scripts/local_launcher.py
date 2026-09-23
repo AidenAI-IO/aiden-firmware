@@ -571,7 +571,7 @@ def fetch_board_model_config(board_url: str) -> dict[str, str]:
         provider_values = parse_agent_model_provider_values(
             fetch_board_toml_section(board_url, f"model_settings.providers.{provider_ref}")
         )
-    return agent_model_environment(model_values, provider_values)
+    return legacy_model_environment(model_values, provider_values)
 
 
 def fetch_board_benchmark_config(board_url: str) -> dict[str, str]:
@@ -615,7 +615,24 @@ def parse_agent_model_config(text: str) -> dict[str, str]:
     provider_values = parse_agent_model_provider_values(
         toml_section(text, f"model_settings.providers.{provider_ref}")
     )
-    return agent_model_environment(model_values, provider_values)
+    return legacy_model_environment(model_values, provider_values)
+
+
+def legacy_model_environment(
+    model_values: dict[str, str], provider_values: dict[str, str]
+) -> dict[str, str]:
+    provider = provider_values.get("type") or provider_values.get("provider") or model_values.get("provider")
+    api_key = model_values.get("api_key") or provider_values.get("api_key")
+    env: dict[str, str] = {}
+    if provider:
+        env["MODEL_PROVIDER"] = provider
+    if model := model_values.get("model"):
+        env["MODEL_NAME"] = model
+    if base_url := provider_values.get("base_url"):
+        env["MODEL_BASE_URL"] = base_url
+    if api_key:
+        env["MODEL_API_KEY"] = api_key
+    return env
 
 
 def parse_agent_model_assignments(text: str) -> dict[str, str]:
@@ -702,10 +719,16 @@ def toml_section(text: str, section: str) -> str:
 def validate_model_environment(env: dict[str, str] | None = None) -> None:
     env = env or os.environ
     provider = env.get("AIDEN_BENCHMARK_AGENT_PROVIDER") or "openrouter"
-    if provider == "openrouter" and not env.get("AIDEN_BENCHMARK_AGENT_API_KEY"):
+    api_key = env.get("AIDEN_BENCHMARK_AGENT_API_KEY")
+    if provider == "openrouter" and not api_key:
+        if any(env.get(name) for name in ("MODEL_API_KEY", "OPENROUTER_API_KEY", "AIDEN_MODEL_API_KEY")):
+            raise LauncherError(
+                "MobileGym model config missing: set AIDEN_BENCHMARK_AGENT_API_KEY "
+                "before starting the Mac MobileGym launcher"
+            )
         raise LauncherError(
-            "MobileGym model config missing: set AIDEN_BENCHMARK_AGENT_API_KEY "
-            "before starting the Mac MobileGym launcher"
+            "MobileGym model config missing: set MODEL_API_KEY or OPENROUTER_API_KEY "
+            "(or AIDEN_BENCHMARK_AGENT_API_KEY) before starting the Mac MobileGym launcher"
         )
 
 

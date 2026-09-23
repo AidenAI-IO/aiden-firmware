@@ -1,0 +1,13 @@
+{
+  "model": {
+    "provider": "openai",
+    "model": "gpt-4"
+  },
+  "search": {
+    "provider": "duckduckgo"
+  },
+  "agent": {},
+  "device": {
+    "device_type": "iOS"
+  }
+}
