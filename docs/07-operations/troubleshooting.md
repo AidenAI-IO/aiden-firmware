@@ -136,6 +136,13 @@ On success, it will output `P <probability>`. Current RV1106 helper uses RKNN ze
 - Whether `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` is the encoder model re-converted for RV1106 target;
 - Whether input/output tensor type, size, scale, zero-point in helper logs are normal.
 
+When the built-in RKNN helper reports `encoder rknn_init failed: -1`, the Agent
+tries the bundled CPU VAD helper and records a warning. Configuration reload can
+continue when that fallback starts successfully; a custom helper or model keeps
+strict error behavior. During package migration, the built-in helpers and model
+also probe the legacy `/oem/usr` locations when the `/usr/lib/aiden` files are
+absent.
+
 ### Why the mini runtime is embedded
 
 The RV1106 VAD encoder/decoder models are Rockchip **mini runtime split**

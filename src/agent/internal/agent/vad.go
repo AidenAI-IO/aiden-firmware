@@ -25,6 +25,10 @@ const (
 	defaultVADWeightsPath     = "/usr/lib/aiden/models/silero_vad_6_2_lstm_decoder_weights.bin"
 	defaultVADHelperPath      = "/usr/lib/aiden/rknn_vad"
 	defaultCPUVADHelperPath   = "/usr/lib/aiden/cpu_vad"
+	legacyVADModelPath        = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+	legacyVADWeightsPath      = "/oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin"
+	legacyVADHelperPath       = "/oem/usr/bin/rknn_vad"
+	legacyCPUVADHelperPath    = "/oem/usr/bin/cpu_vad"
 	vadHelperReadinessTimeout = 30 * time.Second
 	vadHelperProtocolTimeout  = 5 * time.Second
 	vadHelperShutdownTimeout  = 2 * time.Second
@@ -118,7 +122,36 @@ func NewAudioVAD(cfg AudioVADConfig) (*AudioVAD, error) {
 		modelPath = defaultVADModelPath
 	}
 	helperPath := ResolveVADHelperPath(backend, cfg.HelperPath)
-	return newAudioVAD(cfg, newHelperVADScorer(backend, modelPath, helperPath))
+	builtinModel := modelPath == defaultVADModelPath
+	builtinHelper := helperPath == DefaultVADHelperPathForBackend(backend)
+	if builtinModel {
+		modelPath = resolveBuiltinPath(defaultVADModelPath, legacyVADModelPath)
+	}
+	if builtinHelper {
+		if backend == "cpu" {
+			helperPath = resolveBuiltinPath(defaultCPUVADHelperPath, legacyCPUVADHelperPath)
+		} else {
+			helperPath = resolveBuiltinPath(defaultVADHelperPath, legacyVADHelperPath)
+		}
+	}
+	scorer := newHelperVADScorer(backend, modelPath, helperPath)
+	// The bundled CPU helper runs the same Silero network when the Rockchip
+	// runtime cannot initialize. Custom helpers/models keep strict semantics.
+	if backend == "rknn" && builtinHelper && builtinModel {
+		cpuHelper := resolveBuiltinPath(defaultCPUVADHelperPath, legacyCPUVADHelperPath)
+		scorer.fallback = newHelperVADScorer("cpu", "", cpuHelper)
+	}
+	return newAudioVAD(cfg, scorer)
+}
+
+func resolveBuiltinPath(primary, legacy string) string {
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return primary
 }
 
 func NewAudioVADWithScorer(cfg AudioVADConfig, scorer VADScorer) (*AudioVAD, error) {
@@ -290,10 +323,12 @@ func (v *AudioVAD) resetBuffers() {
 }
 
 type helperVADScorer struct {
-	backend     string
-	modelPath   string
-	weightsPath string
-	helperPath  string
+	backend       string
+	modelPath     string
+	weightsPath   string
+	helperPath    string
+	fallback      *helperVADScorer
+	usingFallback bool
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -312,7 +347,7 @@ func newHelperVADScorer(backend, modelPath, helperPath string) *helperVADScorer 
 	return &helperVADScorer{
 		backend:     backend,
 		modelPath:   modelPath,
-		weightsPath: defaultVADWeightsPath,
+		weightsPath: resolveBuiltinPath(defaultVADWeightsPath, legacyVADWeightsPath),
 		helperPath:  helperPath,
 	}
 }
@@ -321,7 +356,20 @@ func (s *helperVADScorer) Score(samples []int16) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.usingFallback {
+		return s.fallback.Score(samples)
+	}
 	if err := s.ensureStarted(); err != nil {
+		if s.fallback != nil && strings.HasPrefix(err.Error(), "encoder rknn_init failed:") {
+			probability, fallbackErr := s.fallback.Score(samples)
+			if fallbackErr != nil {
+				_ = s.fallback.Close()
+				return 0, errors.Join(err, fmt.Errorf("CPU VAD fallback: %w", fallbackErr))
+			}
+			s.usingFallback = true
+			logging.Warnf("agent", "vad_rknn", "RKNN initialization unavailable; using CPU Silero VAD: %v", err)
+			return probability, nil
+		}
 		return 0, err
 	}
 
@@ -366,6 +414,9 @@ func (s *helperVADScorer) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.usingFallback {
+		return s.fallback.Reset()
+	}
 	if s.cmd == nil {
 		return nil
 	}
@@ -392,6 +443,9 @@ func (s *helperVADScorer) Reset() error {
 func (s *helperVADScorer) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.usingFallback {
+		return s.fallback.Close()
+	}
 	return s.closeLocked()
 }
 
