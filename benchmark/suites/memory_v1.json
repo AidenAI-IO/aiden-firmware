@@ -181,7 +181,7 @@
         },
         {
           "id": "answer_preserves_order",
-          "check": "The final response preserves the folder, filename, and expense.md steps in order."
+          "check": "The final response preserves the folder step, includes the exact invoice filename pattern 'YYYY-MM-DD-商家-金额', and includes the final expense.md step in order."
         }
       ],
       "hard_assertions": {

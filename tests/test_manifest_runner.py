@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import subprocess
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,11 +51,17 @@ class ManifestRunnerTest(unittest.TestCase):
             "paths": ["tests"], "workdir": ".", "dependencies": [],
             "timeout_seconds": 5, "command": "printf full", "quick_command": "printf quick",
         }
-        with patch.object(run_manifest.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run, patch("builtins.print"):
+        class FinishedProcess:
+            pid = 123
+
+            def wait(self, timeout=None):
+                return 0
+
+        with patch.object(run_manifest.subprocess, "Popen", return_value=FinishedProcess()) as popen, patch("builtins.print"):
             self.assertEqual(run_manifest.run_suite(suite, profile="quick")["status"], "passed")
-            self.assertIn("printf quick", run.call_args.args[0])
+            self.assertIn("printf quick", popen.call_args.args[0])
             self.assertEqual(run_manifest.run_suite(suite, profile="full")["status"], "passed")
-            self.assertIn("printf full", run.call_args.args[0])
+            self.assertIn("printf full", popen.call_args.args[0])
 
     def test_explicit_suite_and_required_optional_suite_remain_selectable(self):
         suites = run_manifest.load_manifest()
@@ -88,6 +95,38 @@ class ManifestRunnerTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertFalse(result["executed"])
         self.assertIn("missing required inputs", result["reason"])
+
+    def test_timeout_kills_and_reaps_the_suite_process_group(self):
+        suite = {
+            "name": "timeout", "class": "deterministic", "required": True,
+            "paths": ["tests"], "workdir": ".", "dependencies": [],
+            "timeout_seconds": 1, "command": "printf timeout",
+        }
+
+        class TimedOutProcess:
+            pid = 456
+
+            def __init__(self):
+                self.waits = 0
+
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired("suite", timeout)
+                return -9
+
+        process = TimedOutProcess()
+        with patch.object(run_manifest.subprocess, "Popen", return_value=process) as popen, \
+                patch.object(run_manifest.os, "killpg") as killpg, \
+                patch("builtins.print"):
+            result = run_manifest.run_suite(suite)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("timeout after 1 seconds", result["reason"])
+        popen.assert_called_once()
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        killpg.assert_called_once_with(456, run_manifest.signal.SIGKILL)
+        self.assertEqual(process.waits, 2)
 
     def test_optional_production_smoke_is_explicit(self):
         suites = {suite["name"]: suite for suite in run_manifest.load_manifest()}

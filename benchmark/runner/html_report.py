@@ -66,7 +66,7 @@ def _fmt_time_ms(ms: float | int | str | None) -> str:
         return "0ms"
     try:
         ms_num = float(ms)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # If conversion fails, escape and return the value with ms suffix
         return _esc(str(ms)) + "ms"
 

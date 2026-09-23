@@ -790,18 +790,85 @@ def materialize_benchmark_agent_config(content: str) -> str:
         return content
     provider_type = str(provider.get("type") or provider.get("provider") or "").strip()
     if not provider_type or not re.fullmatch(r"[A-Za-z0-9_.-]+", provider_type):
-        return content
-    normalized = re.sub(
-        r"(?m)^\[model_settings\.providers\.benchmark\]\s*$",
-        f"[model_settings.providers.{provider_type}]",
-        content,
+        raise ValueError("benchmark provider type is missing or invalid")
+    if provider_type == "benchmark":
+        raise ValueError("benchmark provider type cannot refer to itself")
+
+    lines = content.splitlines(keepends=True)
+    section = ""
+    sections: set[str] = set()
+    benchmark_header_index: int | None = None
+    model_provider_index: int | None = None
+    header_pattern = re.compile(r"^[ \t]*\[([^\]]+)\][ \t]*(?:#.*)?(?:\r?\n)?$")
+    benchmark_header_pattern = re.compile(
+        r"^(?P<indent>[ \t]*)\[model_settings\.providers\.benchmark\]"
+        r"(?P<suffix>[ \t]*(?:#.*)?)(?P<newline>\r?\n)?$"
     )
-    return re.sub(
-        r"(?m)^provider\s*=\s*['\"]benchmark['\"]\s*$",
-        f'provider = "{provider_type}"',
-        normalized,
-        count=1,
+    model_provider_pattern = re.compile(
+        r"^(?P<prefix>[ \t]*provider[ \t]*=[ \t]*)"
+        r"(?P<quote>[\"'])benchmark(?P=quote)"
+        r"(?P<suffix>[ \t]*(?:#.*)?)(?P<newline>\r?\n)?$"
     )
+
+    for index, line in enumerate(lines):
+        header = header_pattern.match(line)
+        if header:
+            section = header.group(1).strip()
+            sections.add(section)
+            if section == "model_settings.providers.benchmark":
+                if benchmark_header_index is not None:
+                    raise ValueError("agent config contains duplicate benchmark provider tables")
+                benchmark_header_index = index
+            continue
+        if section == "model_settings.model" and model_provider_pattern.match(line):
+            if model_provider_index is not None:
+                raise ValueError("agent config contains duplicate model provider references")
+            model_provider_index = index
+
+    target_section = f"model_settings.providers.{provider_type}"
+    if target_section in sections:
+        raise ValueError(
+            f"agent config already contains [{target_section}]; "
+            "cannot materialize the benchmark provider without a duplicate table"
+        )
+    if benchmark_header_index is None or model_provider_index is None:
+        raise ValueError(
+            "agent config benchmark alias must contain both "
+            "[model_settings.providers.benchmark] and model_settings.model.provider"
+        )
+
+    header_match = benchmark_header_pattern.match(lines[benchmark_header_index])
+    model_match = model_provider_pattern.match(lines[model_provider_index])
+    if header_match is None or model_match is None:
+        raise ValueError("agent config benchmark alias could not be rewritten safely")
+
+    header_newline = header_match.group("newline") or ""
+    lines[benchmark_header_index] = (
+        f"{header_match.group('indent')}[{target_section}]"
+        f"{header_match.group('suffix')}{header_newline}"
+    )
+    model_newline = model_match.group("newline") or ""
+    lines[model_provider_index] = (
+        f"{model_match.group('prefix')}{model_match.group('quote')}"
+        f"{provider_type}{model_match.group('quote')}"
+        f"{model_match.group('suffix')}{model_newline}"
+    )
+    materialized = "".join(lines)
+
+    try:
+        materialized_data = tomllib.loads(materialized)
+        materialized_settings = materialized_data["model_settings"]
+        materialized_model = materialized_settings["model"]
+        materialized_providers = materialized_settings["providers"]
+    except (KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError("materialized benchmark agent config is invalid") from exc
+    if (
+        materialized_model.get("provider") != provider_type
+        or provider_type not in materialized_providers
+        or "benchmark" in materialized_providers
+    ):
+        raise ValueError("materialized benchmark agent config did not rewrite both provider references")
+    return materialized
 
 
 def agent_config_has_api_key(content: str) -> bool:

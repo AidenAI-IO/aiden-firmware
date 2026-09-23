@@ -453,12 +453,12 @@ jobs:
       run: bash scripts/run_tests_in_docker.sh --production --suite production-cross-smoke
 
     - name: Upload production smoke summary
-      if: ${{ !inputs.dry_run && inputs.release_plan_artifact == '' }}
+      if: ${{ always() && !inputs.dry_run && inputs.release_plan_artifact == '' }}
       uses: actions/upload-artifact@v4
       with:
         name: production-smoke-summary-${{ github.run_id }}
         path: output/test-summary.json
-        if-no-files-found: error
+        if-no-files-found: ignore
         retention-days: 7
 
     - name: Upload channel release assets

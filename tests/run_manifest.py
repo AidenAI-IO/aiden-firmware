@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import signal
 import shutil
 import subprocess
 import sys
@@ -202,20 +203,25 @@ def run_suite(suite: dict[str, Any], *, profile: str = "full") -> dict[str, Any]
     started = time.monotonic()
     env = os.environ.copy()
     env.setdefault("AIDEN_CONTRACT_FIXTURES", str(REPO_ROOT / "tests" / "contracts"))
+    command = "set -euo pipefail\n" + command
+    process = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=workdir,
+        env=env,
+        executable="/bin/bash",
+        start_new_session=True,
+    )
     try:
-        command = "set -euo pipefail\n" + command
-        completed = subprocess.run(
-            command,
-            shell=True,
-            cwd=workdir,
-            env=env,
-            timeout=suite["timeout_seconds"],
-            check=False,
-            executable="/bin/bash",
-        )
-        status = "passed" if completed.returncode == 0 else "failed"
-        reason = "" if status == "passed" else f"exit code {completed.returncode}"
+        returncode = process.wait(timeout=suite["timeout_seconds"])
+        status = "passed" if returncode == 0 else "failed"
+        reason = "" if status == "passed" else f"exit code {returncode}"
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
         status = "failed"
         reason = f"timeout after {suite['timeout_seconds']} seconds"
     duration = time.monotonic() - started
