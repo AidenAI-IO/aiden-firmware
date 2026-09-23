@@ -1276,12 +1276,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, cfg.ScreenshotPruningOrDefault(), r.contextManager)
 	agentLoop.ScreenState = r.screenState
 	agentLoop.SteerRecorder = steerRecorder
-	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
-		if r.toolSnapshot() == nil {
-			return newWheelNudgeGuard(nil)
-		}
-		return newWheelNudgeGuard(r.toolSnapshot().screen)
-	}
 	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
@@ -2233,10 +2227,10 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langtools.Tool) RoleProfile {
 	return buildProfile(
 		AgentConfig{
-			Instruction:      r.ConfigSnapshot().Instruction,
-			AdditionalPrompt: r.ConfigSnapshot().AdditionalPrompt,
-			Locale:           r.ConfigSnapshot().LocaleOrDefault(),
-			Timezone:         r.ConfigSnapshot().TimezoneOrDefault(),
+			Instruction: r.ConfigSnapshot().Instruction,
+			Prompt:      r.ConfigSnapshot().Prompt,
+			Locale:      r.ConfigSnapshot().LocaleOrDefault(),
+			Timezone:    r.ConfigSnapshot().TimezoneOrDefault(),
 		},
 		skills,
 		availableTools,

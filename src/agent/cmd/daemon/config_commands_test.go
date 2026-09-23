@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -223,8 +223,11 @@ func TestResolvedWebConfigDTO_MissingFileUsesDefaults(t *testing.T) {
 		t.Fatalf("log.llm_http_retention_days = %d, want %d",
 			dto.Log.LLMHTTPRetentionDays, agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault())
 	}
-	if dto.Agent.CustomInstruction != "" {
-		t.Fatalf("custom_instruction = %q, want empty wire value for built-in runtime default", dto.Agent.CustomInstruction)
+	if dto.Agent.Prompt != "" {
+		t.Fatalf("prompt = %q, want empty wire value for a config that sets no prompt", dto.Agent.Prompt)
+	}
+	if err := requireNoLegacyInstructionKeys(dto); err != nil {
+		t.Fatal(err)
 	}
 
 	data, err := json.Marshal(dto)
@@ -254,70 +257,69 @@ func TestResolvedWebConfigDTOReadsInvalidConfigForRecovery(t *testing.T) {
 	}
 }
 
-func TestResolvedWebConfigDTO_PreservesCustomInstruction(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte(`
-[conversation_settings.agent]
-custom_instruction = "Use a deployment-specific persona."
-
-[model_settings.model]
-provider = "fake"
-`), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	dto, err := resolvedWebConfigDTO(path)
+// requireNoLegacyInstructionKeys fails when the resolved wire config exposes a
+// custom_instruction (or legacy instruction) field. The built-in Agent
+// instruction is runtime content and has no editable wire field.
+func requireNoLegacyInstructionKeys(dto webConfigDTO) error {
+	encoded, err := json.Marshal(dto)
 	if err != nil {
-		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
+		return fmt.Errorf("marshal resolved config: %w", err)
 	}
-	if dto.Agent.CustomInstruction != "Use a deployment-specific persona." {
-		t.Fatalf("custom_instruction = %q, want custom instruction preserved", dto.Agent.CustomInstruction)
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &sections); err != nil {
+		return fmt.Errorf("decode resolved config: %w", err)
 	}
+	var agentSection map[string]json.RawMessage
+	if err := json.Unmarshal(sections["agent"], &agentSection); err != nil {
+		return fmt.Errorf("decode agent section: %w", err)
+	}
+	for _, key := range []string{"custom_instruction", "instruction"} {
+		if _, ok := agentSection[key]; ok {
+			return fmt.Errorf("resolved wire config exposes removed field agent.%s: %s", key, encoded)
+		}
+	}
+	return nil
 }
 
-func TestResolvedWebConfigDTO_ElidesConfiguredDefaultCustomInstruction(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	body := `
+// TestResolvedWebConfigDTO_IgnoresLegacyInstructionKeys covers the removed
+// custom_instruction setting. A file that still carries the key (the grouped
+// custom_instruction or the older flat instruction) must keep loading, must not
+// expose the field on the wire, and must not override the built-in instruction.
+func TestResolvedWebConfigDTO_IgnoresLegacyInstructionKeys(t *testing.T) {
+	for name, key := range map[string]string{
+		"custom_instruction": "custom_instruction",
+		"legacy instruction": "instruction",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "agent.toml")
+			body := `
 [conversation_settings.agent]
-custom_instruction = ` + strconv.Quote(agent.DefaultConfig().Instruction) + `
+` + key + ` = "Use a deployment-specific persona."
 
 [model_settings.model]
 provider = "fake"
 `
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
 
-	dto, err := resolvedWebConfigDTO(path)
-	if err != nil {
-		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
-	}
-	if dto.Agent.CustomInstruction != "" {
-		t.Fatalf("custom_instruction = %q, want empty wire value when config matches default", dto.Agent.CustomInstruction)
-	}
-}
+			dto, err := resolvedWebConfigDTO(path)
+			if err != nil {
+				t.Fatalf("resolvedWebConfigDTO() error = %v", err)
+			}
+			if err := requireNoLegacyInstructionKeys(dto); err != nil {
+				t.Fatal(err)
+			}
 
-func TestResolvedWebConfigDTO_IgnoresLegacyInstructionField(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	if err := os.WriteFile(path, []byte(`
-[conversation_settings.agent]
-instruction = "legacy field should be ignored"
-
-[model_settings.model]
-provider = "fake"
-`), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	dto, err := resolvedWebConfigDTO(path)
-	if err != nil {
-		t.Fatalf("resolvedWebConfigDTO() error = %v", err)
-	}
-	if dto.Agent.CustomInstruction != "" {
-		t.Fatalf("custom_instruction = %q, want empty because legacy instruction is ignored", dto.Agent.CustomInstruction)
+			cfg, err := agent.LoadResolvedConfig(path)
+			if err != nil {
+				t.Fatalf("LoadResolvedConfig() error = %v", err)
+			}
+			if cfg.Instruction != agent.DefaultConfig().Instruction {
+				t.Fatalf("Instruction = %q, want built-in default because legacy %s is ignored", cfg.Instruction, key)
+			}
+		})
 	}
 }
 

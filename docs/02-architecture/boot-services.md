@@ -13,11 +13,11 @@ relationships rather than filename order.
 | Unit | Purpose |
 | --- | --- |
 | `aiden-slot-resolve.service` | Resolve A/B partition devices from the active slot |
-| `oem.mount`, `userdata.mount`, `userdata-ota.mount` | Mount product data partitions |
+| `userdata.mount`, `userdata-ota.mount` | Mount product data partitions |
 | `aiden-rootfs-grow.service` | Grow first-boot ext4 filesystems to their partition size |
 | `aiden-userdata-migrate.service` | Validate and migrate persistent Debian userdata |
 | `aiden-machine-id.service` | Provision a stable machine identity |
-| `aiden-oem-ldconfig.service` | Register libraries from the active OEM slot |
+| `aiden-platform-ldconfig.service` | Register platform libraries from the active rootfs slot |
 | `aiden-environment.service` | Generate the strict runtime environment |
 | `aiden-media-modules.service` | Load media modules and prepare video device access |
 | `aiden-wifi-driver.service` | Load AIC8800 Wi-Fi and Bluetooth firmware |
@@ -46,7 +46,7 @@ systemctl --failed
 The Rockchip boot arguments do not pass `rw` and there is no matching fstab
 entry, so `/` starts read-only. `aiden-rootfs-grow.service` runs
 `mount -o remount,rw /` on every boot before growing the rootfs and mounting
-OEM and userdata, which is why it is ordered ahead of `aiden-oem-ldconfig`,
+userdata and the OTA workspace, which is why it is ordered ahead of `aiden-platform-ldconfig`,
 `systemd-timesyncd`, and the media services. If those units fail with
 `Read-only file system`, check that `aiden-rootfs-grow.service` ran.
 
@@ -84,7 +84,7 @@ The unit starts `/usr/lib/aiden/aiden-frame-start`, which selects the HDMI
 bridge, applies EDID and trigger policy, reads
 `[advanced_settings.hardware.frame_service].keep_streamon` from
 `/userdata/agent/agent.toml`, and
-executes `/oem/usr/bin/frame_service`.
+executes `/usr/lib/aiden/frame_service`.
 
 ```bash
 systemctl start aiden-frame.service
@@ -100,7 +100,7 @@ is `/var/log/frame_service/frame_service.log`.
 
 Configuration: `/etc/aiden_audio_service.conf`
 
-`aiden-audio.service` executes `/oem/usr/bin/audio_service` in the foreground
+`aiden-audio.service` executes `/usr/lib/aiden/audio_service` in the foreground
 and lets systemd own restart and stop behavior.
 
 ```bash
@@ -113,7 +113,7 @@ systemctl status aiden-audio.service --no-pager
 The Agent unit executes:
 
 ```bash
-/oem/usr/bin/agent -dir /userdata/agent -addr 0.0.0.0:8080
+/usr/lib/aiden/agent -dir /userdata/agent -addr 0.0.0.0:8080
 ```
 
 Before startup, `aiden-python-prepare` validates and prepares the persistent
@@ -151,7 +151,7 @@ not cause the regression: Debian already used the new loader.
 
 Both repository versions pin `pico-sdk` at
 `d1a279cbb7e29aa0801943cdf21f0575db69eed5`. All 21 files in the affected board's
-`/oem/usr/ko/aic8800dc_fw` matched that SDK firmware directory by SHA-256 during
+`/usr/lib/aiden/platform/modules/aic8800dc_fw` matched that SDK firmware directory by SHA-256 during
 the 2026-09-15 investigation. This establishes the missing load parameter as
 the concrete migration regression; it does not assert that separately built
 kernel-module binaries are byte-identical.
@@ -219,7 +219,7 @@ protocol or the per-network `NO_PROXY` value.
 a transaction-bound health result. `aiden-ota-health.service` then executes:
 
 ```bash
-/oem/usr/bin/ota --config /userdata/debian/ota/config.json health
+/usr/lib/aiden/ota --config /userdata/debian/ota/config.json health
 ```
 
 The persistent OTA partition is mounted at `/userdata/ota/` and contains state,
@@ -234,7 +234,7 @@ See [OTA Overview](../08-ota/README.md) for the full state machine.
 The systemd unit executes:
 
 ```bash
-/oem/usr/bin/agent config-web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf --wifi-interface=wlan0 --wifi-backend=systemd-networkd --system-env=/userdata/system/env --web-root=/oem/usr/share/aiden/config-web
+/usr/lib/aiden/agent config-web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf --wifi-interface=wlan0 --wifi-backend=systemd-networkd --system-env=/userdata/system/env --web-root=/usr/share/aiden/config-web
 ```
 
 Config Web uses Debian control helpers for Agent and frame-service restarts.

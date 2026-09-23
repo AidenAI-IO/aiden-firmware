@@ -62,7 +62,7 @@ tail -f /var/log/frame_service/frame_service.log
 
 Check:
 
-- Whether `/oem/usr/bin/frame_service` exists and is executable;
+- Whether `/usr/lib/aiden/frame_service` exists and is executable;
 - Whether `/dev/video0` and an RK628D or TC358743 subdevice exist;
 - Whether EDID / HDMI signal is normal;
 - Whether other processes are using `/dev/video0`.
@@ -126,13 +126,13 @@ Recommendations:
 First run helper self-test directly on the board:
 
 ```bash
-/oem/usr/bin/rknn_vad --model /oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
-/oem/usr/bin/cpu_vad --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
+/usr/lib/aiden/rknn_vad --model /usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn --weights /usr/lib/aiden/models/silero_vad_6_2_lstm_decoder_weights.bin --self-test
+/usr/lib/aiden/cpu_vad --weights /usr/lib/aiden/models/silero_vad_6_2_lstm_decoder_weights.bin --self-test
 ```
 
 On success, it will output `P <probability>`. Current RV1106 helper uses RKNN zero-copy IO; if it outputs `rknn_set_io_mem failed`, `rknn_run failed`, or old helper outputs `rknn_inputs_set failed`, check:
 
-- Whether the RKNN mini runtime embedded in `/oem/usr/bin/rknn_vad` matches the model;
+- Whether the RKNN mini runtime embedded in `/usr/lib/aiden/rknn_vad` matches the model;
 - Whether `silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` is the encoder model re-converted for RV1106 target;
 - Whether input/output tensor type, size, scale, zero-point in helper logs are normal.
 
@@ -148,7 +148,7 @@ Invalid RKNN format
 Import rknn model failed!
 ```
 
-`/oem/usr/bin/rknn_vad` therefore statically embeds the armhf-uclibc mini
+`/usr/lib/aiden/rknn_vad` therefore statically embeds the armhf-uclibc mini
 runtime (`librknnmrt.a`, 2.3.2) instead of linking a dynamic `librknnrt.so`.
 Because that archive was built against uClibc ctype tables,
 `src/rknn_glibc_compat.c` provides the two data symbols it references

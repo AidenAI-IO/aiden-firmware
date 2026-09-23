@@ -615,15 +615,16 @@ func realtimeProviderSessionConfigWithTools(cfg agent.Config, runtime *agent.Run
 	} else if turnType == "" {
 		turnType = "server_vad"
 	}
-	instructions := strings.TrimSpace(cfg.VoiceModel.Instructions)
-	if instructions == "" || instructions == agent.DefaultRealtimeVoiceInstructions {
-		if usesBackendAgent {
-			instructions = agent.DefaultRealtimeVoiceInstructions
-		} else {
-			instructions = agent.DefaultRealtimeToolExecutionInstructions
-		}
+	baseInstructions := agent.DefaultRealtimeToolExecutionInstructions
+	if usesBackendAgent {
+		baseInstructions = agent.DefaultRealtimeVoiceInstructions
 	}
-	instructions = strings.TrimSpace(strings.Join([]string{instructions, agent.ResponseLanguageGuidance(cfg.LocaleOrDefault())}, "\n\n"))
+	instructionParts := []string{baseInstructions}
+	if prompt := strings.TrimSpace(cfg.Prompt); prompt != "" {
+		instructionParts = append(instructionParts, prompt)
+	}
+	instructionParts = append(instructionParts, agent.ResponseLanguageGuidance(cfg.LocaleOrDefault()))
+	instructions := strings.TrimSpace(strings.Join(instructionParts, "\n\n"))
 	enableEmotion := cfg.VoiceModel.EnableSpeechEmotion
 	if enableEmotion == nil {
 		v := true
@@ -718,6 +719,7 @@ const (
 	realtimeAudioVolumeTool        = "audio_volume"
 	realtimeCreateTaskTool         = "create_agent_task"
 	realtimeCancelTaskTool         = "cancel_agent_task"
+	realtimeUpdateTaskTool         = "update_agent_task"
 	realtimeQueryTaskTool          = "query_agent_task"
 	realtimeResponseUserActionTool = "response_user_action"
 	realtimeEndConversationTool    = "end_conversation"
@@ -812,13 +814,25 @@ func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runt
 			),
 			realtimeVoiceToolDefinition(
 				realtimeCancelTaskTool,
-				"Cancel work that you previously started when the user asks you to stop it.",
+				"Cancel work that you previously started when the user asks you to stop it. If the work already finished but its result has not started delivery, this clears that stale result notification.",
 				map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"task_id": map[string]any{"type": "string"},
 					},
 					"required": []string{"task_id"},
+				},
+			),
+			realtimeVoiceToolDefinition(
+				realtimeUpdateTaskTool,
+				"Replace the complete goal of work that is queued, running, or waiting for user action. Use this when the user changes an existing request instead of cancelling it and creating another task.",
+				map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"task_id": map[string]any{"type": "string"},
+						"task":    map[string]any{"type": "string", "description": "The complete updated goal, including all requirements that still apply."},
+					},
+					"required": []string{"task_id", "task"},
 				},
 			),
 			realtimeVoiceToolDefinition(
@@ -937,6 +951,22 @@ func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments str
 			return realtimeToolJSON(map[string]any{"error": err.Error()})
 		}
 		return realtimeToolJSON(task)
+	case realtimeUpdateTaskTool:
+		var input struct {
+			TaskID string `json:"task_id"`
+			Task   string `json:"task"`
+		}
+		if err := json.Unmarshal([]byte(arguments), &input); err != nil {
+			return realtimeToolJSON(map[string]any{"error": "invalid task arguments"})
+		}
+		if e.tasks == nil {
+			return realtimeToolJSON(map[string]any{"error": "background agent is unavailable"})
+		}
+		task, err := e.tasks.Update(input.TaskID, input.Task)
+		if err != nil {
+			return realtimeToolJSON(map[string]any{"error": err.Error()})
+		}
+		return realtimeToolJSON(task)
 	case realtimeCancelTaskTool, realtimeQueryTaskTool:
 		var input struct {
 			TaskID string `json:"task_id"`
@@ -948,11 +978,14 @@ func (e realtimeVoiceToolExecutor) call(ctx context.Context, name, arguments str
 			return realtimeToolJSON(map[string]any{"error": "background agent is unavailable"})
 		}
 		if name == realtimeCancelTaskTool {
-			task, err := e.tasks.Cancel(input.TaskID)
+			task, notificationCleared, err := e.tasks.Cancel(input.TaskID)
 			if err != nil {
 				return realtimeToolJSON(map[string]any{"error": err.Error()})
 			}
-			return realtimeToolJSON(task)
+			return realtimeToolJSON(map[string]any{
+				"status":                       task.Status,
+				"pending_notification_cleared": notificationCleared,
+			})
 		}
 		// No task_id asks for everything outstanding, which is how the foreground
 		// checks for work it already started before creating more.
@@ -1451,10 +1484,19 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || !turnState.canInjectResponse() || activeNotificationToken != "" || notificationDrainDone != nil || activeChat != nil || sleep.pending() || chatBridgeHasPending(chatBridge) {
 			return nil
 		}
-		message := formatRealtimeTaskUpdates(pendingTaskUpdates)
 		if !supportsText {
 			return nil
 		}
+		delivering := pendingTaskUpdates
+		if tasks != nil {
+			delivering = tasks.BeginTaskUpdateDelivery(pendingTaskUpdates)
+		}
+		pendingTaskUpdates = delivering
+		if len(delivering) == 0 {
+			taskUpdatesReady = false
+			return nil
+		}
+		message := formatRealtimeTaskUpdates(delivering)
 		if err := appendRealtimeNoticeMessage(userContext, message); err != nil {
 			return fmt.Errorf("persist task update in realtime context: %w", err)
 		}
@@ -1463,6 +1505,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		}
 		if err := textSession.CreateResponse(ctx); err != nil {
 			return markRealtimeProviderFailure(fmt.Errorf("respond to background task update: %w", err))
+		}
+		if tasks != nil {
+			tasks.CompleteTaskUpdateDelivery(delivering)
 		}
 		pendingTaskUpdates = nil
 		taskUpdatesReady = false

@@ -36,7 +36,7 @@ load boundary; Config Web writes only the grouped paths below.
    - **Device Settings**: `[basic_settings.device]`, including `[basic_settings.device.hid].keyboard_layout`
 
 3. **Conversation Settings**:
-   - Custom Instructions: `custom_instruction`, `additional_prompt`
+   - Agent Prompt: `prompt`
    - Max Iterations: `max_iterations`
    - Context Management: `context_prune_threshold`, `context_compaction_threshold`
    - Screenshot Pruning: `screenshot_keep_n`, `screenshot_prune_interval`
@@ -71,7 +71,7 @@ load boundary; Config Web writes only the grouped paths below.
 
 9. **About**:
    - Firmware Version: Displayed through Config Web
-   - Component Versions: Boot, OEM, and RootFS versions for the running slot
+   - Component Versions: Boot and RootFS versions for the running slot
 
 The group tables are the canonical on-disk configuration schema. New options
 should be added to the closest existing group and its section rather than
@@ -136,7 +136,7 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 ## Config Web: the device config page
 
 Config Web is the browser client served by the `config-web` subcommand of the
-Go Agent binary (`/oem/usr/bin/agent`). It maintains the device Agent
+Go Agent binary (`/usr/lib/aiden/agent`). It maintains the device Agent
 configuration, system environment variables, and Wi-Fi configuration, and is
 the primary way to edit the fields documented on this page without manually
 editing `agent.toml`. Its device operations use the
@@ -156,7 +156,7 @@ The firmware starts `agent config-web` on port 80.
 The page renders the following config sections. The Language & Time Zone controls persist the device-level `locale` and `timezone` and apply them online. Changing either value rotates the context at the next task boundary instead of rewriting the previous session. The selected time zone is included in Agent state and controls the current-date context and controller shell commands.
 
 - `[basic_settings.language_timezone]`: UI and response language plus controller time zone
-- `[conversation_settings.agent]`: custom instructions, iteration and context controls
+- `[conversation_settings.agent]`: Agent prompt, iteration and context controls
 - `[model_settings.model]`: provider, model, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens
 - `[voice_settings.classic.stt]`: provider, language and STT options
 - `[voice_settings.classic.tts]`: provider and playback options
@@ -187,7 +187,6 @@ locale = "en-US"
 timezone = "UTC"
 
 [conversation_settings.agent]
-custom_instruction = ""
 max_iterations = -1
 context_prune_threshold = 0.5
 context_compaction_threshold = 0.8
@@ -300,16 +299,13 @@ Gemini 3.8 Flash, 3.7 Flash, and the Gemini 2.5 models use `low`, `medium`, or `
 locale = "en-US"
 timezone = "UTC"
 
-[conversation_settings.agent]
-custom_instruction = ""
-
 [voice_settings.mode]
 input_mode = "stt"
 
 [voice_settings.classic.runtime]
 vad_backend = "rknn"
-vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-vad_helper_path = "/oem/usr/bin/rknn_vad"
+vad_model_path = "/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+vad_helper_path = "/usr/lib/aiden/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 550
 min_speech_ms = 300
@@ -378,8 +374,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[voice_settings.classic.stt].language`, which only controls speech recognition. |
 | `timezone`                  | `UTC` (default) / supported IANA zone | Controller time zone used for the model-facing current date, `controller_timezone` state, and shell child processes. Config Web provides the supported IANA zone list. |
-| `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
-| `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
+| `prompt`                    | -                           | Prompt appended after the built-in Agent instruction at runtime. The built-in instruction is not configurable. |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
 | `context_prune_threshold`   | `0.5`                       | Fraction of the usable model input budget that triggers deterministic cleanup of stale state snapshots and older tool exchanges, including while one long-running tool loop is still executing. It cleans down to 6/7 of the trigger (so the default cleans from 50% to ~43%). Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.5`. The effective value is capped at `context_compaction_threshold`, so this cheap deterministic pass always gets a chance to free tokens before the LLM summary runs. A value of `1` or greater is rejected, as are `nan` and `inf`; a legacy absolute token count (for example `12000`) is detected on load, logged, and replaced by the default. |
 | `context_compaction_threshold` | `0.8`                    | Fraction of the usable model input budget at which the conversation is summarized into a compaction message. Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.8`. Values of `1` or greater, `nan`, and `inf` are rejected. Compaction itself has no token target: the transcript is reduced structurally by retaining head and tail messages and replacing the middle with one LLM summary, so the post-compaction size follows from the summary rather than from a budget. |
@@ -417,8 +412,8 @@ These fields apply to the `stt` input mode.
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `vad_backend`                   | `rknn`                                                      | VAD backend: `rknn` uses NPU encoder + CPU LSTM/decoder, `cpu` uses a pure-CPU helper                                                                                                  |
-| `vad_model_path`                | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
-| `vad_helper_path`               | `/oem/usr/bin/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad`                                                                                                         |
+| `vad_model_path`                | `/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
+| `vad_helper_path`               | `/usr/lib/aiden/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/usr/lib/aiden/cpu_vad`                                                                                                         |
 | `vad_speech_threshold`          | `0.5`                                                       | Silero VAD speech probability threshold                                                                                                                                                |
 | `silence_ms`                    | `550`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
 | `min_speech_ms`                 | `300`                                                       | Minimum valid speech duration                                                                                                                                                          |
@@ -694,11 +689,13 @@ Config Web renders the selector when `agent.input_mode = "realtime"`. Provider
 credentials and model settings live in `[voice_settings.realtime.providers.<name>]`, so
 switching the selector never overwrites another provider's saved configuration.
 The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, and xAI Grok Voice.
+The session always starts with the built-in realtime voice instruction. If
+`[conversation_settings.agent].prompt` is non-empty, it is appended after that
+base instruction; it does not replace it.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |
 | `provider` | `qwen` | Named `[voice_settings.realtime.providers.<name>]` record. Bare `qwen`, `speko`, `openai`, `gemini`, or `xai` values remain accepted for compatibility. |
-| `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
 

@@ -191,6 +191,9 @@ if(NODE_EXECUTABLE)
     add_test(NAME config_web_api
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_api_test.mjs
     )
+    add_test(NAME config_web_wifi
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_wifi_test.mjs
+    )
     add_test(NAME config_web_routes
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_routes_test.mjs
     )

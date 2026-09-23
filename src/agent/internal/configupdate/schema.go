@@ -276,7 +276,6 @@ type VoiceModel struct {
 	BaseURL                string   `json:"base_url"`
 	RealtimeProtocol       string   `json:"realtime_protocol,omitempty"`
 	Voice                  string   `json:"voice"`
-	Instructions           string   `json:"instructions"`
 	EnableSpeechEmotion    *bool    `json:"enable_speech_emotion,omitempty"`
 	InputAudioFormat       string   `json:"input_audio_format"`
 	OutputAudioFormat      string   `json:"output_audio_format"`
@@ -438,11 +437,14 @@ type LiveActivity struct {
 	Enabled *bool `json:"enabled"`
 }
 
+// Agent is the config_web wire view of the agent-level conversation settings.
+// The built-in Agent instruction is runtime content and has no wire field: the
+// legacy custom_instruction key is not accepted by config updates (the shared
+// unknown-field validation rejects it) and is never emitted here.
 type Agent struct {
 	Locale                     string  `json:"locale"`
 	Timezone                   string  `json:"timezone"`
-	CustomInstruction          string  `json:"custom_instruction"`
-	AdditionalPrompt           string  `json:"additional_prompt"`
+	Prompt                     string  `json:"prompt"`
 	ContextPruneThreshold      float64 `json:"context_prune_threshold,omitempty"`
 	InputMode                  string  `json:"input_mode"`
 	VADBackend                 string  `json:"vad_backend"`
@@ -582,7 +584,6 @@ func (d Config) ToAgentConfig() agent.Config {
 			BaseURL:                d.VoiceModel.BaseURL,
 			RealtimeProtocol:       d.VoiceModel.RealtimeProtocol,
 			Voice:                  d.VoiceModel.Voice,
-			Instructions:           d.VoiceModel.Instructions,
 			EnableSpeechEmotion:    d.VoiceModel.EnableSpeechEmotion,
 			InputAudioFormat:       d.VoiceModel.InputAudioFormat,
 			OutputAudioFormat:      d.VoiceModel.OutputAudioFormat,
@@ -662,8 +663,7 @@ func (d Config) ToAgentConfig() agent.Config {
 		TerminationPolicy:          d.TerminationPolicy,
 		Locale:                     d.Agent.Locale,
 		Timezone:                   d.Agent.Timezone,
-		Instruction:                d.Agent.CustomInstruction,
-		AdditionalPrompt:           d.Agent.AdditionalPrompt,
+		Prompt:                     d.Agent.Prompt,
 		ContextPruneThreshold:      d.Agent.ContextPruneThreshold,
 		InputMode:                  d.Agent.InputMode,
 		VADBackend:                 d.Agent.VADBackend,
@@ -950,7 +950,6 @@ func FromAgentConfig(cfg agent.Config) Config {
 			BaseURL:                cfg.VoiceModel.BaseURL,
 			RealtimeProtocol:       cfg.VoiceModel.RealtimeProtocol,
 			Voice:                  cfg.VoiceModel.Voice,
-			Instructions:           cfg.VoiceModel.Instructions,
 			EnableSpeechEmotion:    cfg.VoiceModel.EnableSpeechEmotion,
 			InputAudioFormat:       cfg.VoiceModel.InputAudioFormat,
 			OutputAudioFormat:      cfg.VoiceModel.OutputAudioFormat,
@@ -1058,8 +1057,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 		Agent: Agent{
 			Locale:                     cfg.LocaleOrDefault(),
 			Timezone:                   cfg.TimezoneOrDefault(),
-			CustomInstruction:          customInstructionValue(cfg.Instruction),
-			AdditionalPrompt:           cfg.AdditionalPrompt,
+			Prompt:                     cfg.Prompt,
 			ContextPruneThreshold:      cfg.ContextPruneThreshold,
 			InputMode:                  cfg.InputModeOrDefault(),
 			VADBackend:                 cfg.VADBackendOrDefault(),
@@ -1085,11 +1083,4 @@ func FromAgentConfig(cfg agent.Config) Config {
 			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
 		},
 	}
-}
-
-func customInstructionValue(instruction string) string {
-	if strings.TrimSpace(instruction) == agent.DefaultConfig().Instruction {
-		return ""
-	}
-	return instruction
 }

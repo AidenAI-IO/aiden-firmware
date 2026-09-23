@@ -35,9 +35,9 @@ OTA_BASE_URL="$BASE_URL" \
 ./debian_build.sh
 ```
 
-`OTA_BASE_URL` is the current distribution path for direct static hosting. The
-GitHub Release API flow is retained only as a deferred manual compatibility
-option; omit `OTA_BASE_URL` and set `OTA_REPO=OWNER/REPO` only for that flow.
+`OTA_BASE_URL` pins asset URLs for direct static hosting. For managed GitHub
+dev/staging/prod publication, use the [channel release workflow](channel-release.md),
+which sets both the repository and immutable asset URLs from its release plan.
 
 The publishable directory contains:
 
@@ -46,7 +46,6 @@ output/debian/image/
 ├── boot_a.img.tar.gz
 ├── boot_b.img.tar.gz
 ├── manifest.json
-├── oem.img.tar.gz
 ├── rootfs.img.tar.gz
 └── update.img.tar.gz
 ```
@@ -57,11 +56,10 @@ not that extra local copy.
 
 ## Host the Assets
 
-### GitHub Releases (Deferred Manual Reference)
+### GitHub Releases for a Custom Distributor
 
-GitHub Actions and automatic publication are outside the current scope. If a
-future manual process uses GitHub Releases, build without `OTA_BASE_URL`, set
-`OTA_REPO`, then upload the exact six assets:
+Official managed channels use the channel workflow. A separate distributor can
+publish a custom tag manually and update through an explicit manifest URL:
 
 ```bash
 TAG="$VERSION"
@@ -71,7 +69,6 @@ gh release create "$TAG" \
   --title "Custom Firmware $TAG" \
   output/debian/image/boot_a.img.tar.gz \
   output/debian/image/boot_b.img.tar.gz \
-  output/debian/image/oem.img.tar.gz \
   output/debian/image/rootfs.img.tar.gz \
   output/debian/image/update.img.tar.gz \
   output/debian/image/manifest.json
@@ -136,7 +133,7 @@ factory baseline is required for downgrade and inactive-slot verification.
 ## Manifest Rules
 
 The generated manifest is signed canonical JSON. Each `parts` entry names
-`boot`, `oem`, or `rootfs` and contains either a slot-neutral `asset` or
+`boot` or `rootfs` and contains either a slot-neutral `asset` or
 slot-specific `asset_a` and `asset_b` values.
 
 Published assets are `.img.tar.gz` files. For each asset:
@@ -151,9 +148,11 @@ from the dedicated OTA partition.
 
 ## Channel and Version Strategy
 
-The channel must match `[A-Za-z0-9._-]`. It is a release label rather than an
-authorization boundary. Use a specific manifest URL and signing key to control
-which firmware a device trusts.
+The channel must match `[A-Za-z0-9._-]`. Managed dev/staging/prod devices enforce
+that the signed channel matches their configuration, even for direct manifest
+URLs. Use a test device configured with a custom channel/source for these custom
+examples. Signing keys remain the trust boundary; channel names are not a
+substitute for signature verification.
 
 Use monotonically increasing build times and traceable versions, for example a
 UTC timestamp plus Git commit. OTA rejects older build times and conflicting

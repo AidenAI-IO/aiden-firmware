@@ -21,7 +21,7 @@ RUN apt-get update \
         jq \
         libcap2-bin \
         openssl \
-        python3-minimal \
+        python3 \
         qemu-user-static \
         ripgrep \
         rsync \
