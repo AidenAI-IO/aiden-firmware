@@ -48,11 +48,14 @@ Production images use A/B layout:
 5. Select inactive slot and parse corresponding slot assets from manifest.
 6. Clean stale download cache and calculate the remaining bytes after verified cache and resumable partials.
 7. Read actual available bytes from the dedicated OTA filesystem and require the remaining downloads plus the configured safety margin.
-8. Download images and verify archive size, SHA256, extracted image hash, and target partition size.
-9. Write to inactive `boot_*` and `rootfs_*`, and fsync.
-10. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
-11. Modify `misc`, set target slot as active trial slot with default tries of 3.
-12. Reboot into target slot.
+8. Download images and verify the archive size and signed SHA256 before touching a partition.
+9. Mark the inactive target slot unbootable, then stream each extracted image to its partition while calculating and checking `image_sha256`; fsync after the hash passes, and reject the update without activating the slot on any mismatch.
+10. Read the written image bytes back from eMMC and verify the same image SHA256, then personalize rootfs when required.
+11. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
+12. Modify `misc`, set target slot as active trial slot with default tries of 3.
+13. Reboot into target slot.
+
+Normal updates therefore decompress a compressed image once, during the write, instead of separately for pre-write image verification and archive pre-scans. The full eMMC readback remains as the independent write-integrity check. Dry-run mode still decompresses and hashes the image without writing it.
 
 ## Health Confirmation and Rollback
 
