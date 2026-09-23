@@ -27,6 +27,7 @@ Environment:
   AIDEN_TEST_IMAGE   Docker image tag (default: aiden-firmware-test:local)
   AIDEN_TEST_JOBS    Parallel build jobs inside the container
   AIDEN_TEST_SUMMARY JSON summary output path
+  AIDEN_TEST_SKIP_BUILD  Use an image built by CI's persistent BuildKit cache
 EOF
 }
 
@@ -75,11 +76,18 @@ docker info >/dev/null 2>&1 || {
 
 mkdir -p "$CACHE_DIR" "$(dirname "$SUMMARY_PATH")"
 
-docker build \
-    --platform "$PLATFORM" \
-    --file "$REPO_ROOT/docker/test/Dockerfile" \
-    --tag "$IMAGE" \
-    "$REPO_ROOT"
+if [ "${AIDEN_TEST_SKIP_BUILD:-0}" = "1" ]; then
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || {
+        echo "AIDEN_TEST_SKIP_BUILD=1 but Docker image is missing: $IMAGE" >&2
+        exit 1
+    }
+else
+    docker build \
+        --platform "$PLATFORM" \
+        --file "$REPO_ROOT/docker/test/Dockerfile" \
+        --tag "$IMAGE" \
+        "$REPO_ROOT"
+fi
 
 if [ "$require_production" -eq 1 ]; then
     manifest_args+=(--require-suite production-cross-smoke)

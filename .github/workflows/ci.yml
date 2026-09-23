@@ -13,15 +13,42 @@ jobs:
   manifest-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Fetch benchmark test fixture submodule
         run: git submodule update --init --depth=1 benchmark/mobilegym/vendor/mobilegym
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Docker test image and update persistent cache
+        if: ${{ github.event_name == 'push' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/test/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: aiden-firmware-test:ci
+          cache-from: type=gha,scope=aiden-firmware-test
+          cache-to: type=gha,mode=max,scope=aiden-firmware-test
+      - name: Build Docker test image from persistent cache
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/test/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: aiden-firmware-test:ci
+          cache-from: type=gha,scope=aiden-firmware-test
       - name: Run the full Docker test manifest
         env:
           AIDEN_TEST_JOBS: '2'
+          AIDEN_TEST_IMAGE: aiden-firmware-test:ci
+          AIDEN_TEST_SKIP_BUILD: '1'
         run: make check-full
       - name: Upload Docker test summary
         if: always()
