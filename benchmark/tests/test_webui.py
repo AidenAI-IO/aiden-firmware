@@ -2279,6 +2279,38 @@ def test_daemon_compose_command_and_env_use_environment_bridge_providers(tmp_pat
     assert '--device-type "$AIDEN_DEVICE_TYPE"' in entrypoint_text
 
 
+def test_start_daemon_compose_reserves_port_for_auto_host_port(tmp_path: Path, monkeypatch):
+    captured = {}
+    job = webui.Job(
+        id="auto-port-job",
+        endpoint="",
+        docker_endpoint="",
+        suites=[],
+    )
+
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18181)
+
+    def fake_run_logged_command(command, log_path, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+
+    monkeypatch.setattr(webui, "run_logged_command", fake_run_logged_command)
+    monkeypatch.setattr(webui.subprocess, "check_output", lambda *args, **kwargs: "container-id\n")
+
+    container_id = webui.start_daemon_compose(
+        job,
+        image="aiden-agent-daemon:test",
+        host_port=0,
+        config_dir=tmp_path / "config",
+        environment_bridge_endpoint="",
+        log_path=tmp_path / "daemon.log",
+    )
+
+    assert container_id == "container-id"
+    assert captured["env"]["AIDEN_DAEMON_HOST_PORT"] == "18181"
+    assert captured["command"][-1] == "daemon"
+
+
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):
     benchmark_dir = tmp_path / "benchmark"
     benchmark_dir.mkdir()

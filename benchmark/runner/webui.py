@@ -2209,10 +2209,10 @@ def daemon_compose_env(
     bridge_enabled = bool(environment_bridge_endpoint) if environment_bridge_mode is None else bool(environment_bridge_mode)
     env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] = "1" if bridge_enabled else "0"
     if host_port is not None:
-        # An empty host port asks Docker to allocate an ephemeral port. Keep
-        # explicit positive ports unchanged for local callers that need a
-        # stable endpoint.
-        env["AIDEN_DAEMON_HOST_PORT"] = "" if host_port == 0 else str(host_port)
+        # Callers use 0 for auto-selection; start_daemon_compose resolves it
+        # to a concrete free port before invoking Compose. Explicit positive
+        # ports remain stable for local callers that need a predictable endpoint.
+        env["AIDEN_DAEMON_HOST_PORT"] = str(host_port)
     if config_dir is not None:
         env["AIDEN_CONFIG_DIR"] = str(config_dir.resolve())
         env["AIDEN_BENCHMARK_TOKEN_FILE"] = "/config/control_token"
@@ -2242,6 +2242,11 @@ def start_daemon_compose(
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
     project = daemon_compose_project(job)
+    # Compose versions differ in how they handle a published port of 0. Keep
+    # the historical benchmark behavior by reserving a concrete host port
+    # before invoking Compose, then discover it from Docker after startup.
+    if host_port == 0:
+        host_port = reserve_free_port()
     env = daemon_compose_env(
         image=image,
         host_port=host_port,

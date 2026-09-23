@@ -434,9 +434,9 @@ def test_daemon_compose_env_uses_ephemeral_port_for_zero_host_port():
         host_port=0,
     )
 
-    assert env["AIDEN_DAEMON_HOST_PORT"] == ""
+    assert env["AIDEN_DAEMON_HOST_PORT"] == "0"
     compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
-    assert '127.0.0.1:${AIDEN_DAEMON_HOST_PORT-8080}:8080' in compose_text
+    assert '127.0.0.1:${AIDEN_DAEMON_HOST_PORT:-8080}:8080' in compose_text
 
 
 def test_daemon_compose_env_passes_runtime_device_type():

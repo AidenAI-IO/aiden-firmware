@@ -6,7 +6,7 @@ services:
       dockerfile: ${DAEMON_DOCKERFILE:-benchmark/docker/Dockerfile.agent-daemon}
       target: agent-daemon-runtime
     ports:
-      - "127.0.0.1:${AIDEN_DAEMON_HOST_PORT-8080}:8080"
+      - "127.0.0.1:${AIDEN_DAEMON_HOST_PORT:-8080}:8080"
     volumes:
       - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
     environment:
