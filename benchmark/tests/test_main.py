@@ -1273,6 +1273,98 @@ def test_auto_agent_setup_runs_memory_suite_without_environment_bridge(monkeypat
     assert captured["benchmark_token"] == "memory-token"
 
 
+def test_auto_agent_setup_surfaces_daemon_boot_failure(monkeypatch, tmp_path):
+    # A daemon container that exits at startup makes `docker port` fail with
+    # the misleading "no public port published" message. The skip reason must
+    # carry the container state and logs instead of the raw docker error, and
+    # daemon logs must start streaming before the port probe.
+    suite_path = tmp_path / "memory-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "memory_suite",
+                "tasks": [
+                    {
+                        "id": "recall_memory",
+                        "category": "memory",
+                        "prompt": "recall memory",
+                        "description_for_judge": "recall memory",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "control_token").write_text("memory-token", encoding="utf-8")
+
+    def fake_start_daemon_compose(job, **kwargs):
+        return "container-id"
+
+    def failing_docker_published_port(container_id, container_port):
+        calls.append("port-probe")
+        raise subprocess.CalledProcessError(1, ["docker", "port", container_id, "8080/tcp"])
+
+    def fake_start_daemon_logs(*args, **kwargs):
+        calls.append("logs-stream")
+        return None
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
+    monkeypatch.setattr(webui, "docker_published_port", failing_docker_published_port)
+    monkeypatch.setattr(webui, "container_boot_failure_detail", lambda container_id: (
+        "container state: exited (exit 1)\n"
+        "last container logs:\n"
+        "config_load_failed invalid input_mode"
+    ))
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(webui, "start_daemon_logs", fake_start_daemon_logs)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "memory-run",
+            "--auto-agent-setup",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert calls == ["logs-stream", "port-probe"]
+    results = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / "memory-run" / "results.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert len(results) == 1
+    assert results[0]["status"] == "skipped"
+    error = results[0]["metrics"]["error"]
+    assert "container state: exited (exit 1)" in error
+    assert "config_load_failed invalid input_mode" in error
+
+
 def test_run_rejects_external_daemon_platform_mismatch(monkeypatch, tmp_path, capsys):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(

@@ -2006,6 +2006,48 @@ def docker_published_port(container_name: str, container_port: int) -> int:
     raise RuntimeError(f"could not determine published port for {container_name}:{container_port}")
 
 
+def container_boot_failure_detail(container_name: str) -> str:
+    """Best-effort summary of why a container stopped before publishing a port.
+
+    The docker CLI answers ``docker port`` with "No public port ... published"
+    for a container that has already exited, which hides the real startup
+    failure. This collects the container state and the tail of its logs so the
+    caller can surface the actual cause. Returns "" when nothing could be
+    gathered.
+    """
+    detail: list[str] = []
+    try:
+        state = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.State.Status}} (exit {{.State.ExitCode}})",
+                container_name,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if state:
+            detail.append(f"container state: {state}")
+    except Exception:
+        pass
+    try:
+        logs = subprocess.run(
+            ["docker", "logs", "--tail", "40", container_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        tail_lines = (logs.stdout + logs.stderr).strip().splitlines()
+        if tail_lines:
+            detail.append("last container logs:\n" + "\n".join(tail_lines[-40:]))
+    except Exception:
+        pass
+    return "\n".join(detail)
+
+
 def build_mobilegym_environment_command(
     *,
     image: str,

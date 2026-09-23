@@ -580,6 +580,7 @@ def _cmd_run_auto_agent_setup_inner(
     from runner.webui import (
         Job,
         append_log,
+        container_boot_failure_detail,
         docker_published_port,
         endpoint_for_docker,
         ensure_daemon_image,
@@ -736,11 +737,24 @@ def _cmd_run_auto_agent_setup_inner(
                 environment_bridge_mode=bool(args.environment_url),
                 log_path=runner_log,
             )
-            published_port = docker_published_port(container_id, 8080)
+            append_log(runner_log, f"container {container_id}")
+            # Stream daemon logs before probing the published port so a
+            # container that exits at startup (e.g. config validation failure)
+            # still leaves its output in daemon.log.
+            log_proc = start_daemon_logs(job, daemon_log)
+            try:
+                published_port = docker_published_port(container_id, 8080)
+            except Exception as exc:
+                boot_detail = container_boot_failure_detail(container_id)
+                append_log(runner_log, f"daemon failed to publish port 8080: {exc}")
+                if boot_detail:
+                    append_log(runner_log, boot_detail)
+                raise RuntimeError(
+                    "daemon container is not serving port 8080: "
+                    + (boot_detail or str(exc))
+                ) from exc
             job.agent_url = f"http://127.0.0.1:{published_port}"
             client = _new_agent_client(job.agent_url, benchmark_token)
-            append_log(runner_log, f"container {container_id}")
-            log_proc = start_daemon_logs(job, daemon_log)
             if not wait_for_agent_ready(client, timeout_sec=args.agent_ready_timeout_sec):
                 return skipped_task_result(
                     suite,
