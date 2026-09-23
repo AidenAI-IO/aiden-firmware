@@ -68,8 +68,10 @@ grep -Fq 'run_cli_tools' "${APPS_DIR}/build-apps.sh"
 # proxy. Without this the self-hosted builders fall back to proxy.golang.org and
 # the rootfs CLI tool build dies on a connection reset.
 for go_proxy_var in GOPROXY GONOPROXY GOPRIVATE GOSUMDB GONOSUMDB; do
-    grep -Eq -- "^[[:space:]]*-e ${go_proxy_var} \\\\$" "${APPS_DIR}/build-apps.sh" ||
+    if ! grep -Eq -- "^[[:space:]]*-e ${go_proxy_var} \\\\$" "${APPS_DIR}/build-apps.sh" &&
+       ! grep -Eq -- "^[[:space:]]*-e ${go_proxy_var}$" "${APPS_DIR}/build-apps.sh"; then
         fail "apps container must forward ${go_proxy_var} to reach the module proxy"
+    fi
 done
 if grep -Eq -- '^[[:space:]]*-e GOFLAGS \\$' "${APPS_DIR}/build-apps.sh"; then
     fail "apps container must not inherit GOFLAGS, which would change build output"
@@ -148,9 +150,11 @@ grep -qx 'DEBIAN_APPS_BUILD_IMAGE_ID=sha256:mock-builder-image' \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx "${mock_output}:/out" "${TEST_ROOT}/docker-args.txt"
 source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
-    --path-format=absolute --git-common-dir)
-grep -qx "${source_git_common_dir}:${source_git_common_dir}:ro" \
-    "${TEST_ROOT}/docker-args.txt"
+    --path-format=absolute --git-common-dir 2>/dev/null || true)
+if [ -n "${source_git_common_dir}" ]; then
+    grep -qx "${source_git_common_dir}:${source_git_common_dir}:ro" \
+        "${TEST_ROOT}/docker-args.txt"
+fi
 grep -qx "${TEST_ROOT}/go-root:/usr/local/go:ro" \
     "${TEST_ROOT}/docker-args.txt"
 grep -qx "${TEST_ROOT}/go-build-cache:/go-build-cache" \

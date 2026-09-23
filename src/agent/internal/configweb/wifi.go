@@ -52,7 +52,6 @@ func (c wiFiConfig) publicValue(proxyConfigs ...wifiproxy.Config) map[string]any
 		}
 		if configured, ok := proxyConfig.Networks[network.SSID]; ok {
 			value["proxy_mode"] = string(configured.Mode)
-			value["proxy_url"] = wifiproxy.RedactedURL(configured.ProxyURL)
 			value["no_proxy"] = configured.NoProxy
 		}
 		networks = append(networks, value)

@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	defaultHIDWriteTimeout       = 750 * time.Millisecond
-	defaultHIDRefreshStatePath   = "/run/aiden_usb_ecm_watchdog.state"
+	defaultHIDWriteTimeout     = 750 * time.Millisecond
+	defaultHIDRefreshStatePath = "/run/aiden_usb_ecm_watchdog.state"
 )
 
 // HIDDevice manages a single HID device file with lazy open and auto-reopen.
@@ -219,8 +219,8 @@ func hidShouldRetryWrite(err error) bool {
 		return false
 	}
 	if errors.Is(err, syscall.ESHUTDOWN) || errors.Is(err, syscall.EPIPE) ||
-	   errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.ECONNRESET) ||
-	   errors.Is(err, syscall.ENODEV) {
+		errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ENODEV) {
 		return true
 	}
 	text := strings.ToLower(err.Error())
@@ -282,9 +282,9 @@ var hidKeyboardMap = map[string]uint8{
 	"backslash": 0x31, "semicolon": 0x33, "apostrophe": 0x34,
 	"grave": 0x35, "comma": 0x36, "dot": 0x37, "slash": 0x38,
 	"capslock": 0x39,
-	"f1":  0x3a, "f2": 0x3b, "f3": 0x3c, "f4": 0x3d,
-	"f5":  0x3e, "f6": 0x3f, "f7": 0x40, "f8": 0x41,
-	"f9":  0x42, "f10": 0x43, "f11": 0x44, "f12": 0x45,
+	"f1":       0x3a, "f2": 0x3b, "f3": 0x3c, "f4": 0x3d,
+	"f5": 0x3e, "f6": 0x3f, "f7": 0x40, "f8": 0x41,
+	"f9": 0x42, "f10": 0x43, "f11": 0x44, "f12": 0x45,
 	"printscreen": 0x46, "scrolllock": 0x47, "pause": 0x48,
 	"insert": 0x49, "home": 0x4a, "pageup": 0x4b,
 	"delete": 0x4c, "end": 0x4d, "pagedown": 0x4e,
