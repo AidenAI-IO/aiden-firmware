@@ -2209,7 +2209,10 @@ def daemon_compose_env(
     bridge_enabled = bool(environment_bridge_endpoint) if environment_bridge_mode is None else bool(environment_bridge_mode)
     env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] = "1" if bridge_enabled else "0"
     if host_port is not None:
-        env["AIDEN_DAEMON_HOST_PORT"] = str(host_port)
+        # An empty host port asks Docker to allocate an ephemeral port. Keep
+        # explicit positive ports unchanged for local callers that need a
+        # stable endpoint.
+        env["AIDEN_DAEMON_HOST_PORT"] = "" if host_port == 0 else str(host_port)
     if config_dir is not None:
         env["AIDEN_CONFIG_DIR"] = str(config_dir.resolve())
         env["AIDEN_BENCHMARK_TOKEN_FILE"] = "/config/control_token"

@@ -428,6 +428,17 @@ def test_daemon_compose_env_enables_benchmark_token_for_config_dir(tmp_path: Pat
     assert env["AIDEN_BENCHMARK_TOKEN_FILE"] == "/config/control_token"
 
 
+def test_daemon_compose_env_uses_ephemeral_port_for_zero_host_port():
+    env = webui.daemon_compose_env(
+        image="aiden-agent-daemon:test",
+        host_port=0,
+    )
+
+    assert env["AIDEN_DAEMON_HOST_PORT"] == ""
+    compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
+    assert '127.0.0.1:${AIDEN_DAEMON_HOST_PORT-8080}:8080' in compose_text
+
+
 def test_daemon_compose_env_passes_runtime_device_type():
     env = webui.daemon_compose_env(
         image="aiden-agent-daemon:test",

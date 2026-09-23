@@ -35,6 +35,7 @@ from runner.report import (
 )
 from runner.recovery import (
     DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
+    recover_agent_after_timeout,
     wait_for_agent_ready,
 )
 from runner.reset import (

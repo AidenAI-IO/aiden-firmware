@@ -617,7 +617,7 @@ def generate_report_html(run_dir: Path) -> str:
 
         # Extract errors
         errors = []
-        metrics = r.get("metrics", {})
+        metrics = r.get("metrics") or {}
         if "error" in metrics:
             errors.append(["Error", metrics["error"]])
         if "agent_error" in metrics:
@@ -626,14 +626,18 @@ def generate_report_html(run_dir: Path) -> str:
             errors.append(["Judge Error", metrics["judge_error"]])
         artifacts_detail = _task_artifact_refs(run_dir, tid, task_dir)
         error_log_detail = _task_error_log(run_dir, tid, str(status), errors, hard_assertion_failures, task_dir)
+        try:
+            tool_calls_count = int(metrics.get("tool_calls", 0) or 0)
+        except (TypeError, ValueError):
+            tool_calls_count = 0
 
         tasks_js_items.append({
             "id": tid,
             "category": r.get("category", ""),
             "status": status,
-            "wall_ms": r.get("metrics", {}).get("wall_ms", 0),
-            "tool_calls_count": r.get("metrics", {}).get("tool_calls", 0),
-            "screenshots_taken": r.get("metrics", {}).get("screenshots_taken", 0),
+            "wall_ms": metrics.get("wall_ms", 0),
+            "tool_calls_count": tool_calls_count,
+            "screenshots_taken": metrics.get("screenshots_taken", 0),
             "rubric_pass": r.get("rubric_pass_count", 0),
             "rubric_total": r.get("rubric_total", 0),
             "description": r.get("description_for_judge", ""),
@@ -652,7 +656,7 @@ def generate_report_html(run_dir: Path) -> str:
                     obs.get("reason", obs.get("description", "")),
                     "yes" if obs.get("passed") else "no",
                 ]
-                for obs in r.get("metrics", {}).get("trace_observations") or []
+                for obs in metrics.get("trace_observations") or []
             ],
         })
 
@@ -670,7 +674,7 @@ def generate_report_html(run_dir: Path) -> str:
   <td>{_esc(t['category'])}</td>
   <td><span class="badge {badge_cls}">{badge_label}</span></td>
   <td class="mono">{t['rubric_pass']}/{t['rubric_total']}</td>
-  <td class="mono">{int(t['tool_calls_count'])}</td>
+  <td class="mono">{t['tool_calls_count']}</td>
   <td class="mono">{_fmt_time_ms(t['wall_ms'])}</td>
 </tr>\n"""
 
@@ -1012,7 +1016,7 @@ function openDrawer(i) {{
   document.getElementById("dChips").innerHTML =
     '<span class="chip">' + esc(t.category) + '</span>' +
     '<span class="chip">' + esc(t.status) + '</span>' +
-    '<span class="chip">' + Math.floor(t.tool_calls_count) + ' tools</span>' +
+    '<span class="chip">' + esc(String(t.tool_calls_count)) + ' tools</span>' +
     '<span class="chip">' + formatTime(t.wall_ms) + '</span>' +
     (t.screenshots_taken ? '<span class="chip">' + Math.floor(t.screenshots_taken) + ' screenshots</span>' : '');
   var body = "";
