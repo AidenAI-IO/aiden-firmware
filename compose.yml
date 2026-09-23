@@ -1,5 +1,6 @@
 services:
   aiden:
+    platform: linux/amd64
     image: ${AIDEN_DOCKER_IMAGE:-aiden-agent-sandbox:local}
     build:
       context: .

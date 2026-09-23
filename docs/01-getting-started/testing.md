@@ -4,20 +4,57 @@ sidebar_position: 7
 
 # Testing and Validation
 
-## Host Unit Tests
+## Docker Test Entry Point
 
-The project uses doctest and provides a host-native test build:
+The host is only used as a Docker client. The compiler, test runners, Python
+packages, Node.js, Go toolchain, and ARM cross compiler are supplied by the
+pinned `docker/test/Dockerfile` image.
+
+For local iterations, run the **quick feedback** profile:
 
 ```bash
-make test
+make check
 ```
 
-Or execute manually:
+It runs shared contracts, C++ host tests (the `aiden_tests` target), Go format/vet
+and focused contract tests, Web tests, and a small benchmark sample plus SkillOpt.
+It intentionally does **not** run every Go test, all 879 benchmark cases, the
+long-running shell/release tests, or the 30-second CTest watchdog check.
+It is not a substitute for the full test gate. Before merging, run:
 
 ```bash
-cmake -S . -B build-host -DAIDEN_TESTS=ON
-cmake --build build-host
-build-host/tests/aiden_tests
+make check-full
+```
+
+CI runs `make check-full` on every PR, including the suites omitted by the quick
+profile. `make test` is also an alias for the full check. To run one suite while
+iterating, use `bash scripts/run_tests_in_docker.sh --suite go-unit` (or another
+name from `bash scripts/run_tests_in_docker.sh --list`). All commands still run
+inside the same Docker test image.
+
+Docker-backed package tests that need the host Docker socket are explicit and
+separate from the normal manifest because the socket grants access to the
+Docker daemon:
+
+```bash
+make check-docker
+```
+
+The Linux CI runner additionally uses `--docker-socket --host-network` to run
+`docker-sandbox-smoke` inside the test image. These options are explicit and
+not part of local `make check` or `make check-full`.
+
+The suite list and quick commands live in [`tests/test-manifest.yaml`](../../tests/test-manifest.yaml).
+A selected required suite with a missing dependency or an unexpected skip fails
+the runner. The JSON result at `output/test-summary.json` records the profile
+and the suites actually executed.
+
+The production cross-build smoke test requires the SDK and pinned ARM vendor
+inputs (`pico-sdk` and the RKNN archive). The Docker smoke runner downloads and
+checksums the pinned OpenCV-Mobile source when it is not already cached:
+
+```bash
+make check-production
 ```
 
 Tests cover UDS messaging, Frame Service protocol, Audio Service protocol, Ring Buffer, Wi-Fi / Agent TOML configuration parsing, image processing, and other modules.
