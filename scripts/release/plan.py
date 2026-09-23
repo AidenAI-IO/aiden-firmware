@@ -57,8 +57,8 @@ def validate_record(record):
     platform = record["platform"]
     if not re.fullmatch(r"[0-9a-f]{40}", platform["source_commit"]):
         raise ValueError("Invalid platform source commit")
-    if not re.fullmatch(r"[1-9][0-9]*\.0\.0", platform["contract"]):
-        raise ValueError("Invalid platform contract")
+    if type(platform["contract"]) is not int or platform["contract"] < 1:
+        raise ValueError("Platform contract must be a positive integer")
     base = TAG.fullmatch(platform["base_release"])
     if not base or base[1] != record["channel"]:
         raise ValueError("Platform base belongs to another channel")
@@ -170,8 +170,18 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
     fingerprints = source_fingerprints(root, commit, policy)
     previous = next((r for r in reversed(records) if r["channel"] == channel), None)
     if previous:
-        subprocess.run(["git", "merge-base", "--is-ancestor", previous["source_commit"], commit],
-                       cwd=root, check=True)
+        # A squash merge or rebase can preserve released content without
+        # preserving its commit as an ancestor. Compare the two release trees,
+        # using ancestry only to reject older commits and unrelated histories.
+        if command("git", "rev-parse", "--is-shallow-repository", cwd=root) == "true":
+            command("git", "fetch", "--unshallow", "origin", previous["source_commit"], commit, cwd=root)
+        common = subprocess.run(["git", "merge-base", previous["source_commit"], commit],
+                                cwd=root, capture_output=True, text=True, timeout=300)
+        if common.returncode == 1:
+            raise ValueError(f"Release source is unrelated to {previous['tag']}; choose a source with shared Git history")
+        common.check_returncode()
+        if common.stdout.strip() == commit and commit != previous["source_commit"]:
+            raise ValueError(f"Release source is older than {previous['tag']}; choose the current source")
         raw = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", "-z",
                                        previous["source_commit"], commit, "--"], cwd=root)
         paths = [p.decode() for p in raw.split(b"\0") if p]
@@ -194,8 +204,8 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
         raise ValueError("Version must exceed every published channel version (and 0.0.1)")
     tag = f"{channel}-v{next_version}"
     if kind == "ota":
-        major = max([int(r["platform"]["contract"].split(".")[0]) for r in records] + [0]) + 1
-        platform = {"contract": f"{major}.0.0", "base_release": tag, "source_commit": commit}
+        contract = max([r["platform"]["contract"] for r in records] + [0]) + 1
+        platform = {"contract": contract, "base_release": tag, "source_commit": commit}
     else:
         platform = dict(previous["platform"])
     log_range = f"{previous['source_commit']}..{commit}" if previous else commit
@@ -226,7 +236,7 @@ def environment(plan):
     validate_record(plan)
     return {
         "AIDEN_BUSINESS_VERSION": plan["version"], "AIDEN_BUSINESS_REVISION": "1",
-        "AIDEN_PLATFORM_CONTRACT": plan["platform"]["contract"],
+        "AIDEN_PLATFORM_CONTRACT": str(plan["platform"]["contract"]),
         "AIDEN_PLATFORM_BASE": plan["platform"]["base_release"],
         "AIDEN_RELEASE_CHANNEL": plan["channel"],
         "AIDEN_SYSTEM_FINGERPRINT": plan["fingerprints"]["system"],

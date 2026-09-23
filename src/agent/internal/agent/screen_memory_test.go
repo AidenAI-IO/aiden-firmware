@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,7 +61,7 @@ func validFrameClient(t *testing.T) *fakeScreenFrameClient {
 	t.Helper()
 	return &fakeScreenFrameClient{
 		meta: &frameMetadata{Width: 400, Height: 800, PixelFormat: "jpeg"},
-		data: uniformWheelScreenshotJPEG(t, 400, 800),
+		data: uniformScreenMemoryJPEG(t, 400, 800),
 	}
 }
 
@@ -294,4 +297,17 @@ func TestScreenMemoryPipelineBase64EncodesFrame(t *testing.T) {
 		}
 	}
 	t.Fatal("no image part found")
+}
+
+func uniformScreenMemoryJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	for index := range img.Pix {
+		img.Pix[index] = 24
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	return encoded.Bytes()
 }
