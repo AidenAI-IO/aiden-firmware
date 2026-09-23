@@ -261,17 +261,7 @@ func (d *AudioDialog) vadConfig() AudioVADConfig {
 	if modelPath == "" {
 		modelPath = defaultVADModelPath
 	}
-	if modelPath == defaultVADModelPath {
-		modelPath = resolveBuiltinPath(defaultVADModelPath, legacyVADModelPath)
-	}
 	helperPath := ResolveVADHelperPath(backend, d.config.VADHelperPath)
-	if helperPath == DefaultVADHelperPathForBackend(backend) {
-		if backend == "cpu" {
-			helperPath = resolveBuiltinPath(defaultCPUVADHelperPath, legacyCPUVADHelperPath)
-		} else {
-			helperPath = resolveBuiltinPath(defaultVADHelperPath, legacyVADHelperPath)
-		}
-	}
 	return AudioVADConfig{
 		SampleRate: d.config.Audio.SampleRateOrDefault(),
 		SilenceMs:  d.config.SilenceMs, MinSpeechMs: d.config.MinSpeechMs,

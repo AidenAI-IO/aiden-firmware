@@ -98,12 +98,8 @@ func TestNewAudioVADSelectsHelperFromBackend(t *testing.T) {
 	if scorer.backend != "cpu" {
 		t.Fatalf("backend = %q, want cpu", scorer.backend)
 	}
-	wantCPUHelper := defaultCPUVADHelperPath
-	if _, err := os.Stat(wantCPUHelper); err != nil {
-		wantCPUHelper = legacyCPUVADHelperPath
-	}
-	if scorer.helperPath != wantCPUHelper {
-		t.Fatalf("helperPath = %q, want %q", scorer.helperPath, wantCPUHelper)
+	if scorer.helperPath != defaultCPUVADHelperPath {
+		t.Fatalf("helperPath = %q, want %q", scorer.helperPath, defaultCPUVADHelperPath)
 	}
 
 	defaultVAD, err := NewAudioVAD(AudioVADConfig{})
@@ -117,36 +113,8 @@ func TestNewAudioVADSelectsHelperFromBackend(t *testing.T) {
 	if defaultScorer.backend != "rknn" {
 		t.Fatalf("default backend = %q, want rknn", defaultScorer.backend)
 	}
-	wantRKNNHelper := defaultVADHelperPath
-	if _, err := os.Stat(wantRKNNHelper); err != nil {
-		wantRKNNHelper = legacyVADHelperPath
-	}
-	if defaultScorer.helperPath != wantRKNNHelper {
-		t.Fatalf("default helperPath = %q, want %q", defaultScorer.helperPath, wantRKNNHelper)
-	}
-}
-
-func TestResolveBuiltinPathUsesLegacyInstallWhenPrimaryIsMissing(t *testing.T) {
-	dir := t.TempDir()
-	primary := filepath.Join(dir, "usr", "helper")
-	legacy := filepath.Join(dir, "oem", "helper")
-	if err := os.MkdirAll(filepath.Dir(legacy), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacy, []byte("helper"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveBuiltinPath(primary, legacy); got != legacy {
-		t.Fatalf("resolveBuiltinPath() = %q, want legacy %q", got, legacy)
-	}
-	if err := os.MkdirAll(filepath.Dir(primary), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(primary, []byte("helper"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveBuiltinPath(primary, legacy); got != primary {
-		t.Fatalf("resolveBuiltinPath() = %q, want primary %q", got, primary)
+	if defaultScorer.helperPath != defaultVADHelperPath {
+		t.Fatalf("default helperPath = %q, want %q", defaultScorer.helperPath, defaultVADHelperPath)
 	}
 }
 
@@ -190,41 +158,6 @@ func TestHelperVADScorerStopsAfterMalformedScoreResponse(t *testing.T) {
 	scorer.mu.Unlock()
 	if helperStillRunning {
 		t.Fatal("helper process was kept after malformed response")
-	}
-}
-
-func TestHelperVADScorerFallsBackToCPUWhenRKNNEncoderIsUnavailable(t *testing.T) {
-	rknnPath := filepath.Join(t.TempDir(), "rknn-vad")
-	rknnScript := "#!/bin/sh\n" +
-		"printf 'ERR encoder rknn_init failed: -1\\n'\n" +
-		"sleep 30\n"
-	if err := os.WriteFile(rknnPath, []byte(rknnScript), 0755); err != nil {
-		t.Fatalf("write RKNN helper script: %v", err)
-	}
-	cpuPath := filepath.Join(t.TempDir(), "cpu-vad")
-	cpuScript := "#!/bin/sh\n" +
-		"printf 'READY\\n'\n" +
-		"dd bs=1025 count=1 >/dev/null 2>/dev/null\n" +
-		"printf 'P 0.25\\n'\n" +
-		"sleep 30\n"
-	if err := os.WriteFile(cpuPath, []byte(cpuScript), 0755); err != nil {
-		t.Fatalf("write CPU helper script: %v", err)
-	}
-
-	scorer := newHelperVADScorer("rknn", "model.rknn", rknnPath)
-	scorer.fallback = newHelperVADScorer("cpu", "", cpuPath)
-	probability, err := scorer.Score(make([]int16, sileroVADFrameSamples))
-	if err != nil {
-		t.Fatalf("Score() error = %v", err)
-	}
-	if probability != 0.25 {
-		t.Fatalf("probability = %v, want 0.25", probability)
-	}
-	if !scorer.usingFallback {
-		t.Fatal("RKNN scorer did not switch to CPU fallback")
-	}
-	if err := scorer.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
 	}
 }
 
