@@ -36,7 +36,19 @@ function addProviderRename(config,section,oldName,newName){if(!oldName||!newName
 let providerWriteQueue=Promise.resolve();
 function queueProviderWrite(write){const result=providerWriteQueue.then(write);providerWriteQueue=result.catch(function(){});return result;}
 function cloneProviderRecords(records){const copy={};Object.keys(records||{}).forEach(function(name){copy[name]=Object.assign({},records[name]||{});});return copy;}
-function providerRecordsMatch(section,expected,actual){const fields=recordSectionFields[section]||{};return Object.keys(actual||{}).every(function(name){const got=actual[name];if(got==null)return true;const want=expected&&expected[name];if(!want)return false;return fields.every(function(item){const key=item[0];const secret=item[2];if(secret||!Object.prototype.hasOwnProperty.call(got,key))return true;return String(want[key]||'')===String(got[key]||'');});});}
+function providerRecordsMatch(section,expected,actual){
+  const fields=recordSectionFields[section]||[];
+  const wanted=expected||{};
+  const received=actual||{};
+  const names=Object.keys(wanted);
+  if(names.length!==Object.keys(received).length||names.some(function(name){return !Object.prototype.hasOwnProperty.call(received,name);}))return false;
+  return names.every(function(name){
+    const got=received[name];
+    const want=wanted[name];
+    if(got==null||!want)return false;
+    return fields.every(function(item){const key=item[0];const secret=item[2];if(secret||!Object.prototype.hasOwnProperty.call(got,key))return true;return String(want[key]||'')===String(got[key]||'');});
+  });
+}
 function sanitizeProviderName(value){const clean=String(value==null?'':value).trim();return ['__proto__','constructor','prototype'].indexOf(clean.toLowerCase())===-1?clean:'';}
 function providerNameSlug(value){return sanitizeProviderName(String(value==null?'':value).replace(/[^A-Za-z0-9_-]+/g,'-').replace(/^-+|-+$/g,''));}
 function providerCredentialConfigured(record){return !!record&&(!!record.has_api_key||!!record.api_key);}
@@ -75,7 +87,7 @@ function createProviderRecordsManager(spec){return {
   autoFillName:function(){if(this.nameDirty)return;const section=this.spec.section;const nameEl=byId(section+'_record_name');if(!nameEl)return;const record=this.readDialog();const base=this.spec.nameBase?this.spec.nameBase(record):String(record.type||'');nameEl.value=base?this.uniqueName(base,''):'';},
   readDialog:function(){const section=this.spec.section;const record={};(recordSectionFields[section]||[]).forEach(function(item){const key=item[0];const el=byId(section+'_'+key);if(!el)return;const field=el.closest?el.closest('.field'):null;if(field&&field.classList.contains('hidden'))return;const value=String(el.value||'').trim();if(value!=='')record[key]=value;});return record;},
   saveDialog:function(editName){const section=this.spec.section;const record=this.readDialog();if(!record.type){alert(t('provider.type_required'));return;}const nameEl=byId(section+'_record_name');const base=this.spec.nameBase?this.spec.nameBase(record):record.type;let name=this.sanitizeName(nameEl?nameEl.value:'');if(!name)name=this.uniqueName(base,editName||'');if(!name){alert(t('provider.name_required'));return;}if(name!==editName&&Object.prototype.hasOwnProperty.call(this.records,name)){alert(t('provider.exists',{name:name}));return;}const apiKeyRaw=record.api_key==null?'':String(record.api_key);if(!assignProviderAPIKey(record,apiKeyRaw))return;const renamedFrom=editName&&name!==editName?editName:'';const refEl=byId(this.spec.refFieldId);const rename=renamedFrom?{oldName:renamedFrom,newName:name,selected:!!(refEl&&refEl.value===renamedFrom)}:null;if(renamedFrom)delete this.records[renamedFrom];this.records[name]=record;const selectInto=this.pendingSelect&&!editName?name:'';this.pendingSelect=false;const result=this.save(addProviderRename(renamedFrom?this.refPatch(renamedFrom,name):null,section,renamedFrom,name),selectInto,rename);const overlay=document.querySelector('.modal-overlay');if(overlay)overlay.remove();return result;},
-  refPatch:function(oldName,newName){const config=appState.config||{};const current=config[this.spec.refSection];if(!current||current.provider!==oldName)return null;const copy=Object.assign({},current);copy.provider=newName;const patch={};patch[this.spec.refSection]=copy;return patch;},
+  refPatch:function(oldName,newName){const config=appState.config||{};const current=config[this.spec.refSection];if(!current||current.provider!==oldName)return null;const patch={};patch[this.spec.refSection]={provider:newName};return patch;},
   save:function(extraConfig,selectIntoRef,rename){const self=this;const snapshot=cloneProviderRecords(this.records);const version=++this.writeVersion;return queueProviderWrite(async function(){try{const recordsPatch={};const previous=self.confirmedRecords||{};const writable=function(record){const copy={};Object.keys(record||{}).forEach(function(key){if(key.indexOf('has_')!==0)copy[key]=record[key];});return copy;};Object.keys(previous).forEach(function(name){if(!Object.prototype.hasOwnProperty.call(snapshot,name))recordsPatch[name]=null;});Object.keys(snapshot).forEach(function(name){const next=writable(snapshot[name]);const old=writable(previous[name]);Object.keys(old).forEach(function(key){if(!Object.prototype.hasOwnProperty.call(next,key))next[key]=null;});if(JSON.stringify(next)!==JSON.stringify(old))recordsPatch[name]=next;});const body={};body[self.spec.configKey]=recordsPatch;const config=Object.assign(body,extraConfig||{});let payload;
     let applicationError = null;
     try {

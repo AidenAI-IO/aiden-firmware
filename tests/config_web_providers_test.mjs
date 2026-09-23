@@ -365,11 +365,18 @@ providerTypeInput.value = 'openai';
 providerBaseURLInput.value = '';
 providerAPIKeyInput.value = '';
 providerNameInput.value = 'rename-new';
-requestImpl = async () => ({config: {
-  model: {provider: 'rename-new', model: 'gpt-4o'},
-  model_providers: {'rename-new': {type: 'openai'}},
-}});
+let renameBody = null;
+requestImpl = async (_url, options) => {
+  renameBody = JSON.parse(options.body);
+  return {config: {
+    // The form write ahead of this rename has already changed the model.
+    model: {...appState.config.model, model: 'updated-before-rename', ...renameBody.config.model},
+    model_providers: {'rename-new': {type: 'openai'}},
+  }};
+};
 assert.equal(await ModelProvidersManager.saveDialog('rename-old'), true);
+assert.deepEqual(renameBody.config.model, {provider: 'rename-new'}, 'rename sends only the provider reference so it cannot overwrite newer form fields');
+assert.equal(appState.config.model.model, 'updated-before-rename', 'rename response preserves the latest model field');
 assert.equal(providerSelectForModels.value, 'rename-new');
 modelInput.value = 'stale-renamed-refresh';
 await ModelSelector.onProviderChange('rename-new');
@@ -486,6 +493,22 @@ requestImpl = async (_url, options) => {
 };
 assert.equal(await ModelProvidersManager.save(), true);
 assert.deepEqual(afterFailurePatch, {another: {type: 'openai'}});
+
+// Incomplete rename responses must not replace confirmed provider records.
+for (const response of [
+  {keep: {type: 'openai'}},
+  {},
+  {keep: {type: 'openai'}, old: {type: 'openai'}},
+  {keep: {type: 'openai'}, renamed: null},
+]) {
+  const confirmed = {keep: {type: 'openai'}, old: {type: 'openai'}};
+  ModelProvidersManager.load(confirmed);
+  ModelProvidersManager.records = {keep: {type: 'openai'}, renamed: {type: 'openai'}};
+  requestImpl = async () => ({config: {model_providers: response}});
+  assert.equal(await ModelProvidersManager.save(), false, 'provider save must reject responses missing the renamed record');
+  assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.records)), confirmed);
+  assert.deepEqual(JSON.parse(JSON.stringify(ModelProvidersManager.confirmedRecords)), confirmed);
+}
 
 const firstRequest = deferred();
 const secondRequest = deferred();
@@ -604,7 +627,11 @@ await ModelSelector.onProviderChange('active');
 let deleteBody = null;
 requestImpl = async (_url, options) => {
   deleteBody = JSON.parse(options.body);
-  return {config: Object.assign({}, appState.config, deleteBody.config)};
+  return {config: {
+    ...appState.config,
+    model: {...appState.config.model, ...deleteBody.config.model},
+    model_providers: {backup: appState.config.model_providers.backup},
+  }};
 };
 assert.equal(await ModelProvidersManager.deleteRecord('active'), true);
 assert.equal(deleteBody.config.model.provider, 'backup');
