@@ -41,7 +41,7 @@ def test_runnable_profile_excludes_hardware_and_all_keeps_every_case() -> None:
     assert runnable
     assert hardware
     assert all_cases == catalog.cases
-    assert len(runnable) == 14
+    assert len(runnable) == 13
     assert len(hardware) == 12
     assert len(all_cases) == 26
     assert not any(case.environment in {"adb", "external"} for case in runnable)
@@ -50,9 +50,26 @@ def test_runnable_profile_excludes_hardware_and_all_keeps_every_case() -> None:
     assert {case.environment for case in runnable}.isdisjoint(
         {case.environment for case in hardware}
     )
-    assert {case.suite for case in runnable} | {case.suite for case in hardware} == {
-        case.suite for case in catalog.cases
-    }
+    assert {case.suite for case in runnable} | {case.suite for case in hardware} == (
+        {case.suite for case in catalog.cases}
+        - {"suites/mobilegym_scroll_sweep.json"}
+    )
+
+
+def test_scroll_sweep_stays_out_of_runnable_but_is_explicitly_selectable() -> None:
+    catalog = load_catalog()
+
+    runnable = select_cases(catalog, profile="runnable")
+    sweep_ids = {case.id for case in runnable}
+    assert "mobilegym-scroll-sweep" not in sweep_ids
+
+    selected = select_cases(
+        catalog,
+        profile="runnable",
+        suite="suites/mobilegym_scroll_sweep.json",
+    )
+    assert [case.id for case in selected] == ["mobilegym-scroll-sweep"]
+    assert selected[0].runnable is False
 
 
 def test_selecting_a_suite_preserves_platform_specific_cases() -> None:

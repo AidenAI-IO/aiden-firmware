@@ -35,6 +35,9 @@ class SuiteCase:
     target_platform: str = "auto"
     max_concurrency: int = 1
     timeout_minutes: int = 180
+    # False keeps the case out of the automatic runnable profile; it stays
+    # selectable by explicit --suite (workflow_dispatch).
+    runnable: bool = True
 
     def matrix_entry(self) -> dict[str, Any]:
         return dc.asdict(self)
@@ -137,7 +140,9 @@ def select_cases(
         return selected
     if profile == "runnable":
         return tuple(
-            case for case in catalog.cases if case.environment in RUNNABLE_ENVIRONMENTS
+            case
+            for case in catalog.cases
+            if case.environment in RUNNABLE_ENVIRONMENTS and case.runnable
         )
     if profile == "hardware":
         return tuple(
