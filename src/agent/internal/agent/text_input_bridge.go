@@ -35,7 +35,6 @@ type pasteMenuResult struct {
 
 type textViaBridgeResult struct {
 	Attempted bool
-	Pasted    bool
 	Committed bool
 	FieldText string
 	Err       error

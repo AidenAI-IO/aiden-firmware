@@ -325,7 +325,7 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	}
 }
 
-func TestSearchLaunchAppTextEntryFallsBackAfterClipboardWriteFailure(t *testing.T) {
+func TestSearchLaunchAppTextEntryDisablesBridgePath(t *testing.T) {
 	pb := newTestPhoneBridge(t)
 	pb.platform = "android"
 	pb.connected = true
@@ -348,7 +348,7 @@ func TestSearchLaunchAppTextEntryFallsBackAfterClipboardWriteFailure(t *testing.
 			bridgeFn: func() *PhoneBridge { return pb },
 			clipboardWriteFn: func(context.Context, *PhoneBridge, string) error {
 				bridgeWrites++
-				return fmt.Errorf("clipboard unavailable")
+				return context.Canceled
 			},
 		},
 	}
@@ -359,13 +359,12 @@ func TestSearchLaunchAppTextEntryFallsBackAfterClipboardWriteFailure(t *testing.
 		vision:    vision,
 		platform:  "android",
 		entryTool: entryTool,
-		sleep:     testNoWaitSleep,
 	}, "Aiden", false)
 	if err != nil {
 		t.Fatalf("enterSearchQuery() error = %v", err)
 	}
-	if bridgeWrites != 1 {
-		t.Fatalf("bridge writes = %d, want clipboard attempt before local text entry", bridgeWrites)
+	if bridgeWrites != 0 {
+		t.Fatalf("bridge writes = %d, want search_launch_app text entry to disable Bridge", bridgeWrites)
 	}
 	if len(keyboardText.calls) == 0 {
 		t.Fatal("keyboard_text was not called; want local text-entry path")

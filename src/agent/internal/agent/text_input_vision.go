@@ -19,7 +19,6 @@ type textInputScreenAnalysisRequest struct {
 	CandidateTargetText    string
 	CandidateCommittedText string
 	Focus                  focusPointArgs
-	FocusedSystemSearch    bool
 	Segments               []string
 }
 
@@ -419,10 +418,6 @@ func parseTextInputCompositionPlan(target, raw string) ([]string, error) {
 }
 
 func buildTextInputAnalysisPrompt(req textInputScreenAnalysisRequest) string {
-	focusHint := fmt.Sprintf("Focus (normalized 0-1000): (%.0f, %.0f)", req.Focus.X, req.Focus.Y)
-	if req.FocusedSystemSearch {
-		focusHint = "Focus: the already-focused system search query field (Spotlight or launcher search). Locate it from this screenshot; do not read app result labels as field text."
-	}
 	segments := strings.Join(req.Segments, ", ")
 	if segments == "" {
 		segments = "(none yet)"
@@ -439,7 +434,7 @@ Platform: %q
 Target text: %q
 Verification scope: %q
 Typed segments: %s
-%s
+Focus (normalized 0-1000): (%.0f, %.0f)
 %s
 
 Return JSON only:
@@ -458,7 +453,7 @@ Rules:
 - composition_pending: true whenever the just-typed content is still in an IME preedit/candidate state and requires confirmation, including an ASCII part shown with an IME candidate box
 - observed_mode: ascii=direct Latin entry with no active candidate/preedit box; composition=any active IME candidate/preedit state, including a candidate box shown for an ASCII part such as "4k60"
 - wrong_ime_suspected: true when field shows raw romanization instead of target script
-- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.TargetText, verificationScope, segments, focusHint, phaseHint, targetMatchRule))
+- suggest_switch_ime: true only when confident the wrong keyboard/IME is active`, req.Platform, req.TargetText, verificationScope, segments, req.Focus.X, req.Focus.Y, phaseHint, targetMatchRule))
 }
 
 func buildTextInputCandidateActionPrompt(req textInputScreenAnalysisRequest) string {
