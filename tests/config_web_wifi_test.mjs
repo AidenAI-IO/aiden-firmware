@@ -135,6 +135,9 @@ appState.wifi = {networks: [{
   proxy_url: 'http://user:***@proxy.example:7890', no_proxy: 'localhost',
 }]};
 requestResult.wifi = appState.wifi;
+wifiModule.namespace.openWifiModal('Office', false);
+assert.equal(elements.get('wifiProxyUrl').value, '');
+assert.equal(elements.get('wifiProxyUrl').placeholder, 'wifi.proxy_saved_placeholder');
 await wifiModule.namespace.connectSavedWifi('Office');
 assert.deepEqual(
   JSON.parse(requests[0].options.body),
