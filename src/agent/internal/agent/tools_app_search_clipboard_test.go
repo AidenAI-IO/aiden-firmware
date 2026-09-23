@@ -16,7 +16,7 @@ func TestOpenAppSearchPastesBackgroundClipboardBeforeTyping(t *testing.T) {
 				pb := newTestPhoneBridge(t)
 				pb.platform = platform
 				pb.appState = "background"
-				pb.appStateAt = time.Now()
+				pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
 				pb.pipBridgeSeen, pb.pipBridgeEnabled = true, platform == "ios"
 				pb.fgsBridgeSeen, pb.fgsBridgeEnabled = true, platform == "android"
 				pb.fgsBridgeAt = time.Now()
@@ -85,17 +85,13 @@ func TestOpenAppSearchPastesBackgroundClipboardBeforeTyping(t *testing.T) {
 	}
 }
 
-func TestSearchQueryDoesNotRestoreCompanionOrUseStaleClipboardRoute(t *testing.T) {
-	for _, state := range []string{"no_pip", "stale_pip", "foreground", "stale_fgs"} {
+func TestSearchQueryDoesNotRestoreCompanionOrUseUnsupportedClipboardRoute(t *testing.T) {
+	for _, state := range []string{"no_pip", "foreground", "stale_fgs"} {
 		t.Run(state, func(t *testing.T) {
 			pb := newTestPhoneBridge(t)
 			pb.platform, pb.appState = "ios", "background"
 			pb.appStateAt = time.Now()
 			pb.returnEntry, pb.returnEntryOK, pb.returnEntrySeen = "dynamic_island", true, true
-			if state == "stale_pip" {
-				pb.pipBridgeSeen, pb.pipBridgeEnabled = true, true
-				pb.appStateAt = time.Now().Add(-time.Minute)
-			}
 			if state == "foreground" {
 				pb.appState, pb.connected = "active", true
 			}
