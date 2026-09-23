@@ -98,7 +98,7 @@ raise 'make check-full must execute the full Docker profile' unless makefile.inc
 raise 'Docker test wrapper must execute the manifest runner' unless File.read(File.join(root, 'scripts/run_tests_in_docker.sh')).include?('tests/run_manifest.py')
 raise 'CI must build the test image with BuildKit cache' unless ci.include?('docker/build-push-action@v6') && ci.include?('cache-from: type=gha,scope=aiden-firmware-test')
 raise 'CI must reuse the cached test image in the manifest runner' unless ci.include?('AIDEN_TEST_SKIP_BUILD:') && ci.include?('AIDEN_TEST_IMAGE: aiden-firmware-test:ci')
-raise 'CI must require the production ARM smoke suite' unless ci.include?('--production --suite production-cross-smoke')
+raise 'CI must not duplicate the production ARM smoke suite' if ci.include?('--production --suite production-cross-smoke')
 raise 'CI Docker sandbox smoke must run in the test image with host networking' unless ci.include?('--docker-socket --host-network') && ci.include?('--suite docker-sandbox-smoke')
 raise 'manifest must cover channel decisions' unless manifest.include?('python3 scripts/test_channel_release.py')
 RUBY
