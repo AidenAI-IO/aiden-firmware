@@ -100,6 +100,13 @@ const wifiModule = await loadModule(path.join(moduleRoot, 'wifi.js'));
 await wifiModule.evaluate();
 appState.wifi = {networks: [{ssid: 'Office', has_psk: true, priority: 1, proxy_mode: 'system'}]};
 appState.wifiStatus = {};
+wifiModule.namespace.renderWifiList();
+const savedRow = elements.get('wifiList').children[0];
+const savedActions = savedRow.children[1].children;
+assert.equal(savedActions[0].dataset.action, 'open-wifi-modal');
+assert.equal(savedActions[0].dataset.ssid, 'Office');
+assert.equal(savedActions[0].textContent, 'action.edit');
+assert.equal(savedActions[1].dataset.action, 'forget-wifi');
 
 await wifiModule.namespace.connectSavedWifi('Office');
 assert.equal(requests.length, 1);
