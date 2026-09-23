@@ -23,19 +23,19 @@ func BenchmarkTransportLatency(b *testing.B) {
 	defer server.Close()
 
 	tests := []struct {
-		name              string
+		name                string
 		maxIdleConnsPerHost int
-		idleConnTimeout   time.Duration
+		idleConnTimeout     time.Duration
 	}{
 		{
-			name:              "Default (MaxIdleConnsPerHost=2)",
+			name:                "Default (MaxIdleConnsPerHost=2)",
 			maxIdleConnsPerHost: 2,
-			idleConnTimeout:   90 * time.Second,
+			idleConnTimeout:     90 * time.Second,
 		},
 		{
-			name:              "Optimized (MaxIdleConnsPerHost=8)",
+			name:                "Optimized (MaxIdleConnsPerHost=8)",
 			maxIdleConnsPerHost: 8,
-			idleConnTimeout:   90 * time.Second,
+			idleConnTimeout:     90 * time.Second,
 		},
 	}
 
@@ -76,29 +76,29 @@ func BenchmarkConcurrentRequests(b *testing.B) {
 	defer server.Close()
 
 	tests := []struct {
-		name              string
+		name                string
 		maxIdleConnsPerHost int
-		concurrency       int
+		concurrency         int
 	}{
 		{
-			name:              "Default/Concurrency-4",
+			name:                "Default/Concurrency-4",
 			maxIdleConnsPerHost: 2,
-			concurrency:       4,
+			concurrency:         4,
 		},
 		{
-			name:              "Optimized/Concurrency-4",
+			name:                "Optimized/Concurrency-4",
 			maxIdleConnsPerHost: 8,
-			concurrency:       4,
+			concurrency:         4,
 		},
 		{
-			name:              "Default/Concurrency-8",
+			name:                "Default/Concurrency-8",
 			maxIdleConnsPerHost: 2,
-			concurrency:       8,
+			concurrency:         8,
 		},
 		{
-			name:              "Optimized/Concurrency-8",
+			name:                "Optimized/Concurrency-8",
 			maxIdleConnsPerHost: 8,
-			concurrency:       8,
+			concurrency:         8,
 		},
 	}
 
@@ -210,10 +210,10 @@ func TestTransportLatencyComparison(t *testing.T) {
 
 	// Default configuration
 	defaultTransport := &http.Transport{
-		MaxIdleConnsPerHost:   2,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 	}
 
 	// Optimized configuration
@@ -272,22 +272,22 @@ func TestConnectionReuse(t *testing.T) {
 	defer server.Close()
 
 	tests := []struct {
-		name              string
+		name                string
 		maxIdleConnsPerHost int
-		requests          int
-		expectedMaxConns  int
+		requests            int
+		expectedMaxConns    int
 	}{
 		{
-			name:              "Default (expects more connections)",
+			name:                "Default (expects more connections)",
 			maxIdleConnsPerHost: 2,
-			requests:          10,
-			expectedMaxConns:  5,
+			requests:            10,
+			expectedMaxConns:    5,
 		},
 		{
-			name:              "Optimized (expects fewer connections)",
+			name:                "Optimized (expects fewer connections)",
 			maxIdleConnsPerHost: 8,
-			requests:          10,
-			expectedMaxConns:  3,
+			requests:            10,
+			expectedMaxConns:    3,
 		},
 	}
 

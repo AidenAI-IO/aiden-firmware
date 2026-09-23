@@ -99,8 +99,10 @@ configuration; an existing shell can load it with
 ## Common Commands
 
 ```bash
-# Build and test
-make test
+# Build and test (all compiler/test commands run in Docker)
+make check             # Quick local feedback
+make check-full        # Complete CI test gate
+make check-production  # ARM production smoke
 scripts/debian-apps/build-apps.sh all
 ./debian_build.sh
 
