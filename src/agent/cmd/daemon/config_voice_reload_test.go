@@ -86,6 +86,98 @@ func TestInputLifecycleProviderReloadDoesNotInitializeUnchangedVAD(t *testing.T)
 	}
 }
 
+func TestInputLifecycleProviderReloadPreservesWorkingVAD(t *testing.T) {
+	for _, commit := range []bool{true, false} {
+		name := "rollback"
+		if commit {
+			name = "commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := agent.DefaultConfig()
+			cfg.ConfigDir = t.TempDir()
+			cfg.Model.Provider, cfg.Model.Model = "fake", "fake"
+			cfg.InputMode, cfg.STT.Provider, cfg.TTS.Provider = "stt", "", ""
+			cfg.QuickCapture.Enabled = new(bool)
+			cfg.VADHelperPath = filepath.Join(t.TempDir(), "vad-helper")
+			t.Setenv("AIDEN_TEST_VAD_STARTED", filepath.Join(t.TempDir(), "started"))
+			// A second helper cannot start: post-reload inference must use the
+			// existing process, even after the old or staged dialog is closed.
+			const script = `#!/bin/sh
+if [ -e "$AIDEN_TEST_VAD_STARTED" ]; then
+  printf 'ERR helper started again\n'
+  exit 1
+fi
+printf 'started\n' > "$AIDEN_TEST_VAD_STARTED"
+printf 'READY\n'
+while op=$(dd bs=1 count=1 2>/dev/null); do
+  case "$op" in
+    F) dd bs=1 count=1024 of=/dev/null 2>/dev/null; printf 'P 0.9\n' ;;
+    R) printf 'OK\n' ;;
+    Q|"") exit 0 ;;
+    *) exit 1 ;;
+  esac
+done
+`
+			if err := os.WriteFile(cfg.VADHelperPath, []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			r, err := agent.NewRuntime(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			s := agent.NewServer(r, ":0")
+			defer s.Close()
+			c := newInputLifecycle(r, s)
+			c.runVoice = func(_ agent.Config, _ *agent.AudioDialog, shutdown chan os.Signal, stop <-chan struct{}) {
+				select {
+				case <-stop:
+				case <-shutdown:
+				}
+			}
+			if err := c.Start(cfg); err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			r.SetConfigPreparer(c.Prepare)
+			previous := c.dialog
+			frame := make([]int16, previous.VADFrameSamples())
+			if _, err := previous.ProcessVADFrame(frame); err != nil {
+				t.Fatalf("start original VAD: %v", err)
+			}
+			next := cfg
+			next.STT.Provider, next.STT.APIKey = "openai", "test-key"
+			if commit {
+				if err := r.ApplyConfigSnapshot(next); err != nil {
+					t.Fatal(err)
+				}
+				if c.dialog == previous {
+					t.Fatal("provider change did not replace the dialog")
+				}
+			} else {
+				finish, err := c.Prepare(context.Background(), next)
+				if err != nil {
+					t.Fatal(err)
+				}
+				finish(false)
+				if c.dialog != previous || c.cfg.STT != cfg.STT {
+					t.Fatal("rollback did not restore the original dialog and provider")
+				}
+			}
+			c.dialog.ResetVAD()
+			if state := c.dialog.VADDebugState(); state.LastError != "" || state.SpeechFrames != 0 {
+				t.Fatalf("reset after reload: %+v", state)
+			}
+			if _, err := c.dialog.ProcessVADFrame(frame); err != nil {
+				t.Fatalf("VAD cannot process audio after reload: %v", err)
+			}
+			if state := c.dialog.VADDebugState(); state.Probability != 0.9 || !state.Speaking || state.SpeechFrames != 1 {
+				t.Fatalf("unexpected VAD state after reload: %+v", state)
+			}
+		})
+	}
+}
+
 func TestInputLifecycleInactiveProviderKeepsVoiceLoop(t *testing.T) {
 	for _, mode := range []string{"stt", "realtime"} {
 		t.Run(mode, func(t *testing.T) {

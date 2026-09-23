@@ -262,13 +262,26 @@ func (d *AudioDialog) vadConfig() AudioVADConfig {
 		modelPath = defaultVADModelPath
 	}
 	helperPath := ResolveVADHelperPath(backend, d.config.VADHelperPath)
+	silenceMs := d.config.SilenceMs
+	if silenceMs <= 0 {
+		silenceMs = defaultSilenceMs
+	}
+	minSpeechMs := d.config.MinSpeechMs
+	if minSpeechMs <= 0 {
+		minSpeechMs = defaultMinSpeechMs
+	}
+	threshold := d.config.VADSpeechThreshold
+	if threshold <= 0 {
+		threshold = defaultVADSpeechThreshold
+	}
 	return AudioVADConfig{
-		SampleRate: d.config.Audio.SampleRateOrDefault(),
-		SilenceMs:  d.config.SilenceMs, MinSpeechMs: d.config.MinSpeechMs,
+		SampleRate:      d.config.Audio.SampleRateOrDefault(),
+		SilenceMs:       silenceMs,
+		MinSpeechMs:     minSpeechMs,
 		Backend:         backend,
 		ModelPath:       modelPath,
 		HelperPath:      helperPath,
-		SpeechThreshold: d.config.VADSpeechThreshold,
+		SpeechThreshold: threshold,
 	}
 }
 
