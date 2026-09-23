@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # OTA Key Management
 
-Production OTA manifests use Ed25519 signatures. Devices verify `manifest.json` through `/oem/etc/ota_pubkey.pem`, and only write to the inactive slot when both signature and image hash verification pass.
+Production OTA manifests use Ed25519 signatures. Devices verify `manifest.json` through `/usr/share/keyrings/aiden-ota.pem`, and only write to the inactive slot when both signature and image hash verification pass.
 
 ## Key Generation
 
@@ -40,34 +40,33 @@ AGENT_CONFIG_PATH=/path/to/agent.toml \
 The build validates that both keys match and packages the public key into:
 
 ```text
-/oem/etc/ota_pubkey.pem
+/usr/share/keyrings/aiden-ota.pem
 ```
 
 ### The Committed Trust Anchor
 
 `keys/ota_pubkey.pem` holds the public half of the signing key used by the
 automated builds. A public key is not a secret: the same bytes already sit in
-`/oem/etc/ota_pubkey.pem` on every device and inside every published image.
+`/usr/share/keyrings/aiden-ota.pem` on every device and inside every published image.
 Committing it lets any build produce an image that accepts released updates.
 
 Keep it free of comment lines mentioning dev, test, or placeholder. The
-Buildroot image step refuses to build a production image from a key annotated
+Debian rootfs stage refuses to build a production image from a key annotated
 that way.
 
 To confirm the committed key matches what a published image actually trusts,
-read it back out of a published `oem.img` and compare fingerprints:
+extract it from the published `rootfs.img` and compare fingerprints (Linux):
 
 ```bash
-tar -xOzf oem.img.tar.gz | strings |
-    awk '/-----BEGIN PUBLIC KEY-----/{f=1} f{print} /-----END PUBLIC KEY-----/{if(f)exit}' \
-    >published_pubkey.pem
+tar -xzf rootfs.img.tar.gz rootfs.img
+debugfs -R "dump /usr/share/keyrings/aiden-ota.pem published_pubkey.pem" rootfs.img
 openssl pkey -pubin -in published_pubkey.pem -outform DER | sha256sum
 openssl pkey -pubin -in keys/ota_pubkey.pem -outform DER | sha256sum
 ```
 
 ### Trusting a Signer You Cannot Sign For
 
-The key at `/oem/etc/ota_pubkey.pem` decides whose manifests the device accepts.
+The key at `/usr/share/keyrings/aiden-ota.pem` decides whose manifests the device accepts.
 The private key decides who signs the manifest a build produces. They are
 separate roles, and verifying a manifest needs the public half only, so an image
 can accept updates signed elsewhere without that signer's private key ever
@@ -98,7 +97,7 @@ AGENT_CONFIG_PATH=/path/to/agent.toml \
 ```
 
 A device already in the field can be moved to a different signer by replacing
-`/oem/etc/ota_pubkey.pem` with that signer's public key. That is the manual form
+`/usr/share/keyrings/aiden-ota.pem` with that signer's public key. That is the manual form
 of the recovery path below, and it applies per device.
 
 ## Local Signing
@@ -121,13 +120,13 @@ publish those files without modifying or recompressing them.
 
 ## Key Rotation
 
-V1 devices trust `/oem/etc/ota_pubkey.pem`. Do not switch the production signing private key before the fleet accepts the new public key, or old devices will reject manifests signed by it.
+V1 devices trust `/usr/share/keyrings/aiden-ota.pem`. Do not switch the production signing private key before the fleet accepts the new public key, or old devices will reject manifests signed by it.
 
 Safe rotation process:
 
 1. Generate a new Ed25519 key pair offline.
 2. Keep the old private key in the controlled signing environment temporarily.
-3. Build a transition OTA containing the new `/oem/etc/ota_pubkey.pem`.
+3. Build a transition OTA containing the new `/usr/share/keyrings/aiden-ota.pem`.
 4. Sign and publish the transition release with the old private key.
 5. Confirm target devices have booted and marked successful via `ota status`, release telemetry, or field inspection.
 6. After confirming the fleet trusts the new public key, switch the signing environment to the new private key.

@@ -1779,7 +1779,7 @@ func TestEmptyFirmwareInfoMatchesSuccessShape(t *testing.T) {
 		}
 	}
 	components, ok := info["components"].(map[string]string)
-	if !ok || components["boot"] != "" || components["oem"] != "" || components["rootfs"] != "" {
+	if !ok || components["boot"] != "" || components["rootfs"] != "" {
 		t.Fatalf("components=%#v", info["components"])
 	}
 }
@@ -1790,14 +1790,13 @@ func TestFirmwareComponentVersionsUsesSelectedSlot(t *testing.T) {
 			"b": map[string]any{
 				"partitions": map[string]any{
 					"boot":   map[string]any{"version": "boot-v2"},
-					"oem":    map[string]any{"version": "oem-v2"},
 					"rootfs": map[string]any{"version": "rootfs-v2"},
 				},
 			},
 		},
 	}
 	got := firmwareComponentVersions(state, "b")
-	if got["boot"] != "boot-v2" || got["oem"] != "oem-v2" || got["rootfs"] != "rootfs-v2" {
+	if got["boot"] != "boot-v2" || got["rootfs"] != "rootfs-v2" {
 		t.Fatalf("components=%#v", got)
 	}
 }

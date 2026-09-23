@@ -74,7 +74,7 @@ done
 if grep -Eq -- '^[[:space:]]*-e GOFLAGS \\$' "${APPS_DIR}/build-apps.sh"; then
     fail "apps container must not inherit GOFLAGS, which would change build output"
 fi
-grep -Fq 'overlay-debian-oem/usr/model' "${APPS_DIR}/prepare-board-g0.sh"
+grep -Fq 'assets/business/models' "${APPS_DIR}/prepare-board-g0.sh"
 grep -Fq 'bin/ttyd' "${APPS_DIR}/prepare-board-g0.sh"
 if grep -Fq '${REPO_ROOT}/overlay/oem' "${APPS_DIR}/prepare-board-g0.sh"; then
     fail "Debian board bundle depends on the Buildroot OEM overlay"
@@ -296,7 +296,7 @@ case "${mode}" in
     if [[ "${file}" == */bin/* ]]; then
         runpath='$ORIGIN/../lib'
         if [ "${MOCK_BAD_RUNPATH:-0}" = 1 ]; then
-            runpath=/oem/usr/lib
+            runpath=/usr/lib/aiden/platform/lib
         fi
         printf ' 0x0000001d (RUNPATH) Library runpath: [%s]\n' "${runpath}"
     fi

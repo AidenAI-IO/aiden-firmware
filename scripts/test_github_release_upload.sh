@@ -13,14 +13,14 @@ mkdir -p "$assets_dir" "$fake_bin" "$state_dir"
 printf 'firmware image\n' > "$assets_dir/update.img"
 printf '{"version":"v-test"}\n' > "$assets_dir/manifest.json"
 # Create real image files (neutral resources for OTA)
-for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
+for image in boot_a.img boot_b.img rootfs.img userdata.img; do
   printf '%s\n' "$image" > "$assets_dir/$image"
 done
-for image in boot_a.img boot_b.img oem.img rootfs.img update.img; do
+for image in boot_a.img boot_b.img rootfs.img update.img; do
   printf 'compressed %s\n' "$image" > "$assets_dir/$image.tar.gz"
 done
 printf 'extra debug asset\n' > "$assets_dir/debug.log"
-# Note: symlinks oem_a/oem_b/rootfs_a/rootfs_b should NOT exist
+# Note: symlinks rootfs_a/rootfs_b should NOT exist
 # (they're cleaned up after update.img packaging in build.sh)
 
 cat > "$fake_bin/gh" <<'SH'
@@ -179,8 +179,8 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish "$target_commitish" \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
-      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
       --retry-count 4 \
       --retry-delay-seconds 15 \
       >"$log_file" 2>&1; then
@@ -224,7 +224,7 @@ if [ "$(grep -c '^upload:manifest.json:' "$state_dir/events")" -ne 1 ]; then
   exit 1
 fi
 
-for image in boot_a.img boot_b.img oem.img rootfs.img; do
+for image in boot_a.img boot_b.img rootfs.img; do
   if [ "$(grep -c "^upload:$image:" "$state_dir/events")" -ne 1 ]; then
     echo "release script must upload required OTA image: $image" >&2
     exit 1
@@ -266,8 +266,8 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
-      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -301,8 +301,8 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
-      --upload-assets 'boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json' \
+      --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img.tar.gz boot_b.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -335,7 +335,6 @@ wrong_boot_b_size=$(( $(wc -c < "$assets_dir/boot_b.img.tar.gz" | tr -d '[:space
 printf '%s\t%s\n' \
   "boot_a.img.tar.gz" "$(wc -c < "$assets_dir/boot_a.img.tar.gz" | tr -d '[:space:]')" \
   "boot_b.img.tar.gz" "$wrong_boot_b_size" \
-  "oem.img.tar.gz" "$(wc -c < "$assets_dir/oem.img.tar.gz" | tr -d '[:space:]')" \
   "rootfs.img.tar.gz" "$(wc -c < "$assets_dir/rootfs.img.tar.gz" | tr -d '[:space:]')" \
   "update.img.tar.gz" "$(wc -c < "$assets_dir/update.img.tar.gz" | tr -d '[:space:]')" \
   "manifest.json" "$(wc -c < "$assets_dir/manifest.json" | tr -d '[:space:]')" \
@@ -351,8 +350,8 @@ if ! PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
-      --upload-assets 'boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json' \
+      --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img.tar.gz boot_b.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -379,7 +378,7 @@ if ! awk -F '\t' -v size="$actual_boot_b_size" '$1 == "boot_b.img.tar.gz" && $2 
   exit 1
 fi
 
-rm -f "$assets_dir/oem.img" "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count" "$state_dir/remote-assets" "$state_dir"/dropped-* "$state_dir"/stale-kept-*
+rm -f "$assets_dir/rootfs.img" "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count" "$state_dir/remote-assets" "$state_dir"/dropped-* "$state_dir"/stale-kept-*
 if PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \
@@ -389,8 +388,8 @@ if PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
-      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -398,7 +397,7 @@ if PATH="$fake_bin:$PATH" \
   exit 1
 fi
 
-if ! grep -q 'missing required release asset: oem.img' "$log_file"; then
+if ! grep -q 'missing required release asset: rootfs.img' "$log_file"; then
   echo "release script must identify the missing required OTA image" >&2
   exit 1
 fi
@@ -411,7 +410,7 @@ fi
 # A 403 is the same answer on every attempt. Burning the retry ladder on it
 # once cost a publish 22 of its 30 allotted minutes and hid the real reason
 # behind a timeout error.
-printf 'oem.img\n' > "$assets_dir/oem.img"
+printf 'rootfs.img\n' > "$assets_dir/rootfs.img"
 rm -f "$state_dir/events" "$state_dir/calls" "$state_dir/sleeps" "$state_dir/release-exists" "$state_dir"/upload-* "$state_dir/create-count" "$state_dir/remote-assets" "$state_dir"/dropped-* "$state_dir"/stale-kept-*
 if PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
@@ -423,8 +422,8 @@ if PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
-      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
       --retry-count 10 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then
@@ -462,8 +461,8 @@ if PATH="$fake_bin:$PATH" \
       --release-name "Test Release" \
       --target-commitish abc123 \
       --asset-glob "$assets_dir/*" \
-      --required-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
-      --upload-assets 'boot_a.img boot_b.img oem.img rootfs.img update.img manifest.json' \
+      --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
+      --upload-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
       --retry-count 3 \
       --retry-delay-seconds 0 \
       >"$log_file" 2>&1; then

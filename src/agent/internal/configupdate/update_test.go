@@ -1450,9 +1450,12 @@ func TestUpdateRejectsObsoleteRequestFields(t *testing.T) {
 		`{"tts":{"api_key":"secret"}}`,
 		`{"stt":{"secret_key":"secret"}}`,
 		`{"voice_model":{"api_key":"secret"}}`,
+		`{"voice_model":{"instructions":"ignored"}}`,
 		`{"model":{"base_url":"https://example.com"}}`,
 		`{"agent":{"default_platform":"ios"}}`,
 		`{"agent":{"instruction":"ignored"}}`,
+		`{"agent":{"custom_instruction":"ignored"}}`,
+		`{"agent":{"additional_prompt":"ignored"}}`,
 		`{"tts_providers":{"voice":{"provider":"fish-audio"}}}`,
 		`{"audio":{"playback_backend":"alsa"}}`,
 	} {
@@ -1492,6 +1495,81 @@ func TestResolvedWebConfigOmitsLegacyModelCredential(t *testing.T) {
 	}
 }
 
+// TestResolvedWebConfigOmitsCustomInstruction covers the removed
+// custom_instruction setting: the wire DTO has no such field even when the
+// runtime config carries a non-default Instruction, and prompt is
+// the only prompt field that round trips.
+func TestResolvedWebConfigOmitsCustomInstruction(t *testing.T) {
+	cfg := agent.DefaultConfig()
+	cfg.Instruction = "Deployment persona."
+	cfg.Prompt = "Always answer in bullet points."
+
+	dto := FromAgentConfig(cfg)
+	encoded, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sections map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &sections); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"custom_instruction", "instruction"} {
+		if _, ok := sections["agent"][key]; ok {
+			t.Fatalf("resolved web config exposed agent.%s: %s", key, encoded)
+		}
+	}
+	if got := dto.ToAgentConfig().Prompt; got != cfg.Prompt {
+		t.Fatalf("round-trip prompt = %q, want %q", got, cfg.Prompt)
+	}
+}
+
+// TestUpdateIgnoresLegacyCustomInstructionInFile proves that a leftover
+// custom_instruction line is inert: config web applies targeted document
+// operations, so an unrelated save leaves the legacy key untouched instead of
+// rewriting it from the DTO, and the loader still resolves the built-in
+// instruction.
+func TestUpdateIgnoresLegacyCustomInstructionInFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	source := `[conversation_settings.agent]
+custom_instruction = "Deployment persona."
+
+[model_settings.model]
+provider = "fake"
+`
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewService().Update(path, []byte(`{"config":{"agent":{"prompt":"Be concise."}}}`))
+	if err != nil {
+		t.Fatalf("update with a legacy custom_instruction present failed: %v", err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(updated), "custom_instruction") != 1 {
+		t.Fatalf("update rewrote the legacy custom_instruction line:\n%s", updated)
+	}
+	if !strings.Contains(string(updated), `prompt = "Be concise."`) {
+		t.Fatalf("update did not persist prompt:\n%s", updated)
+	}
+	if result.Config.Agent.Prompt != "Be concise." {
+		t.Fatalf("result prompt = %q, want Be concise.", result.Config.Agent.Prompt)
+	}
+
+	cfg, err := agent.LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Instruction != agent.DefaultConfig().Instruction {
+		t.Fatalf("Instruction = %q, want built-in default because the legacy key is ignored", cfg.Instruction)
+	}
+	if cfg.Prompt != "Be concise." {
+		t.Fatalf("Prompt = %q, want Be concise.", cfg.Prompt)
+	}
+}
+
 func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *testing.T) {
 	emotion := true
 	threshold := 0.72
@@ -1510,7 +1588,6 @@ func TestVoiceModelConfigRoundTripPreservesSettingsAndCredentialPresence(t *test
 		BaseURL:                "https://api.speko.dev",
 		RealtimeProtocol:       "legacy",
 		Voice:                  "longanqian",
-		Instructions:           "be concise",
 		EnableSpeechEmotion:    &emotion,
 		InputAudioFormat:       "pcm16",
 		OutputAudioFormat:      "pcm16",

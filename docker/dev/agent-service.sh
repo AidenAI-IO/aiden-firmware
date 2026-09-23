@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-agent_bin="${AIDEN_AGENT_BIN:-/oem/usr/bin/agent}"
+agent_bin="${AIDEN_AGENT_BIN:-/usr/lib/aiden/agent}"
 agent_dir="${AIDEN_AGENT_DIR:-/userdata/agent}"
 system_env="${AIDEN_SYSTEM_ENV:-/userdata/system/env}"
 env_run_bin="${AIDEN_ENV_RUN_BIN:-/usr/local/bin/aiden-env-run}"

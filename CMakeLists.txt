@@ -29,8 +29,8 @@ if(NOT EXISTS "${_aiden_platform_file}")
 endif()
 include("${_aiden_platform_file}")
 
-# Packaged executables live in /oem/usr/bin and vendor shared libraries in
-# /oem/usr/lib on the Debian target.
+# Build-tree executables resolve ../lib. Packaged executables live in /usr/lib/aiden;
+# the rootfs registers /usr/lib/aiden/platform/lib with ldconfig.
 set(CMAKE_BUILD_RPATH "\$ORIGIN/../lib")
 set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
 set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)

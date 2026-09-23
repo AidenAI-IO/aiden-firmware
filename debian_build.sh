@@ -19,13 +19,12 @@ readonly GO_TARBALL=go${GO_VERSION}.${GO_DIST}.tar.gz
 readonly GO_TARBALL_SHA256=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
 readonly DEFAULT_SOURCE_DATE_EPOCH=1767360516
 readonly CLEANUP_IMAGE=debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
-readonly -a MANIFEST_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img)
-readonly -a RELEASE_IMAGE_ASSETS=(boot_a.img boot_b.img oem.img rootfs.img update.img)
+readonly -a MANIFEST_IMAGE_ASSETS=(boot_a.img boot_b.img rootfs.img)
+readonly -a RELEASE_IMAGE_ASSETS=(boot_a.img boot_b.img rootfs.img update.img)
 readonly -a LOCAL_RELEASE_OUTPUT_ASSETS=(
     boot_a.img.tar.gz
     boot_b.img.tar.gz
     manifest.json
-    oem.img.tar.gz
     rootfs.img.tar.gz
     update.img.tar.gz
 )
@@ -43,7 +42,6 @@ write the local firmware/OTA artifacts to output/debian/image:
   boot_a.img.tar.gz
   boot_b.img.tar.gz
   manifest.json
-  oem.img.tar.gz
   rootfs.img.tar.gz
   update.img.tar.gz
 
@@ -209,7 +207,7 @@ validate_key_pair() {
     "${REPO_ROOT}/scripts/validate_ota_pubkey.sh" "${public_key}"
 }
 
-# The key burned into /oem/etc/ota_pubkey.pem decides whose manifests the
+# The key burned into /usr/share/keyrings/aiden-ota.pem decides whose manifests the
 # device will accept; the private key decides who signs this build's own
 # manifest. They are the same key by default, which is what a self-contained
 # build wants. Keeping them separable lets a locally built image trust a
@@ -415,15 +413,16 @@ main() {
         DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
         "${REPO_ROOT}/scripts/debian-system/build.sh" builder
 
-    log "Building Debian system rootfs"
-    DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
-        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
-        "${REPO_ROOT}/scripts/debian-system/build.sh" rootfs
-
     log "Building Debian system BSP and A/B boot images"
     DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
         DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
         "${REPO_ROOT}/scripts/debian-system/build.sh" bsp
+
+    log "Building Debian system rootfs"
+    OTA_PUBLIC_KEY_PATH="${ota_trust_public_key}" \
+        DEBIAN_SYSTEM_OUTPUT_DIR="${SYSTEM_OUTPUT}" \
+        DEBIAN_APPS_OUTPUT_DIR="${APPS_OUTPUT}" \
+        "${REPO_ROOT}/scripts/debian-system/build.sh" rootfs
 
     log "Assembling Debian system factory images"
     OTA_PUBLIC_KEY_PATH="${ota_trust_public_key}" \

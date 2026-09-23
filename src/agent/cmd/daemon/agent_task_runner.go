@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/agenttask"
@@ -28,11 +29,44 @@ func (r runtimeAgentTaskRunner) Run(ctx context.Context, prompt string) (string,
 			return nil
 		}
 	}
-	result, err := r.runtime.Run(ctx, agent.RunRequest{
+	request := agent.RunRequest{
 		Input:                   prompt,
 		Turn:                    agent.NewTextTurnInput(prompt, nil),
 		AsyncEpisodeMaintenance: true,
 		UserActionHandler:       actionHandler,
-	})
+	}
+	var suppliedMu sync.Mutex
+	var suppliedSteer agenttask.SteerMessage
+	if provider := agenttask.SteerProviderFromContext(ctx); provider != nil {
+		request.SteerProvider = func(ctx context.Context) (agent.RunSteerMessage, bool) {
+			message, ok := provider(ctx)
+			if !ok {
+				return agent.RunSteerMessage{}, false
+			}
+			suppliedMu.Lock()
+			suppliedSteer = message
+			suppliedMu.Unlock()
+			return agent.RunSteerMessage{
+				ID:        message.ID,
+				Content:   message.Content,
+				Timestamp: message.Timestamp,
+			}, true
+		}
+	}
+	if acknowledge := agenttask.SteerAcknowledgerFromContext(ctx); acknowledge != nil {
+		request.EventHandler = func(event agent.RunEvent) {
+			if event.Type != "steer" {
+				return
+			}
+			suppliedMu.Lock()
+			message := suppliedSteer
+			suppliedMu.Unlock()
+			if message.ID != "" {
+				acknowledge(message)
+			}
+		}
+	}
+	request.SteerInterrupt = agenttask.SteerInterruptFromContext(ctx)
+	result, err := r.runtime.Run(ctx, request)
 	return result.Output, err
 }

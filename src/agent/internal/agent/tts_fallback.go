@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultTTSUnavailableFallbackDir = "/oem/usr/share/aiden/audio/voice-notifications"
+	defaultTTSUnavailableFallbackDir = "/usr/share/aiden/audio/voice-notifications"
 	ttsUnavailableFallbackDirEnv     = "AIDEN_TTS_FALLBACK_DIR"
 	ttsUnavailableFallbackEnglish    = "tts-unavailable.en-US.wav"
 	ttsUnavailableFallbackChinese    = "tts-unavailable.zh-CN.wav"

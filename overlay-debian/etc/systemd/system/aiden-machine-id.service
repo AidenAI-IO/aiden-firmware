@@ -1,10 +1,10 @@
 [Unit]
 Description=Provision the persistent Aiden machine identity across A/B rootfs slots
-Requires=oem.mount userdata.mount userdata-ota.mount aiden-userdata-migrate.service
-After=oem.mount userdata.mount userdata-ota.mount aiden-userdata-migrate.service
+Requires=userdata.mount userdata-ota.mount aiden-userdata-migrate.service
+After=userdata.mount userdata-ota.mount aiden-userdata-migrate.service
 After=systemd-machine-id-commit.service
 Before=aiden-environment.service aiden-ota-health-marker.service aiden.target
-ConditionPathExists=/oem/usr/bin/ota
+ConditionPathExists=/usr/lib/aiden/ota
 
 [Service]
 Type=oneshot

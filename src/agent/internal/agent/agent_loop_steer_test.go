@@ -329,6 +329,85 @@ func TestAgentLoopRetriesAfterCanceledSteerInterruptDuringToolWithoutReplacement
 	}
 }
 
+func TestAgentLoopPersistsOneShotSteerAfterToolInterrupt(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("call-1", "slow", `{"__arg1":"original action"}`),
+		contentResponse("Changed direction after the interrupted tool."),
+	}}
+	toolStarted := make(chan struct{})
+	toolCanceled := make(chan struct{})
+	tool := &blockingTool{
+		name:        "slow",
+		description: "Slow tool.",
+		started:     toolStarted,
+		canceled:    toolCanceled,
+	}
+	manager, err := freshNewContextManager("system", "task", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	interrupt := make(chan struct{})
+	var providerPolls int
+	loop := NewAgentLoop(
+		model,
+		RoleProfile{Tools: []langtools.Tool{tool}},
+		1,
+		nil,
+		nil,
+		executor.ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+	loop.SteerProvider = func(context.Context) (RunSteerMessage, bool) {
+		providerPolls++
+		if providerPolls == 3 {
+			return RunSteerMessage{Content: "Use the replacement goal."}, true
+		}
+		return RunSteerMessage{}, false
+	}
+	loop.SteerInterrupt = func() <-chan struct{} { return interrupt }
+
+	resultCh := make(chan struct {
+		output string
+		err    error
+	}, 1)
+	go func() {
+		output, err := loop.Run(context.Background(), "task")
+		resultCh <- struct {
+			output string
+			err    error
+		}{output: output, err: err}
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	close(interrupt)
+	select {
+	case <-toolCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("tool was not canceled by steer interrupt")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Run() error = %v", result.err)
+		}
+		if result.output != "Changed direction after the interrupted tool." {
+			t.Fatalf("output = %q", result.output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not continue after tool steer")
+	}
+	if len(model.messages) < 2 || !runtimeModelCallContains(model.messages[1], "Use the replacement goal.") {
+		t.Fatalf("follow-up model call missing steer: %#v", model.messages)
+	}
+}
+
 func TestAgentLoopPendingSteerBeforeFirstModelGetsFreshIterationBudget(t *testing.T) {
 	t.Parallel()
 

@@ -1,10 +1,10 @@
 [Unit]
 Description=Aiden audio capture and playback service
-Requires=oem.mount aiden-environment.service aiden-media-modules.service
-After=oem.mount aiden-environment.service aiden-media-modules.service sound.target
+Requires=aiden-environment.service aiden-media-modules.service
+After=aiden-environment.service aiden-media-modules.service sound.target
 StartLimitIntervalSec=60s
 StartLimitBurst=5
-ConditionPathExists=/oem/usr/bin/audio_service
+ConditionPathExists=/usr/lib/aiden/audio_service
 
 [Service]
 Type=simple
@@ -17,7 +17,7 @@ ExecCondition=/usr/lib/aiden/aiden-feature-enabled ENABLE_AUDIO_SERVICE
 RuntimeDirectory=audio_service
 LogsDirectory=audio_service
 ExecStartPre=/usr/bin/install -d -m 0755 /userdata/audio_service
-ExecStart=/oem/usr/bin/audio_service --socket ${SOCKET_PATH} --volume-state ${VOLUME_STATE_PATH}
+ExecStart=/usr/lib/aiden/audio_service --socket ${SOCKET_PATH} --volume-state ${VOLUME_STATE_PATH}
 Restart=on-failure
 RestartSec=2s
 TimeoutStartSec=20s

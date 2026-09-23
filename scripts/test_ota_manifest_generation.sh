@@ -11,7 +11,6 @@ mkdir -p "$image_dir"
 # Create test images
 printf 'boot_a content\n' > "$image_dir/boot_a.img"
 printf 'boot_b content\n' > "$image_dir/boot_b.img"
-printf 'oem content\n' > "$image_dir/oem.img"
 printf 'rootfs content\n' > "$image_dir/rootfs.img"
 
 # Note: symlinks should NOT exist at this point
@@ -36,25 +35,13 @@ if [ ! -f "$manifest_output" ]; then
   exit 1
 fi
 
-# Verify manifest uses neutral resources for oem and rootfs
-if ! jq -e '.parts[] | select(.name=="oem") | .asset' "$manifest_output" >/dev/null; then
-  echo "manifest must use neutral asset for oem (not asset_a/asset_b)" >&2
-  echo "Generated manifest:" >&2
-  jq . "$manifest_output" >&2
-  exit 1
-fi
+# The new release format must reject old-layout consumers before any writes.
+jq -e '.schema_version == 2 and ([.parts[].name] | sort) == ["boot", "rootfs"]' "$manifest_output" >/dev/null
 
 if ! jq -e '.parts[] | select(.name=="rootfs") | .asset' "$manifest_output" >/dev/null; then
   echo "manifest must use neutral asset for rootfs (not asset_a/asset_b)" >&2
   echo "Generated manifest:" >&2
   jq . "$manifest_output" >&2
-  exit 1
-fi
-
-# Verify oem neutral asset references the correct file
-oem_asset_name="$(jq -r '.parts[] | select(.name=="oem") | .asset.name' "$manifest_output")"
-if [ "$oem_asset_name" != "oem.img" ]; then
-  echo "oem neutral asset must reference oem.img, got: $oem_asset_name" >&2
   exit 1
 fi
 
@@ -82,7 +69,7 @@ if ! jq -e '.signature.value' "$manifest_output" >/dev/null; then
   exit 1
 fi
 
-tar -czf "$image_dir/oem.img.tar.gz" -C "$image_dir" oem.img
+tar -czf "$image_dir/rootfs.img.tar.gz" -C "$image_dir" rootfs.img
 compressed_manifest_output="$tmp_dir/manifest-compressed.json"
 "$repo_root/scripts/generate_ota_manifest.sh" \
   --version "test-version" \
@@ -92,22 +79,22 @@ compressed_manifest_output="$tmp_dir/manifest-compressed.json"
   --image-dir "$image_dir" \
   --output "$compressed_manifest_output"
 
-oem_image_sha="$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$image_dir/oem.img"; else shasum -a 256 "$image_dir/oem.img"; fi | awk '{print $1}')"
-oem_archive_sha="$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$image_dir/oem.img.tar.gz"; else shasum -a 256 "$image_dir/oem.img.tar.gz"; fi | awk '{print $1}')"
-oem_archive_size="$(if stat -c%s "$image_dir/oem.img.tar.gz" >/dev/null 2>&1; then stat -c%s "$image_dir/oem.img.tar.gz"; else stat -f%z "$image_dir/oem.img.tar.gz"; fi)"
+rootfs_image_sha="$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$image_dir/rootfs.img"; else shasum -a 256 "$image_dir/rootfs.img"; fi | awk '{print $1}')"
+rootfs_archive_sha="$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$image_dir/rootfs.img.tar.gz"; else shasum -a 256 "$image_dir/rootfs.img.tar.gz"; fi | awk '{print $1}')"
+rootfs_archive_size="$(if stat -c%s "$image_dir/rootfs.img.tar.gz" >/dev/null 2>&1; then stat -c%s "$image_dir/rootfs.img.tar.gz"; else stat -f%z "$image_dir/rootfs.img.tar.gz"; fi)"
 
 if ! jq -e \
-  --arg archive_sha "$oem_archive_sha" \
-  --arg image_sha "$oem_image_sha" \
-  --argjson archive_size "$oem_archive_size" \
-  '.parts[] | select(.name=="oem") | .asset |
-    .name == "oem.img.tar.gz" and
+  --arg archive_sha "$rootfs_archive_sha" \
+  --arg image_sha "$rootfs_image_sha" \
+  --argjson archive_size "$rootfs_archive_size" \
+  '.parts[] | select(.name=="rootfs") | .asset |
+    .name == "rootfs.img.tar.gz" and
     .size == $archive_size and
     .sha256 == $archive_sha and
     .image_sha256 == $image_sha' \
   "$compressed_manifest_output" >/dev/null; then
   echo "manifest must prefer local compressed image assets and include image_sha256" >&2
-  jq '.parts[] | select(.name=="oem") | .asset' "$compressed_manifest_output" >&2
+  jq '.parts[] | select(.name=="rootfs") | .asset' "$compressed_manifest_output" >&2
   exit 1
 fi
 

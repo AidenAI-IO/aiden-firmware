@@ -4300,7 +4300,6 @@ func TestHTTPToolExecutionSurvivesClientDisconnectForHIDTools(t *testing.T) {
 		"mouse_move",
 		"mouse_scroll",
 		"touch_gesture",
-		"wheel_nudge",
 	} {
 		t.Run(toolName, func(t *testing.T) {
 			if !httpToolExecutionSurvivesClientDisconnect(toolName) {
