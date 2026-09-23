@@ -84,7 +84,7 @@ func TestTextInputBridgePreparedClipboardRequiresExactText(t *testing.T) {
 	}
 }
 
-func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
+func TestTextInputBridgeUsesPiPBackgroundClipboardQueueWithStaleAppState(t *testing.T) {
 	message := "桥接输入测试"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeComposition,
@@ -93,7 +93,7 @@ func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 	pb := newTestPhoneBridge(t)
 	pb.platform = "ios"
 	pb.appState = "background"
-	pb.appStateAt = time.Now()
+	pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
 	pb.pipBridgeEnabled = true
 	pb.pipBridgeSeen = true
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
