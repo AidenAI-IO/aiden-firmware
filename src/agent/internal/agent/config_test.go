@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -154,6 +155,9 @@ provider = "speko"
 api_key = "secret"
 upstream_provider = "google"
 model = "gemini-live"
+turn_detection = "smart_turn"
+turn_detection_threshold = 0.25
+turn_detection_silence_ms = 900
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +166,7 @@ model = "gemini-live"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.VoiceModel.Model != "gemini-live" || runtime.VoiceModel.Voice != "" || runtime.VoiceModel.Region != "" || runtime.VoiceModel.TurnDetection != "" {
+	if runtime.VoiceModel.Model != "gemini-live" || runtime.VoiceModel.Voice != "" || runtime.VoiceModel.Region != "" || runtime.VoiceModel.TurnDetection != "" || runtime.VoiceModel.TurnDetectionThreshold != nil || runtime.VoiceModel.TurnDetectionSilenceMs != 0 {
 		t.Fatalf("runtime Speko inherited Qwen defaults: %+v", runtime.VoiceModel)
 	}
 
@@ -171,7 +175,7 @@ model = "gemini-live"
 		t.Fatal(err)
 	}
 	record := resolved.VoiceModelProviders["speko"]
-	if record.Model != "gemini-live" || record.Voice != "" || record.Region != "" || resolved.VoiceModel.Model != "" {
+	if record.Model != "gemini-live" || record.Voice != "" || record.Region != "" || record.TurnDetection != "" || record.TurnDetectionThreshold != nil || record.TurnDetectionSilenceMs != 0 || resolved.VoiceModel.Model != "" {
 		t.Fatalf("resolved Speko inherited Qwen defaults: selector=%+v record=%+v", resolved.VoiceModel, record)
 	}
 }
@@ -851,8 +855,8 @@ func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
 	}
 }
 
-func TestBundledSkillsDirCandidatesUseOEMOnly(t *testing.T) {
-	want := []string{"/oem/usr/share/aiden/skills"}
+func TestBundledSkillsDirCandidatesUseBusinessPackage(t *testing.T) {
+	want := []string{"/usr/share/aiden/skills"}
 	if got := bundledSkillsDirCandidates(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("bundledSkillsDirCandidates() = %#v, want %#v", got, want)
 	}
@@ -895,7 +899,7 @@ func TestLoadConfigParsesModelSpecOverrides(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
 [conversation_settings.agent]
-custom_instruction = "test"
+prompt = "test"
 
 [model_settings.model]
 provider = "openrouter"
@@ -927,7 +931,7 @@ func TestLoadConfigParsesLegacyModelMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
 [conversation_settings.agent]
-custom_instruction = "test"
+prompt = "test"
 
 [model_settings.model]
 provider = "openrouter"
@@ -951,7 +955,7 @@ func TestLoadConfigPrefersMaxResponseTokensOverLegacyMaxTokens(t *testing.T) {
 	configDir := t.TempDir()
 	config := `
 [conversation_settings.agent]
-custom_instruction = "test"
+prompt = "test"
 
 [model_settings.model]
 provider = "openrouter"
@@ -1278,12 +1282,55 @@ provider = "fake"
 	}
 }
 
-func TestLoadRuntimeConfigEmptyCustomInstructionUsesDefault(t *testing.T) {
+// TestLoadRuntimeConfigIgnoresLegacyCustomInstruction covers the removed
+// custom_instruction setting: an existing file that still carries the key must
+// keep loading, but the value can no longer override the built-in instruction.
+func TestLoadRuntimeConfigIgnoresLegacyCustomInstruction(t *testing.T) {
+	for name, instruction := range map[string]string{
+		"empty":     "",
+		"non-empty": "Use a deployment-specific persona.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "agent.toml")
+			if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
+custom_instruction = `+strconv.Quote(instruction)+`
+
+[model_settings.model]
+provider = "fake"
+`), 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if cfg.Instruction != defaultInstruction {
+				t.Fatalf("Instruction = %q, want built-in default because legacy custom_instruction is ignored", cfg.Instruction)
+			}
+
+			strictCfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if strictCfg.Instruction != defaultInstruction {
+				t.Fatalf("strict Instruction = %q, want built-in default because legacy custom_instruction is ignored", strictCfg.Instruction)
+			}
+		})
+	}
+}
+
+// TestLoadRuntimeConfigAppendsPrompt verifies the remaining prompt
+// setting: prompt is preserved and reaches the prompt builder after
+// the built-in instruction.
+func TestLoadRuntimeConfigAppendsPrompt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
 [conversation_settings.agent]
-custom_instruction = ""
+prompt = "Always answer in bullet points."
 
 [model_settings.model]
 provider = "fake"
@@ -1295,8 +1342,35 @@ provider = "fake"
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig() error = %v", err)
 	}
-	if cfg.Instruction != defaultInstruction {
-		t.Fatalf("Instruction = %q, want built-in default for empty custom_instruction", cfg.Instruction)
+	if cfg.Prompt != "Always answer in bullet points." {
+		t.Fatalf("Prompt = %q, want the configured value", cfg.Prompt)
+	}
+	combined := combinedAgentInstruction(AgentConfig{Instruction: cfg.Instruction, Prompt: cfg.Prompt})
+	want := defaultInstruction + "\n\n" + cfg.Prompt
+	if combined != want {
+		t.Fatalf("combinedAgentInstruction() = %q, want built-in instruction followed by prompt", combined)
+	}
+}
+
+func TestLoadRuntimeConfigIgnoresLegacyAdditionalPrompt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[conversation_settings.agent]
+additional_prompt = "Legacy prompt spelling."
+
+[model_settings.model]
+provider = "fake"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Prompt != "" {
+		t.Fatalf("Prompt = %q, want legacy additional_prompt to be ignored", cfg.Prompt)
 	}
 }
 
@@ -1855,10 +1929,10 @@ func TestConfigVADBackendDefaultsAndValidation(t *testing.T) {
 	if got := cfg.VADBackendOrDefault(); got != "cpu" {
 		t.Fatalf("VADBackendOrDefault() = %q, want cpu", got)
 	}
-	if got := DefaultVADHelperPathForBackend("cpu"); got != "/oem/usr/bin/cpu_vad" {
+	if got := DefaultVADHelperPathForBackend("cpu"); got != "/usr/lib/aiden/cpu_vad" {
 		t.Fatalf("DefaultVADHelperPathForBackend(cpu) = %q", got)
 	}
-	if got := ResolveVADHelperPath("cpu", DefaultVADHelperPath()); got != "/oem/usr/bin/cpu_vad" {
+	if got := ResolveVADHelperPath("cpu", DefaultVADHelperPath()); got != "/usr/lib/aiden/cpu_vad" {
 		t.Fatalf("ResolveVADHelperPath(cpu, rknn default) = %q", got)
 	}
 	if got := ResolveVADHelperPath("cpu", "/custom/vad"); got != "/custom/vad" {
@@ -1943,7 +2017,7 @@ func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
 	path := filepath.Join(dir, "agent.toml")
 	content := `
 [conversation_settings.agent]
-custom_instruction = "test"
+prompt = "test"
 
 [model_settings.model]
 provider = "fake"

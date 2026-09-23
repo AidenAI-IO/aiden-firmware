@@ -245,10 +245,9 @@ func withDisplayDefaults(metadata ConfigMetadata) ConfigMetadata {
 }
 
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
-// here are the canonical defaults for the device's agent.toml. Free-text
-// fields (custom_instruction, additional_prompt) intentionally carry no
-// metadata default: the built-in prompt is runtime content, while
-// custom_instruction is only an override.
+// here are the canonical defaults for the device's agent.toml. The free-text
+// prompt intentionally carries no metadata default: the built-in
+// Agent instruction is runtime content, and prompt only extends it.
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
 	tencentSTTProviderNames := sttProviderNamesForCanonical(tencentASRProvider)
@@ -612,6 +611,19 @@ func ConfigMeta() ConfigMetadata {
 						},
 						Default: defaults.VoiceModel.Region, Advanced: true,
 						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "turn_detection", Label: "Turn Detection", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "server_vad", Label: "Server VAD"},
+							{Value: "smart_turn", Label: "Smart Turn"},
+						},
+						Default: defaults.VoiceModel.TurnDetection, Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "turn_detection_threshold", Label: "Turn Detection Threshold", Widget: WidgetNumber,
+						Help: "Optional Qwen server_vad threshold. Leave empty to use the provider default.", Placeholder: "Default: 0.5", Nullable: true, Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"), eq("voice_model_providers.turn_detection", "server_vad"))},
+					{Key: "turn_detection_silence_ms", Label: "Turn Detection Silence (ms)", Widget: WidgetNumber,
+						Help: "Optional Qwen server_vad silence duration before completing a turn. Leave empty to use the provider default.", Placeholder: "Default: 800", Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"), eq("voice_model_providers.turn_detection", "server_vad"))},
 					{Key: "voice", Label: "Voice", Widget: WidgetText, Default: defaults.VoiceModel.Voice,
 						Help:            "Realtime system voice name or voice-clone ID (provider-specific).",
 						PlaceholderWhen: realtimeProviderPlaceholders("voice")},
@@ -816,10 +828,8 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},
 					{Key: "screen_stable_ms", Widget: WidgetNumber, Default: defaults.ScreenStableMs},
 					{Key: "screen_stable_diff_threshold", Widget: WidgetNumber, Default: defaults.ScreenStableDiffThreshold},
-					{Key: "custom_instruction", Label: "Primary instruction", Widget: WidgetTextarea, Layout: "wide",
-						Help: "Replaces the built-in Agent instruction when set. Leave empty to use the built-in instruction."},
-					{Key: "additional_prompt", Label: "Additional prompt", Widget: WidgetTextarea, Layout: "wide",
-						Help: "Appended after the primary instruction. Use it for device, project, or environment-specific requirements."},
+					{Key: "prompt", Label: "Prompt", Widget: WidgetTextarea, Layout: "wide",
+						Help: "Appended after the built-in Agent instruction. Use it for device, project, or environment-specific requirements."},
 				},
 			},
 		},

@@ -14,6 +14,10 @@ if [ "${AIDEN_WIFI_PROXY_ENABLED:-1}" != 0 ]; then
         # generated proxy variables.
         # shellcheck disable=SC1090
         . "${proxy_environment}"
+        http_proxy=${HTTP_PROXY:-}
+        https_proxy=${HTTPS_PROXY:-}
+        all_proxy=${ALL_PROXY:-}
+        no_proxy=${NO_PROXY:-}
         set +a
     else
         HTTP_PROXY=http://127.0.0.1:18080

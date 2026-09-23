@@ -104,6 +104,7 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 
 add_executable(aiden_tests
     test_main.cpp
+    contract_fixtures_test.cpp
     aiden_log_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
@@ -190,6 +191,9 @@ if(NODE_EXECUTABLE)
     )
     add_test(NAME config_web_api
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_api_test.mjs
+    )
+    add_test(NAME config_web_wifi
+        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_wifi_test.mjs
     )
     add_test(NAME config_web_routes
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_routes_test.mjs

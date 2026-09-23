@@ -183,8 +183,8 @@ func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
 
 	status.PipBridgeEnabled = &enabled
 	status.AppStateUpdatedAt = ptrTime(time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second))
-	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
-		t.Fatal("stale PiP bridge status should not allow background queue")
+	if !phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
+		t.Fatal("enabled PiP bridge should allow background queue despite stale app-state timestamp")
 	}
 }
 

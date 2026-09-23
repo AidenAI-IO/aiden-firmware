@@ -88,13 +88,12 @@ func phoneBridgeCanUsePiPBackground(status PhoneBridgeStatus, commandType string
 	if !phoneBridgeBackgroundSafeCommandType(commandType) {
 		return false
 	}
-	if !phoneBridgePiPBackgroundEnabled(status) {
-		return false
-	}
-	if status.AppStateUpdatedAt == nil || time.Since(*status.AppStateUpdatedAt) > phoneBridgeBackgroundStateMaxAge {
-		return false
-	}
-	return true
+	// pip_bridge_enabled is an explicit transport-mode signal from the iOS
+	// companion app. Once PiP mode is enabled, it is the authoritative signal
+	// for background-safe clipboard/data commands; app-state timestamps are
+	// lifecycle observations and may stop refreshing while the app remains in
+	// the system-managed PiP background mode.
+	return phoneBridgePiPBackgroundEnabled(status)
 }
 
 func phoneBridgeCanUseFGSBackground(status PhoneBridgeStatus, commandType string) bool {

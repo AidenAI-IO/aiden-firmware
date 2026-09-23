@@ -234,12 +234,12 @@ func emptyFirmwareInfo() map[string]any {
 		"version": "", "build_time": "", "phase": "", "health_status": "", "health_error": "",
 		"current_version": "", "current_build_time": "", "target_version": "", "target_build_time": "",
 		"previous_version": "", "previous_build_time": "", "running_slot": "", "target_slot": "",
-		"components": map[string]string{"boot": "", "oem": "", "rootfs": ""},
+		"components": map[string]string{"boot": "", "rootfs": ""},
 	}
 }
 
 func firmwareComponentVersions(state map[string]any, slot string) map[string]string {
-	result := map[string]string{"boot": "", "oem": "", "rootfs": ""}
+	result := map[string]string{"boot": "", "rootfs": ""}
 	slots, _ := state["slots"].(map[string]any)
 	slotState, _ := slots[slot].(map[string]any)
 	partitions, _ := slotState["partitions"].(map[string]any)
@@ -345,9 +345,9 @@ func currentSlot(cmdline string) string {
 		if strings.HasPrefix(field, "root=") {
 			value := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(field, "root=")))
 			switch {
-			case value == "partlabel=rootfs_a", value == "rootfs_a", value == "/dev/mmcblk0p9", strings.HasSuffix(value, "/rootfs_a"):
+			case value == "partlabel=rootfs_a", value == "rootfs_a", value == "/dev/mmcblk0p7", strings.HasSuffix(value, "/rootfs_a"):
 				rootSlot = "a"
-			case value == "partlabel=rootfs_b", value == "rootfs_b", value == "/dev/mmcblk0p10", strings.HasSuffix(value, "/rootfs_b"):
+			case value == "partlabel=rootfs_b", value == "rootfs_b", value == "/dev/mmcblk0p8", strings.HasSuffix(value, "/rootfs_b"):
 				rootSlot = "b"
 			}
 		}

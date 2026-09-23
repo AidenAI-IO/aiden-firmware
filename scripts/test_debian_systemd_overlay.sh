@@ -3,7 +3,6 @@ set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly OVERLAY=${REPO_ROOT}/overlay-debian
-readonly OEM_OVERLAY=${REPO_ROOT}/overlay-debian-oem
 readonly UNIT_DIR=${OVERLAY}/etc/systemd/system
 readonly TMPFILES=${OVERLAY}/etc/tmpfiles.d/aiden.conf
 readonly TEST_ROOT=$(mktemp -d)
@@ -42,8 +41,12 @@ if grep -Eq '^(Wants|Requires|After)=.*dev-rtc0\.device' \
 fi
 
 while IFS= read -r script; do
-    [ -x "${script}" ] || fail "helper is not executable: ${script#${REPO_ROOT}/}"
-    sh -n "${script}"
+    [ "${script##*/}" = aiden-log.sh ] || [ -x "${script}" ] || fail "helper is not executable: ${script#${REPO_ROOT}/}"
+    IFS= read -r shebang <"${script}"
+    case "${shebang}" in
+        *python3*) python3 -c 'import pathlib, sys; p = pathlib.Path(sys.argv[1]); compile(p.read_bytes(), str(p), "exec")' "${script}" ;;
+        *) sh -n "${script}" ;;
+    esac
 done < <(find "${OVERLAY}/usr/lib/aiden" -maxdepth 1 -type f | LC_ALL=C sort)
 
 # Debian units that consume the sanitized environment. This list replaces the
@@ -90,20 +93,48 @@ printf '%s\n' \
     'HTTP_PROXY="socks5h://127.0.0.1:18080"' \
     'HTTPS_PROXY="socks5h://127.0.0.1:18080"' \
     'ALL_PROXY="socks5h://127.0.0.1:18080"' \
+    'NO_PROXY="localhost,127.0.0.1,::1"' \
     >"${proxy_environment}"
 managed_output=$(env -i AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
     HTTP_PROXY=http://upstream.example:8080 "${managed_env_run}" /usr/bin/env)
 printf '%s\n' "${managed_output}" \
     | grep -qx 'HTTP_PROXY=socks5h://127.0.0.1:18080'
+for proxy_key in http_proxy https_proxy all_proxy; do
+    printf '%s\n' "${managed_output}" | grep -qx "${proxy_key}=socks5h://127.0.0.1:18080"
+done
+printf '%s\n' "${managed_output}" | grep -qx 'no_proxy=localhost,127.0.0.1,::1'
+login_output=$(env -i PATH="$PATH" \
+    AIDEN_SYSTEM_ENVIRONMENT="${TEST_ROOT}/missing-system-env" \
+    AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
+    http_proxy=http://stale.example:8080 \
+    sh -c '. "$1"; /usr/bin/env' sh "${OVERLAY}/etc/profile.d/aiden-env.sh")
+for proxy_key in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+    printf '%s\n' "${login_output}" | grep -qx "${proxy_key}=socks5h://127.0.0.1:18080"
+done
+for proxy_key in NO_PROXY no_proxy; do
+    printf '%s\n' "${login_output}" | grep -qx "${proxy_key}=localhost,127.0.0.1,::1"
+done
+login_disabled_output=$(env -i PATH="$PATH" AIDEN_WIFI_PROXY_ENABLED=0 \
+    AIDEN_SYSTEM_ENVIRONMENT="${TEST_ROOT}/missing-system-env" \
+    AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
+    http_proxy=http://explicit.example:8080 \
+    sh -c '. "$1"; /usr/bin/env' sh "${OVERLAY}/etc/profile.d/aiden-env.sh")
+printf '%s\n' "${login_disabled_output}" | grep -qx 'http_proxy=http://explicit.example:8080'
+if printf '%s\n' "${login_disabled_output}" | grep -q '^HTTP_PROXY='; then
+    fail "disabled login proxy must preserve the explicit environment"
+fi
+if command -v visudo >/dev/null 2>&1; then
+    visudo -cf "${OVERLAY}/etc/sudoers.d/20-aiden-proxy"
+fi
 bypass_output=$(env -i AIDEN_WIFI_PROXY_ENABLED=0 \
     AIDEN_WIFI_PROXY_ENVIRONMENT="${proxy_environment}" \
     HTTP_PROXY=http://upstream.example:8080 "${managed_env_run}" /usr/bin/env)
 printf '%s\n' "${bypass_output}" \
     | grep -qx 'HTTP_PROXY=http://upstream.example:8080'
 
-grep -qx 'What=/run/aiden/oem-device' "${UNIT_DIR}/oem.mount"
-grep -qx 'What=/dev/mmcblk0p11' "${UNIT_DIR}/userdata.mount"
-grep -qx 'What=/dev/mmcblk0p12' "${UNIT_DIR}/userdata-ota.mount"
+test ! -e "${UNIT_DIR}/oem.mount"
+grep -qx 'What=/dev/mmcblk0p9' "${UNIT_DIR}/userdata.mount"
+grep -qx 'What=/dev/mmcblk0p10' "${UNIT_DIR}/userdata-ota.mount"
 grep -q 'aiden.slot_suffix' "${OVERLAY}/usr/lib/aiden/aiden-slot-resolve"
 grep -q 'Root slot.*disagrees' "${OVERLAY}/usr/lib/aiden/aiden-slot-resolve"
 grep -q 'rootfs${AIDEN_SLOT_SUFFIX}' "${OVERLAY}/usr/lib/aiden/aiden-rootfs-grow"
@@ -127,7 +158,7 @@ if rg -n 'networkctl reconfigure (usb0|"?\$\{?interface\}?")' \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-gadget" \
     "${OVERLAY}/usr/lib/aiden/aiden-usb-ecm-watchdog" \
     "${OVERLAY}/usr/lib/aiden/aiden-wait-interface-ip" \
-    "${OEM_OVERLAY}/usr/bin/aiden-dynamic-keyboard"; then
+    "${OVERLAY}/usr/lib/aiden/aiden-dynamic-keyboard"; then
     fail "USB helpers must not ask networkd to replace an address they just configured"
 fi
 grep -q '/userdata/debian/wifi/wpa_supplicant-wlan0.conf' \
@@ -138,7 +169,7 @@ grep -Fqx 'Environment=AIDEN_WPA_SUPPLICANT_CONFIG=/userdata/debian/wifi/wpa_sup
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
 grep -Fqx 'ExecStart=/usr/sbin/wpa_supplicant -c ${AIDEN_WPA_SUPPLICANT_CONFIG} -i %I' \
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
-grep -q -- '/oem/usr/bin/agent config-web' \
+grep -q -- '/usr/lib/aiden/agent config-web' \
     "${UNIT_DIR}/aiden-config-web.service"
 grep -q -- '--wifi-config-environment=/run/aiden/wpa_supplicant-config.env' \
     "${UNIT_DIR}/aiden-config-web.service"
@@ -185,9 +216,9 @@ grep -q -- '--wifi-backend=systemd-networkd' \
 if grep -q -- '--wifi-iface' "${UNIT_DIR}/aiden-config-web.service"; then
     fail "Config Web still uses the retired --wifi-iface flag"
 fi
-grep -qx 'ConditionPathExists=/oem/usr/bin/agent' \
+grep -qx 'ConditionPathExists=/usr/lib/aiden/agent' \
     "${UNIT_DIR}/aiden-config-web.service"
-grep -q '/oem/usr/bin/agent wifi-proxy' \
+grep -q '/usr/lib/aiden/agent wifi-proxy' \
     "${UNIT_DIR}/aiden-wifi-proxy.service"
 grep -q 'aiden-wifi-proxy.service' "${UNIT_DIR}/aiden-agent.service"
 grep -q 'aiden-wifi-proxy-agent-restart.path' "${UNIT_DIR}/aiden.target"
@@ -201,7 +232,7 @@ grep -Eq '^After=.*aiden-wifi-proxy\.service' \
     || fail "Wi-Fi proxy restart service must wait for the proxy"
 grep -q 'AIDEN_WIFI_PROXY_INIT_SCRIPT=/usr/lib/aiden/aiden-wifi-proxy-control' \
     "${UNIT_DIR}/aiden-config-web.service"
-grep -q 'aiden-managed-env-run /oem/usr/bin/agent' \
+grep -q 'aiden-managed-env-run /usr/lib/aiden/agent' \
     "${UNIT_DIR}/aiden-agent.service"
 grep -q 'AIDEN_USB_COMPOSITE_REFRESH_COMMAND=/usr/lib/aiden/aiden-usb-ecm-watchdog' \
     "${UNIT_DIR}/aiden-agent.service"
@@ -306,7 +337,15 @@ run_ecm_watchdog() {
     AIDEN_USB_GRACE_FILE="${root}/grace" \
     AIDEN_USB_REFRESH_STATE_FILE="${root}/refresh.state" \
     USB_ECM_PROBE_INTERVAL=1 USB_ECM_FAIL_THRESHOLD=2 USB_ECM_COOLDOWN=1 \
-        timeout "${seconds}" "${watchdog}" watch >/dev/null 2>&1 || true
+        "${watchdog}" watch >/dev/null 2>&1 &
+    watchdog_pid=$!
+    sleep "${seconds}"
+    if ! kill -0 "${watchdog_pid}" 2>/dev/null; then
+        wait "${watchdog_pid}" 2>/dev/null || true
+        fail "ECM watchdog exited before the liveness interval"
+    fi
+    kill "${watchdog_pid}" 2>/dev/null || true
+    wait "${watchdog_pid}" 2>/dev/null || true
 }
 
 live_root=${TEST_ROOT}/usb-watchdog-live
@@ -338,7 +377,7 @@ run_ecm_watchdog "${stalled_root}" 6
 grep -qx 'last_refresh_reason=ECM stall' "${stalled_root}/refresh.state" \
     || fail "a stalled ECM session must be recovered with the ECM stall reason"
 
-grep -q '/oem/usr/bin/aiden-environment' "${UNIT_DIR}/aiden-environment.service"
+grep -q '/usr/lib/aiden/aiden-environment' "${UNIT_DIR}/aiden-environment.service"
 grep -q '/run/aiden/environment.invalid' "${UNIT_DIR}/aiden-environment.service"
 grep -q 'schema_version' "${OVERLAY}/usr/lib/aiden/aiden-userdata-migrate"
 grep -q 'backup_root=${state_dir}/backups' \
@@ -384,7 +423,7 @@ else
     login_status=$?
 fi
 [ "${login_status}" -eq 1 ] || fail "unknown ttyd login account returned ${login_status}"
-[ "${login_output}" = 'login: Invalid login name' ] \
+[ "$(printf '%s' "${login_output}" | tr -d '\r')" = 'login: Invalid login name' ] \
     || fail "unexpected unknown-account output: ${login_output}"
 sed -n '1p' "${getent_args}" | grep -Fxq 'passwd'
 sed -n '2p' "${getent_args}" | grep -Fxq 'missing$'

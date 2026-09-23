@@ -90,6 +90,44 @@ language = "zh"
 	}
 }
 
+func TestLoadResolvedConfigMigratesLegacyQwenTurnDetectionToProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	body := `
+[voice_settings.realtime]
+provider = "qwen"
+api_key = "qwen-secret"
+turn_detection = "smart_turn"
+turn_detection_threshold = 0.35
+turn_detection_silence_ms = 900
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig: %v", err)
+	}
+	record, ok := resolved.VoiceModelProviders["qwen"]
+	if !ok {
+		t.Fatalf("Qwen provider record was not created: %+v", resolved.VoiceModelProviders)
+	}
+	if record.TurnDetection != "smart_turn" || record.TurnDetectionThreshold == nil || *record.TurnDetectionThreshold != 0.35 || record.TurnDetectionSilenceMs != 900 {
+		t.Fatalf("Qwen turn detection was not migrated: %+v", record)
+	}
+	if resolved.VoiceModel.TurnDetection != "" || resolved.VoiceModel.TurnDetectionThreshold != nil || resolved.VoiceModel.TurnDetectionSilenceMs != 0 {
+		t.Fatalf("legacy flat turn detection fields were not cleared: %+v", resolved.VoiceModel)
+	}
+
+	runtime, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig: %v", err)
+	}
+	if runtime.VoiceModel.Provider != "qwen" || runtime.VoiceModel.TurnDetection != "smart_turn" || runtime.VoiceModel.TurnDetectionThreshold == nil || *runtime.VoiceModel.TurnDetectionThreshold != 0.35 || runtime.VoiceModel.TurnDetectionSilenceMs != 900 {
+		t.Fatalf("runtime Qwen turn detection was not resolved: %+v", runtime.VoiceModel)
+	}
+}
+
 // A config that never configured voice must not gain a record. DefaultConfig
 // carries a TTS provider, so migrating without a metadata gate would mint a
 // minimax-cn card for every device that only ever set up a model.

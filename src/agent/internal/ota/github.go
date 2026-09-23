@@ -10,7 +10,9 @@ import (
 )
 
 type githubRelease struct {
-	Assets []githubAsset `json:"assets"`
+	TagName string        `json:"tag_name"`
+	Draft   bool          `json:"draft"`
+	Assets  []githubAsset `json:"assets"`
 }
 
 type githubAsset struct {

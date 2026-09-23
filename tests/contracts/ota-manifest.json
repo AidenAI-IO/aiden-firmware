@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "channel": "stable",
+  "version": "20260521-120000-abcdef0",
+  "build_time": "2026-05-21T12:00:00Z",
+  "parts": [
+    {
+      "name": "boot",
+      "asset_a": {
+        "name": "boot_a.img",
+        "size": 1,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "asset_b": {
+        "name": "boot_b.img",
+        "size": 1,
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "name": "rootfs",
+      "asset": {
+        "name": "rootfs.img",
+        "size": 1,
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
+  ],
+  "signature": {
+    "algorithm": "ed25519",
+    "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+  }
+}

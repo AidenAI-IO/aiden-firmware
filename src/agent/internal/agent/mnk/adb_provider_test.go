@@ -140,8 +140,12 @@ func TestADBProviderSwipeUsesDefaultDuration(t *testing.T) {
 	if err := provider.Swipe(context.Background(), [][2]float64{{700, 500}, {300, 500}}, ButtonLeft); err != nil {
 		t.Fatalf("Swipe() error = %v", err)
 	}
-	if len(runner.commands) != 2 || runner.commands[1][len(runner.commands[1])-1] != "300" {
-		t.Fatalf("commands = %#v, want 300ms swipe", runner.commands)
+	if len(runner.commands) != 3 {
+		t.Fatalf("commands = %#v, want wm size, discovery, and motion script", runner.commands)
+	}
+	script := runner.commands[2][3]
+	if adbScriptSleepMillis(t, script) != 400 || !strings.Contains(script, "input touchscreen motionevent UP 300 500") {
+		t.Fatalf("motion script = %q, want 300ms main motion plus 100ms moving release tail", script)
 	}
 }
 
@@ -343,7 +347,7 @@ func TestBuildADBTouchScriptKeepsContactAcrossWaitAndMove(t *testing.T) {
 			t.Errorf("script missing %q:\n%s", want, script)
 		}
 	}
-	if strings.Index(script, "sleep 0.080") > strings.Index(script, "sendevent /dev/input/event3 3 57 -1") {
+	if strings.Index(script, "sleep 0.080") > strings.LastIndex(script, "sendevent /dev/input/event3 3 57 -1") {
 		t.Fatalf("touch was released before wait completed:\n%s", script)
 	}
 }

@@ -87,6 +87,9 @@ export const VISIBLE_FIELDS = {
   'voice_model_providers.thinking_level': true,
   'voice_model_providers.base_url': true,
   'voice_model_providers.region': true,
+  'voice_model_providers.turn_detection': true,
+  'voice_model_providers.turn_detection_threshold': true,
+  'voice_model_providers.turn_detection_silence_ms': true,
   'voice_model_providers.voice': true,
 
   // Conversation mode
@@ -94,8 +97,7 @@ export const VISIBLE_FIELDS = {
   // Classic mode is selected here; provider-specific STT/TTS fields are
   // rendered by their provider dialogs.
   'agent.max_iterations': true,
-  'agent.custom_instruction': true,
-  'agent.additional_prompt': true,
+  'agent.prompt': true,
   'agent.context_prune_threshold': true,
   'agent.context_compaction_threshold': true,
 
@@ -129,4 +131,3 @@ export function applyFieldVisibilityRules() {
     }
   });
 }
-

@@ -126,7 +126,7 @@ bool FrameCameraCaptureSource::open() {
         // below is allowed to perform that renegotiation.
         config_.allow_edid_fallback = false;
         if (edid_path_.empty()) {
-            const char* default_edid = "/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex";
+            const char* default_edid = "/usr/share/aiden/edid/hdmi_1080p30_cta.hex";
             if (access(default_edid, R_OK) == 0) {
                 edid_path_ = default_edid;
             }

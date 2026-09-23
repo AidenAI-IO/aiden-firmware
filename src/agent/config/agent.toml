@@ -31,9 +31,8 @@
 ################################################################################
 
 [conversation_settings.agent]
-# Custom instructions
-# custom_instruction = ""
-# additional_prompt = ""
+# Prompt appended after the built-in Agent instruction
+# prompt = ""
 
 # Maximum tool-call iterations
 # max_iterations = -1
@@ -207,16 +206,15 @@ input_mode = "stt"
 # region = "cn-beijing" # or "ap-southeast-1"
 # endpoint = ""         # optional ws/wss endpoint override
 # voice = "longanqian"
-#
-# [voice_settings.realtime]
-# provider = "qwen-main"
-# instructions = ""    # optional override; defaults to a short conversation-only prompt
-# enable_speech_emotion = true
-# input_audio_format = "pcm"
-# output_audio_format = "pcm"
 # turn_detection = "server_vad" # or "smart_turn"
 # turn_detection_threshold = 0.5
 # turn_detection_silence_ms = 800
+#
+# [voice_settings.realtime]
+# provider = "qwen-main"
+# enable_speech_emotion = true
+# input_audio_format = "pcm"
+# output_audio_format = "pcm"
 
 # Classic voice configuration (STT + TTS)
 
@@ -224,8 +222,8 @@ input_mode = "stt"
 # Only used when input_mode is "stt"
 [voice_settings.classic.runtime]
 # vad_backend = "rknn" # "rknn" (NPU encoder + CPU LSTM/decoder) or "cpu"
-# vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-# vad_helper_path = "/oem/usr/bin/rknn_vad"
+# vad_model_path = "/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+# vad_helper_path = "/usr/lib/aiden/rknn_vad"
 # vad_speech_threshold = 0.5
 # silence_ms = 550          # Silence duration to end utterance (ms)
 # min_speech_ms = 300       # Minimum speech duration to accept (ms)

@@ -1,147 +1,106 @@
 #!/bin/sh
 set -eu
-
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
-SCHEDULED_WORKFLOW="$ROOT_DIR/.github/workflows/build-scheduled.yml"
-BACKUP_WORKFLOW="$ROOT_DIR/.github/workflows/build-backup.yml"
-FALLBACK_WORKFLOW="$ROOT_DIR/.github/workflows/build-fallback.yml"
-CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 
-if ! grep -q 'scripts/create_github_release.sh' "$WORKFLOW"; then
-    echo "build workflow must create releases through the retry-capable local script" >&2
-    exit 1
-fi
+ruby - "$ROOT_DIR" <<'RUBY'
+require 'yaml'
+root = ARGV.fetch(0)
+load_workflow = ->(name) { YAML.load_file(File.join(root, '.github/workflows', name)) }
+release = load_workflow.call('release.yml')
+events = release['on'] || release[true]
+raise 'channel releases must have only manual/reusable entrypoints' unless events.keys.sort == %w[workflow_call workflow_dispatch]
+inputs = events['workflow_dispatch']['inputs']
+call = events['workflow_call']
+raise 'reusable release inputs must match manual inputs' unless call['inputs'].keys.sort == inputs.keys.sort
+inputs.each do |name, input|
+  expected_type = input['type'] == 'choice' ? 'string' : input['type']
+  raise "reusable #{name} input type differs" unless call['inputs'][name]['type'] == expected_type
+  raise "reusable #{name} default differs" unless call['inputs'][name]['default'] == input['default']
+end
+raise 'reusable channel must be explicit' unless call['inputs']['channel']['required']
+%w[OTA_ED25519_PRIVATE_KEY AGENT_CONFIG_TOML].each do |secret|
+  raise "#{secret} must be optional for preview/business builds" unless call['secrets'][secret]['required'] == false
+end
+raise 'three channel choices required' unless inputs['channel']['options'] == %w[dev staging prod]
+raise 'preview must not publish by default' unless inputs['plan_only']['default'] && !inputs['publish']['default']
+raise 'all channels must share one lock' unless release['concurrency'] == {
+  'group' => 'aiden-channel-release', 'cancel-in-progress' => false
+}
+jobs = release['jobs']
+raise 'plan must be read-only' unless release['permissions']['contents'] == 'read'
+raise 'publication needs channel environment' unless jobs['publish']['environment'] == '${{ inputs.channel }}'
+raise 'only publication needs write' unless jobs['publish']['permissions']['contents'] == 'write'
+raise 'business job must depend on classification' unless jobs['business']['if'].include?("kind == 'business'")
+raise 'OTA job must depend on classification' unless jobs['ota']['if'].include?("kind == 'ota'")
+raise 'OTA must reuse the system build' unless jobs['ota']['uses'] == './.github/workflows/build.yml'
+raise 'APT indexing must follow successful publication' unless jobs['apt']['needs'] == 'publish' && jobs['apt']['if'].include?("needs.publish.result == 'success'")
+raise 'APT must use the shared index workflow' unless jobs['apt']['uses'] == './.github/workflows/apt-repository.yml'
+%w[pages id-token].each do |permission|
+  raise "APT caller must grant #{permission}" unless jobs['apt']['permissions'][permission] == 'write'
+end
+apt = load_workflow.call('apt-repository.yml')
+apt_events = apt['on'] || apt[true]
+raise 'APT indexes must update only on publication or manual refresh' unless apt_events.keys.sort == %w[workflow_call workflow_dispatch]
+raise 'APT deploys must serialize' unless apt['concurrency'] == {'group' => 'aiden-apt-pages', 'cancel-in-progress' => false}
+raise 'APT deployment must depend on verified output' unless apt['jobs']['deploy']['needs'] == 'build'
 
-if grep -q 'softprops/action-gh-release' "$WORKFLOW"; then
-    echo "build workflow must not rely on action-gh-release for release uploads" >&2
-    exit 1
-fi
+backup = load_workflow.call('build-backup.yml')
+backup_events = backup['on'] || backup[true]
+raise 'backup releases must be manual only' unless backup_events.keys == ['workflow_dispatch']
+backup_inputs = backup_events['workflow_dispatch']['inputs']
+raise 'backup must expose three channels' unless backup_inputs['channel']['options'] == inputs['channel']['options']
+raise 'backup must default to preview' unless backup_inputs['plan_only']['default'] && !backup_inputs['publish']['default'] && !backup_inputs['dry_run']['default']
+backup_jobs = backup['jobs']
+raise 'backup must reuse release and APT publishers' unless backup_jobs.keys.sort == %w[apt preflight release]
+raise 'APT-only must not enter release flow' unless backup_jobs['release']['if'].include?('!inputs.apt_only')
+raise 'APT-only must reuse index workflow' unless backup_jobs['apt']['uses'] == './.github/workflows/apt-repository.yml'
+raise 'preflight must override APT-only' unless backup_jobs['apt']['if'].include?('!inputs.dry_run')
+backup_release = backup_jobs['release']
+raise 'backup must reuse channel decisions and publication' unless backup_release['uses'] == './.github/workflows/release.yml'
+raise 'backup must use runner 02' unless backup_release['with']['runner'] == 'aiden-hosted-02'
+%w[channel source_ref version force_ota plan_only publish].each do |name|
+  raise "backup does not forward #{name}" unless backup_release['with'][name] == "${{ inputs.#{name} }}"
+end
+raise 'backup must pass publication permission to callee' unless backup_release['permissions']['contents'] == 'write'
+%w[pages id-token].each do |permission|
+  raise "backup must pass #{permission} permission to APT deployment" unless backup_release['permissions'][permission] == 'write'
+end
+raise 'backup must forward secrets' unless backup_release['secrets'] == 'inherit'
+raise 'preflight must not enter release flow' unless backup_release['if'].include?('!inputs.dry_run')
+preflight = backup_jobs['preflight']
+raise 'backup preflight must stay artifact-only' unless preflight['uses'] == './.github/workflows/build.yml' && preflight['with']['dry_run'] == true
+raise 'preflight must use backup runner and requested source' unless preflight['with']['runner'] == 'aiden-hosted-02' && preflight['with']['source_ref'] == '${{ inputs.source_ref }}'
+raise 'preflight must be explicitly enabled' unless preflight['if'].include?('inputs.dry_run &&')
+raise 'caller must not acquire the callee release lock' if backup.dig('concurrency', 'group') == release.dig('concurrency', 'group')
 
-if [ ! -x "$ROOT_DIR/scripts/create_github_release.sh" ]; then
-    echo "release creation script must exist and be executable" >&2
-    exit 1
-fi
+%w[build.yml build-scheduled.yml build-backup.yml build-fallback.yml debian-package.yml].each do |name|
+  workflow = load_workflow.call(name)
+  triggers = workflow['on'] || workflow[true]
+  raise "#{name} still schedules publication" if triggers.key?('schedule')
+  raise "#{name} still has release write permissions" unless workflow['permissions']['contents'] == 'read'
+  raise "#{name} still has a publisher" if workflow['jobs'].key?('publish')
+end
+build = File.read(File.join(root, '.github/workflows/build.yml'))
+raise 'legacy release bypass remains' if build.include?('scripts/create_github_release.sh')
+raise 'firmware build entrypoint missing' unless build.include?('run: ./debian_build.sh')
+raise 'channel build entrypoint missing' unless build.include?('scripts/release/release.py build --plan')
+raise 'production build must run the pinned ARM smoke test' unless build.include?('scripts/run_tests_in_docker.sh --production --suite production-cross-smoke')
+raise 'channel firmware must validate package transactions' unless build.include?('bash scripts/test_system_config_package.sh')
+raise 'package builds must validate package transactions' unless jobs['business']['steps'].any? { |step| step.fetch('run', '').include?('bash scripts/test_system_config_package.sh') }
+raise 'signing key must also be rootfs trust anchor' unless build.include?('OTA_TRUST_PUBLIC_KEY_PATH=$public_key')
+raise 'SDK checkout must use planned source' unless build.include?('inputs.source_ref || github.sha')
+raise 'Go caches must remain cleanable' unless build.include?('chmod -R u+w "$go_mod_cache"')
+ci = File.read(File.join(root, '.github/workflows/ci.yml'))
+manifest = File.read(File.join(root, 'tests/test-manifest.yaml'))
+raise 'CI must use the full Docker test manifest' unless ci.include?('run: make check-full')
+makefile = File.read(File.join(root, 'Makefile'))
+raise 'make check-full must execute the full Docker profile' unless makefile.include?('bash scripts/run_tests_in_docker.sh --profile full')
+raise 'Docker test wrapper must execute the manifest runner' unless File.read(File.join(root, 'scripts/run_tests_in_docker.sh')).include?('tests/run_manifest.py')
+raise 'CI must build the test image with BuildKit cache' unless ci.include?('docker/build-push-action@v6') && ci.include?('cache-from: type=gha,scope=aiden-firmware-test')
+raise 'CI must reuse the cached test image in the manifest runner' unless ci.include?('AIDEN_TEST_SKIP_BUILD:') && ci.include?('AIDEN_TEST_IMAGE: aiden-firmware-test:ci')
+raise 'CI must not duplicate the production ARM smoke suite' if ci.include?('--production --suite production-cross-smoke')
+raise 'CI Docker sandbox smoke must run in the test image with host networking' unless ci.include?('--docker-socket --host-network') && ci.include?('--suite docker-sandbox-smoke')
+raise 'manifest must cover channel decisions' unless manifest.include?('python3 scripts/test_channel_release.py')
+RUBY
 
-if ! grep -q -- '--retry-count' "$WORKFLOW" || ! grep -q -- '--retry-delay-seconds' "$WORKFLOW"; then
-    echo "build workflow must configure release upload retry count and delay" >&2
-    exit 1
-fi
-
-if ! grep -q -- '--retry-count 10' "$WORKFLOW"; then
-    echo "build workflow must use doubled release upload retry attempts" >&2
-    exit 1
-fi
-
-if ! grep -q '^retry_count=10$' "$ROOT_DIR/scripts/create_github_release.sh"; then
-    echo "release script default retry count must stay doubled" >&2
-    exit 1
-fi
-
-if ! grep -q -- '--retry-delay-seconds 30' "$WORKFLOW"; then
-    echo "build workflow must use a longer release upload retry base delay" >&2
-    exit 1
-fi
-
-# The Debian firmware ships as compressed partition images plus the signed
-# manifest. Define the allowlist once and reuse it for both the required-assets
-# gate and the upload set, and add the update.img checksum only to the upload.
-release_assets='boot_a.img.tar.gz boot_b.img.tar.gz oem.img.tar.gz rootfs.img.tar.gz update.img.tar.gz manifest.json'
-if ! grep -Fq "release_assets='${release_assets}'" "$WORKFLOW"; then
-    echo "build workflow must define the Debian release asset allowlist" >&2
-    exit 1
-fi
-
-if ! grep -Fq -- '--required-assets "$release_assets"' "$WORKFLOW"; then
-    echo "build workflow must require the Debian OTA release assets before publishing" >&2
-    exit 1
-fi
-
-if ! grep -Fq -- '--upload-assets "$release_assets update.img.sha256"' "$WORKFLOW"; then
-    echo "build workflow must upload the Debian release asset allowlist plus the checksum" >&2
-    exit 1
-fi
-
-if grep -q 'userdata.img' "$WORKFLOW"; then
-    echo "build workflow must not upload userdata.img to GitHub releases" >&2
-    exit 1
-fi
-
-if ! grep -q 'GH_DEBUG' "$WORKFLOW"; then
-    echo "build workflow must enable GitHub CLI debug output for release creation" >&2
-    exit 1
-fi
-
-# A rotated OTA secret must not ship images trusting the previous committed
-# signer, so CI pins the trust anchor to the key it signs with.
-if ! grep -Fq 'OTA_TRUST_PUBLIC_KEY_PATH=$public_key' "$WORKFLOW"; then
-    echo "build workflow must pin the OTA trust anchor to the build signing key" >&2
-    exit 1
-fi
-
-# The production image is built by the Debian entrypoint, not the retired
-# Buildroot CLI.
-if ! grep -Fq 'run: ./debian_build.sh' "$WORKFLOW" || \
-   grep -Fq 'run: ./build.sh image' "$WORKFLOW" || \
-   grep -Fq 'build_image.sh' "$WORKFLOW"; then
-    echo "build workflow must build the Debian firmware through debian_build.sh" >&2
-    exit 1
-fi
-
-# apps fills .cache with read-only Go module directories that block the next
-# actions/checkout clean phase on the shared self-hosted runners.
-if ! grep -Fq '"$GITHUB_WORKSPACE/.cache"' "$WORKFLOW" || \
-   ! grep -Fq 'chmod -R u+w "$go_mod_cache"' "$WORKFLOW"; then
-    echo "self-hosted workspace reclaim must unlock the Debian Go module cache before checkout" >&2
-    exit 1
-fi
-
-if ! grep -q 'cancel-in-progress: false' "$SCHEDULED_WORKFLOW"; then
-    echo "scheduled build workflow must not cancel an in-progress release build" >&2
-    exit 1
-fi
-
-if ! grep -q 'runs-on: aiden-hosted-01' "$SCHEDULED_WORKFLOW" || \
-   ! grep -q 'runner: aiden-hosted-01' "$SCHEDULED_WORKFLOW"; then
-    echo "scheduled build workflow must use the primary dedicated Aiden hosted runner label" >&2
-    exit 1
-fi
-
-if ! grep -q 'runner: aiden-hosted-02' "$BACKUP_WORKFLOW"; then
-    echo "backup build workflow must use the backup dedicated Aiden hosted runner label" >&2
-    exit 1
-fi
-
-if ! grep -q 'runner: ubuntu-latest' "$FALLBACK_WORKFLOW" || \
-   ! grep -q 'free_disk_space: true' "$FALLBACK_WORKFLOW"; then
-    echo "fallback build workflow must build on a hosted runner with disk space reclaimed" >&2
-    exit 1
-fi
-
-if grep -q 'git submodule update.*pico-sdk' "$CI_WORKFLOW"; then
-    echo "CI release script checks must not fetch the large pico-sdk submodule" >&2
-    exit 1
-fi
-
-if grep -q 'scripts/test_build_scripts.sh' "$CI_WORKFLOW"; then
-    echo "CI must not run submodule-dependent build script checks for release script coverage" >&2
-    exit 1
-fi
-
-if ! grep -q 'scripts/test_release_ci_scripts.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'run: bash scripts/test_debian_only_policy.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_rootfs_cli_tool_catalog.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_clean_rootfs_overlay_staging.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_build_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_stage_rootfs_cli_tools.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_github_release_upload.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_compress_release_images.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_ota_partition_layout.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_ota_device_config.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_ota_manifest_generation.sh' "$CI_WORKFLOW" || \
-   ! grep -q 'scripts/test_reusable_rootfs_release_asset.sh' "$CI_WORKFLOW"; then
-    echo "CI must run repo-only release workflow and upload script tests" >&2
-    exit 1
-fi
-
-echo "release CI script tests passed"
+echo 'release CI script tests passed'
