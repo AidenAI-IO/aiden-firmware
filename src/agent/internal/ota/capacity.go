@@ -18,12 +18,12 @@ type downloadPlan struct {
 }
 
 type plannedDownloadAsset struct {
-	asset          ManifestAsset
-	path           string
-	targetMatches  bool
-	cachedVerified bool
-	partialPresent bool
-	remainingBytes int64
+	asset           ManifestAsset
+	path            string
+	targetMatches   bool
+	archiveVerified bool
+	partialPresent  bool
+	remainingBytes  int64
 }
 
 func (u *Updater) buildDownloadPlan(assets map[string]ManifestAsset, state State, target Slot) (downloadPlan, error) {
@@ -40,8 +40,8 @@ func (u *Updater) buildDownloadPlan(assets map[string]ManifestAsset, state State
 			plan.assets[partName] = planned
 			continue
 		}
-		if err := u.verifyCachedDownload(planned.path, asset); err == nil {
-			planned.cachedVerified = true
+		if err := u.verifyCachedArchive(planned.path, asset); err == nil {
+			planned.archiveVerified = true
 			plan.assets[partName] = planned
 			continue
 		} else if !os.IsNotExist(err) {

@@ -5,7 +5,9 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,6 +26,8 @@ var DefaultProductionPartitionSizes = map[string]int64{
 	"rootfs_a": DefaultRootFSPartitionSize,
 	"rootfs_b": DefaultRootFSPartitionSize,
 }
+
+var errPartitionImageSHA256Mismatch = errors.New("partition image sha256 mismatch")
 
 type PartitionWriter struct {
 	BlockDir       string
@@ -45,39 +49,72 @@ func (w PartitionWriter) WritePart(part string, targetSlot Slot, imagePath strin
 }
 
 func (w PartitionWriter) WritePartWithProgress(part string, targetSlot Slot, imagePath string, progress func(WriteProgress)) error {
+	return w.writePartWithProgress(part, targetSlot, imagePath, progress, openPartitionImage)
+}
+
+// writePartWithProgressAndVerify hashes the extracted image while writing it.
+// The caller must verify the downloaded artifact before calling this method.
+// A hash mismatch leaves the inactive target modified but must prevent slot
+// activation; this avoids a separate full decompression pass on the device.
+func (w PartitionWriter) writePartWithProgressAndVerify(part string, targetSlot Slot, imagePath string, expectedSHA256 string, progress func(WriteProgress)) (int64, error) {
+	if expectedSHA256 == "" {
+		return 0, errors.New("expected partition image sha256 is required")
+	}
+	return w.writePart(part, targetSlot, imagePath, progress, openPartitionImageStreaming, expectedSHA256)
+}
+
+func (w PartitionWriter) writePartWithProgress(part string, targetSlot Slot, imagePath string, progress func(WriteProgress), openImage func(string) (io.ReadCloser, int64, error)) error {
+	_, err := w.writePart(part, targetSlot, imagePath, progress, openImage, "")
+	return err
+}
+
+func (w PartitionWriter) writePart(part string, targetSlot Slot, imagePath string, progress func(WriteProgress), openImage func(string) (io.ReadCloser, int64, error), expectedSHA256 string) (int64, error) {
 	blockName, err := w.ResolveBlockName(part, targetSlot)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if targetSlot == w.ActiveSlot {
 		targetSlotName, _ := slotName(targetSlot)
-		return fmt.Errorf("refusing to write active slot %s", targetSlotName)
+		return 0, fmt.Errorf("refusing to write active slot %s", targetSlotName)
 	}
-	src, imageSize, err := openPartitionImage(imagePath)
+	src, imageSize, err := openImage(imagePath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if max, ok := w.partitionSizes()[blockName]; ok && imageSize > max {
 		_ = src.Close()
-		return fmt.Errorf("image %s size %d is larger than partition %s size %d", imagePath, imageSize, blockName, max)
+		return 0, fmt.Errorf("image %s size %d is larger than partition %s size %d", imagePath, imageSize, blockName, max)
 	}
 
 	dstPath := filepath.Join(w.BlockDir, blockName)
 	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		_ = src.Close()
-		return fmt.Errorf("open target partition %s: %w", dstPath, err)
+		return 0, fmt.Errorf("open target partition %s: %w", dstPath, err)
 	}
 	copyErr := error(nil)
 	reporter := newWriteProgressReporter(progress, part, blockName, imagePath, imageSize, defaultProgressInterval)
+	var imageHash hash.Hash
+	readSource := io.Reader(src)
+	if expectedSHA256 != "" {
+		imageHash = sha256.New()
+		readSource = io.TeeReader(src, imageHash)
+	}
 	reader := &cumulativeProgressReader{
-		reader: src,
+		reader: readSource,
 		onRead: reporter.maybeReport,
 	}
 	var written int64
 	if written, copyErr = io.Copy(dst, reader); copyErr == nil {
 		if written != imageSize {
 			copyErr = fmt.Errorf("written bytes %d do not match expected image size %d for %s", written, imageSize, imagePath)
+		} else if expectedSHA256 != "" {
+			gotSHA256 := hex.EncodeToString(imageHash.Sum(nil))
+			if gotSHA256 != expectedSHA256 {
+				copyErr = fmt.Errorf("%w: got %s, want %s", errPartitionImageSHA256Mismatch, gotSHA256, expectedSHA256)
+			} else {
+				copyErr = dst.Sync()
+			}
 		} else {
 			copyErr = dst.Sync()
 		}
@@ -85,16 +122,16 @@ func (w PartitionWriter) WritePartWithProgress(part string, targetSlot Slot, ima
 	srcCloseErr := src.Close()
 	closeErr := dst.Close()
 	if copyErr != nil {
-		return copyErr
+		return 0, copyErr
 	}
 	if srcCloseErr != nil {
-		return srcCloseErr
+		return 0, srcCloseErr
 	}
 	if closeErr != nil {
-		return closeErr
+		return 0, closeErr
 	}
 	reporter.complete(written)
-	return nil
+	return imageSize, nil
 }
 
 // VerifyPart reads the bytes written to the target partition back through the
@@ -102,6 +139,17 @@ func (w PartitionWriter) WritePartWithProgress(part string, targetSlot Slot, ima
 // is bounded to the uncompressed image size because production partitions are
 // normally larger than their filesystem images.
 func (w PartitionWriter) VerifyPart(part string, targetSlot Slot, imagePath string, expectedSHA256 string) error {
+	image, imageSize, err := openPartitionImage(imagePath)
+	if err != nil {
+		return err
+	}
+	if err := image.Close(); err != nil {
+		return err
+	}
+	return w.verifyPartWithSize(part, targetSlot, imageSize, expectedSHA256)
+}
+
+func (w PartitionWriter) verifyPartWithSize(part string, targetSlot Slot, imageSize int64, expectedSHA256 string) error {
 	blockName, err := w.ResolveBlockName(part, targetSlot)
 	if err != nil {
 		return err
@@ -109,14 +157,6 @@ func (w PartitionWriter) VerifyPart(part string, targetSlot Slot, imagePath stri
 	if targetSlot == w.ActiveSlot {
 		targetSlotName, _ := slotName(targetSlot)
 		return fmt.Errorf("refusing to verify active slot %s", targetSlotName)
-	}
-
-	image, imageSize, err := openPartitionImage(imagePath)
-	if err != nil {
-		return err
-	}
-	if err := image.Close(); err != nil {
-		return err
 	}
 
 	dstPath := filepath.Join(w.BlockDir, blockName)
@@ -156,15 +196,13 @@ func openPartitionImage(path string) (io.ReadCloser, int64, error) {
 	return src, info.Size(), nil
 }
 
-func partitionImageSize(path string) (int64, error) {
-	image, size, err := openPartitionImage(path)
-	if err != nil {
-		return 0, err
+// openPartitionImageStreaming opens the image without a full pre-scan. The
+// tar reader still validates the archive entries as the caller consumes it.
+func openPartitionImageStreaming(path string) (io.ReadCloser, int64, error) {
+	if isTarGzImagePath(path) {
+		return openTarGzPartitionImageStreaming(path)
 	}
-	if err := image.Close(); err != nil {
-		return 0, err
-	}
-	return size, nil
+	return openPartitionImage(path)
 }
 
 func isTarGzImagePath(path string) bool {
@@ -225,6 +263,51 @@ func openTarGzPartitionImage(path string) (io.ReadCloser, int64, error) {
 	}
 }
 
+func openTarGzPartitionImageStreaming(path string) (io.ReadCloser, int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	expectedImageName := expectedTarGzImageName(path)
+	if !strings.HasSuffix(strings.ToLower(expectedImageName), ".img") {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("tar.gz image %s does not name an .img file", path)
+	}
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("open gzip image %s: %w", path, err)
+	}
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("tar.gz image %s contains no .img file", path)
+		}
+		if err != nil {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("read tar.gz image %s: %w", path, err)
+		}
+		if header.FileInfo().IsDir() {
+			continue
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("tar.gz image %s contains unsupported entry %q", path, header.Name)
+		}
+		if filepath.Base(header.Name) != expectedImageName {
+			_ = gz.Close()
+			_ = file.Close()
+			return nil, 0, fmt.Errorf("tar.gz image %s entry %q, want %s", path, header.Name, expectedImageName)
+		}
+		return &tarGzImageReader{path: path, file: file, gz: gz, tar: tr}, header.Size, nil
+	}
+}
+
 func validateTarGzPartitionImage(file *os.File, path string, expectedImageName string) (int64, error) {
 	gz, err := gzip.NewReader(file)
 	if err != nil {
@@ -279,7 +362,7 @@ func expectedTarGzImageName(path string) string {
 }
 
 func verifyPartitionImage(path string, expectedSHA256 string) error {
-	src, _, err := openPartitionImage(path)
+	src, _, err := openPartitionImageStreaming(path)
 	if err != nil {
 		return err
 	}
