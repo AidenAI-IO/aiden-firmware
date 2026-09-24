@@ -20,8 +20,8 @@ func TestNewContextManagerStoresArtifactsBySessionAndWritesLineageSidecar(t *tes
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	if filepath.Base(filepath.Dir(manager.artifactStore.root)) != manager.GetSessionID() {
-		t.Fatalf("artifact root = %q, want session %q", manager.artifactStore.root, manager.GetSessionID())
+	if filepath.Base(filepath.Dir(manager.ArtifactStoreRoot())) != manager.GetSessionID() {
+		t.Fatalf("artifact root = %q, want session %q", manager.ArtifactStoreRoot(), manager.GetSessionID())
 	}
 	metadata, found, err := loadSessionMetadata(sessionFolder, manager.GetSessionID())
 	if err != nil {
@@ -53,8 +53,8 @@ func TestContextManagerReturnsReadableArtifactFilePath(t *testing.T) {
 	if stored.Path == "" || !filepath.IsAbs(stored.Path) {
 		t.Fatalf("StoreArtifact() path = %q, want absolute path", stored.Path)
 	}
-	if filepath.Dir(stored.Path) != manager.artifactStore.root {
-		t.Fatalf("StoreArtifact() path = %q, want file in %q", stored.Path, manager.artifactStore.root)
+	if filepath.Dir(stored.Path) != manager.ArtifactStoreRoot() {
+		t.Fatalf("StoreArtifact() path = %q, want file in %q", stored.Path, manager.ArtifactStoreRoot())
 	}
 	data, err := os.ReadFile(stored.Path)
 	if err != nil {
@@ -92,9 +92,9 @@ func TestContextManagerReusesArtifactWithSameContent(t *testing.T) {
 		t.Fatalf("duplicate artifact hashes = %q and %q", first.SHA256, second.SHA256)
 	}
 
-	entries, err := os.ReadDir(manager.artifactStore.root)
+	entries, err := os.ReadDir(manager.ArtifactStoreRoot())
 	if err != nil {
-		t.Fatalf("ReadDir(%s) error = %v", manager.artifactStore.root, err)
+		t.Fatalf("ReadDir(%s) error = %v", manager.ArtifactStoreRoot(), err)
 	}
 	if len(entries) != 2 {
 		t.Fatalf("artifact store entries = %d, want one data/metadata pair", len(entries))
@@ -224,15 +224,15 @@ func TestContextManagerRevisionPreservesArtifactPathWithoutSharingStore(t *testi
 	if revision.GetSessionID() == manager.GetSessionID() {
 		t.Fatal("revision reused transcript session ID")
 	}
-	if revision.artifactStore.root == manager.artifactStore.root {
-		t.Fatalf("revision artifact store = %q, want independent session store", revision.artifactStore.root)
+	if revision.ArtifactStoreRoot() == manager.ArtifactStoreRoot() {
+		t.Fatalf("revision artifact store = %q, want independent session store", revision.ArtifactStoreRoot())
 	}
 	revisionStored, err := revision.StoreArtifact("text/plain", []byte("revision-result"), ArtifactMetadata{ToolName: "shell"})
 	if err != nil {
 		t.Fatalf("revision StoreArtifact() error = %v", err)
 	}
-	if filepath.Dir(revisionStored.Path) != revision.artifactStore.root || filepath.Base(filepath.Dir(revision.artifactStore.root)) != revision.GetSessionID() {
-		t.Fatalf("revision artifact path = %q, want revision-owned directory %q", revisionStored.Path, revision.artifactStore.root)
+	if filepath.Dir(revisionStored.Path) != revision.ArtifactStoreRoot() || filepath.Base(filepath.Dir(revision.ArtifactStoreRoot())) != revision.GetSessionID() {
+		t.Fatalf("revision artifact path = %q, want revision-owned directory %q", revisionStored.Path, revision.ArtifactStoreRoot())
 	}
 	if data, err := os.ReadFile(stored.Path); err != nil || string(data) != "persisted-result" {
 		t.Fatalf("revision artifact file read = %q, error = %v", data, err)
@@ -246,8 +246,8 @@ func TestContextManagerRevisionPreservesArtifactPathWithoutSharingStore(t *testi
 	if result.Meta == nil || result.Meta.ArtifactPath != stored.Path {
 		t.Fatalf("reloaded artifact path = %#v, want %q", result.Meta, stored.Path)
 	}
-	if reloaded.artifactStore.root == manager.artifactStore.root {
-		t.Fatalf("reloaded artifact store = %q, want revision-owned store", reloaded.artifactStore.root)
+	if reloaded.ArtifactStoreRoot() == manager.ArtifactStoreRoot() {
+		t.Fatalf("reloaded artifact store = %q, want revision-owned store", reloaded.ArtifactStoreRoot())
 	}
 	data, err := os.ReadFile(stored.Path)
 	if err != nil || string(data) != "persisted-result" {
@@ -271,7 +271,7 @@ func TestContextManagerRejectsArtifactWhenSessionStoreIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	existingPath := filepath.Join(manager.artifactStore.root, "existing.data")
+	existingPath := filepath.Join(manager.ArtifactStoreRoot(), "existing.data")
 	file, err := os.Create(existingPath)
 	if err != nil {
 		t.Fatalf("os.Create() error = %v", err)
@@ -295,7 +295,7 @@ func TestContextManagerCountsMetadataTowardArtifactSessionLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	existingPath := filepath.Join(manager.artifactStore.root, "existing.json")
+	existingPath := filepath.Join(manager.ArtifactStoreRoot(), "existing.json")
 	file, err := os.Create(existingPath)
 	if err != nil {
 		t.Fatalf("os.Create() error = %v", err)
@@ -325,9 +325,9 @@ func TestContextManagerStoresArtifactsWithOwnerOnlyPermissions(t *testing.T) {
 	}
 	id := strings.TrimSuffix(filepath.Base(stored.Path), filepath.Ext(stored.Path))
 	for path, want := range map[string]os.FileMode{
-		manager.artifactStore.root:                            0o700,
-		filepath.Join(manager.artifactStore.root, id+".data"): 0o600,
-		filepath.Join(manager.artifactStore.root, id+".json"): 0o600,
+		manager.ArtifactStoreRoot():                            0o700,
+		filepath.Join(manager.ArtifactStoreRoot(), id+".data"): 0o600,
+		filepath.Join(manager.ArtifactStoreRoot(), id+".json"): 0o600,
 	} {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -349,7 +349,7 @@ func TestContextManagerUsesShortTTLForSensitiveArtifact(t *testing.T) {
 		t.Fatalf("StoreArtifact() error = %v", err)
 	}
 	id := strings.TrimSuffix(filepath.Base(stored.Path), filepath.Ext(stored.Path))
-	metadataData, err := os.ReadFile(filepath.Join(manager.artifactStore.root, id+".json"))
+	metadataData, err := os.ReadFile(filepath.Join(manager.ArtifactStoreRoot(), id+".json"))
 	if err != nil {
 		t.Fatalf("ReadFile(metadata) error = %v", err)
 	}

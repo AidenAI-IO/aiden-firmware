@@ -67,6 +67,12 @@ func (s *attachmentStore) store(mimeType string, data []byte) (messages.Attachme
 	}
 }
 
+// StoreAttachment implements session.AttachmentStore while keeping the
+// concrete filesystem store private to the storage layer.
+func (s *attachmentStore) StoreAttachment(mimeType string, data []byte) (messages.Attachment, error) {
+	return s.store(mimeType, data)
+}
+
 func attachmentExtension(mimeType string) string {
 	switch strings.ToLower(strings.TrimSpace(mimeType)) {
 	case "image/png":
