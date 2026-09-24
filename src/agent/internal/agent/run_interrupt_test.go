@@ -265,6 +265,38 @@ func TestInterruptJournalRecoveryFollowsCompactionAndIsIdempotent(t *testing.T) 
 	requireInterruptNotices(t, manager, "agent_restart")
 }
 
+func TestInterruptJournalFallsBackWhenIntermediateCompactionIsCorrupt(t *testing.T) {
+	root, err := freshNewContextManager("system", "task", nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := startRunNotices(func() *contextmanager.ContextManager { return root }, "run_corrupt_ancestor"); err != nil {
+		t.Fatal(err)
+	}
+	intermediate, err := contextmanager.NewContextManagerRevisionFromMessageList(root, root.CloneMessageList())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := contextmanager.NewContextManagerRevisionFromMessageList(intermediate, intermediate.CloneMessageList())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := contextmanager.SwitchSession(current.GetSessionFolder(), current.GetSessionID()); err != nil {
+		t.Fatal(err)
+	}
+	intermediatePath := filepath.Join(intermediate.GetSessionFolder(), intermediate.GetSessionID()+".jsonl")
+	if err := os.WriteFile(intermediatePath, []byte("not valid json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverPendingBackendRun(current.GetSessionFolder(), current); err != nil {
+		t.Fatal(err)
+	}
+	requireInterruptNotices(t, root, "agent_restart")
+	if _, err := os.Stat(filepath.Join(root.GetSessionFolder(), pendingBackendRunFile)); !os.IsNotExist(err) {
+		t.Fatalf("pending journal remains after fallback: %v", err)
+	}
+}
+
 func TestInterruptJournalDoesNotContaminateNewConversation(t *testing.T) {
 	original, err := freshNewContextManager("system", "task", nil, t.TempDir())
 	if err != nil {

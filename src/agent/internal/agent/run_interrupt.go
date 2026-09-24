@@ -196,10 +196,25 @@ func recoverPendingBackendRun(folder string, live *contextmanager.ContextManager
 			return errors.New("invalid interrupted context lineage")
 		}
 		seen[parent] = true
-		ancestor, err = contextmanager.LoadContextManagerFromSessionID(folder, parent)
-		if err != nil {
+		next, loadErr := contextmanager.LoadContextManagerFromSessionID(folder, parent)
+		if loadErr != nil {
+			// A damaged intermediate compaction revision must not strand every
+			// later run. Fall back to the pending session, which is the last
+			// confirmed transcript for this run. Keep the existence check first
+			// so history clearing does not recreate a deleted conversation.
+			pendingPath := filepath.Join(folder, pending.SessionID+".jsonl")
+			if _, statErr := os.Stat(pendingPath); os.IsNotExist(statErr) {
+				return removePendingBackendRun(folder)
+			} else if statErr != nil {
+				return statErr
+			}
+			manager, err = contextmanager.LoadContextManagerFromSessionID(folder, pending.SessionID)
+			if err != nil {
+				return fmt.Errorf("load pending interrupted context: %w", err)
+			}
 			break
 		}
+		ancestor = next
 	}
 	if err != nil {
 		return fmt.Errorf("load interrupted context lineage: %w", err)
