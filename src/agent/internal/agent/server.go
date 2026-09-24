@@ -3414,6 +3414,11 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 
 	if s.logger != nil {
 		s.logger.Info("HTTP tool invoke: name=%s error=%v", toolName, response.IsError)
+		if toolName == toolOpenApp {
+			// Include the semantic launch result inside action_output as well
+			// as execution errors; is_error=false alone does not mean opened=true.
+			s.logger.Info("HTTP open_app result: duration_ms=%d error=%v message=%q output=%q", duration, response.IsError, response.Error, truncateForLog(stripScreenshotData(response.Output), 8192))
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

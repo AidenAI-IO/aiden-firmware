@@ -361,18 +361,8 @@ Rules:
 - Prefer the plain Paste/粘贴 action over unrelated actions such as Select, Look Up, Share, or Autofill.
 - tap_point must be centered inside the visible paste action using normalized 0-1000 coordinates.
 - If no paste action is visible, return {"found": false, "tap_point": {"x": 0, "y": 0}}.`, platform))
-	raw, err := modelVision.visionJSON(ctx, "paste_menu", prompt, shot)
-	if err != nil {
-		return pasteMenuResult{}, err
-	}
-	var result pasteMenuResult
-	if err := decodeStrictJSONObject(raw, &result); err != nil {
-		return pasteMenuResult{}, fmt.Errorf("parse paste menu action: %w", err)
-	}
-	if result.Found && result.TapPoint == nil {
-		return pasteMenuResult{}, fmt.Errorf("parse paste menu action: found result is missing tap_point")
-	}
-	return result, nil
+	result, _, err := requestVisionDecision(ctx, modelVision, "paste_menu", prompt, parseAppSearchResult, shot)
+	return pasteMenuResult(result), err
 }
 
 func (t *textInputBridge) keyboardPaste(ctx context.Context, platform string) error {

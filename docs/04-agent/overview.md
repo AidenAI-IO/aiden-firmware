@@ -71,6 +71,8 @@ The conversational Agent receives every registered, currently available tool nee
 `current_time` and `calculator` are not registered built-in tools; the Agent uses `shell` for controller-local precise time, timezone, and deterministic calculations. `skill_manage` and `skill_mark_used` remain unavailable through the HTTP Tool API.
 
 For tool details and HTTP invocation methods, see [Tools HTTP API](tools-http-api.md).
+For screenshot response validation and action boundaries in text input and
+`open_app`, see [Screenshot Decision Protocol](vision-decision-protocol.md).
 
 ## Python Package Environment
 
