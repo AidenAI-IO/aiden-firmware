@@ -82,9 +82,21 @@ fi
 
 printf 'ENABLE_AGENT=1\n' >>"${TEST_ROOT}/aiden_boot.conf"
 rm -f "${TEST_ROOT}/ota.log"
-if CURL_STATUS=1 run_aggregator >/dev/null 2>&1; then
-    fail "aggregator accepted an unresponsive local Agent runtime"
+FAIL_SERVICE=aiden-agent.service run_aggregator
+grep -qx 'mark-health' "${TEST_ROOT}/ota.log" \
+    || fail "Agent startup failure prevented the health marker"
+
+printf 'ENABLE_CONFIG_WEB=1\n' >>"${TEST_ROOT}/aiden_boot.conf"
+rm -f "${TEST_ROOT}/ota.log"
+if FAIL_SERVICE=aiden-config-web.service run_aggregator >/dev/null 2>&1; then
+    fail "aggregator accepted an inactive configuration portal"
 fi
-[ ! -e "${TEST_ROOT}/ota.log" ] || fail "marker command ran after failed Agent probe"
+[ ! -e "${TEST_ROOT}/ota.log" ] || fail "marker command ran after inactive Config Web"
+
+rm -f "${TEST_ROOT}/ota.log"
+if CURL_STATUS=1 run_aggregator >/dev/null 2>&1; then
+    fail "aggregator accepted an unresponsive configuration portal"
+fi
+[ ! -e "${TEST_ROOT}/ota.log" ] || fail "marker command ran after failed Config Web probe"
 
 echo "Debian OTA health aggregator tests passed"

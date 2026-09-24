@@ -103,10 +103,6 @@ if feature_enabled ENABLE_BLE_SERVICE; then
     wait_for "BLE service is not active" service_active aiden-ble.service
     wait_for "BLE service socket is missing" path_exists /run/ble_service/ble_service.sock
 fi
-if feature_enabled ENABLE_AGENT; then
-    wait_for "Agent service is not active" service_active aiden-agent.service
-    wait_for "Agent local HTTP runtime is not responding" http_responds http://127.0.0.1:8080/
-fi
 if feature_enabled ENABLE_CONFIG_WEB; then
     wait_for "configuration portal is not active" service_active aiden-config-web.service
     wait_for "configuration portal is not responding" http_responds http://127.0.0.1/

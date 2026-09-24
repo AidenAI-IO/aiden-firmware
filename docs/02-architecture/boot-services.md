@@ -215,8 +215,10 @@ protocol or the per-network `NO_PROXY` value.
 
 ## OTA
 
-`aiden-ota-health-marker.service` waits for required local services and writes
-a transaction-bound health result. `aiden-ota-health.service` then executes:
+`aiden-ota-health-marker.service` waits for the required local services and the
+Config Web recovery portal, then writes a transaction-bound health result. The
+Agent is allowed to fail during recovery; its failure does not block the portal
+or mark the OTA slot unhealthy. `aiden-ota-health.service` then executes:
 
 ```bash
 /usr/lib/aiden/ota --config /userdata/debian/ota/config.json health

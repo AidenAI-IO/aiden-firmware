@@ -203,6 +203,14 @@ if grep -Eq '^Requires=.*aiden-wifi-proxy\.service' \
 fi
 grep -Eq '^Wants=.*aiden-wifi-proxy\.service' \
     "${UNIT_DIR}/aiden-config-web.service"
+if grep -Eq '(^Wants=|^After=).*aiden-agent\.service' \
+    "${UNIT_DIR}/aiden-config-web.service"; then
+    fail "Config Web must not wait for the Agent to start"
+fi
+if grep -Eq '(^Wants=|^After=).*aiden-agent\.service' \
+    "${UNIT_DIR}/aiden-ota-health-marker.service"; then
+    fail "OTA health marker must not wait for the Agent to start"
+fi
 while IFS= read -r log_path; do
     log_directory=${log_path%/*}
     grep -Fqx "d ${log_directory} 0755 root root -" "${TMPFILES}" \

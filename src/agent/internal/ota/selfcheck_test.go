@@ -78,6 +78,46 @@ func TestSelfCheckReportCountsRequiredFailures(t *testing.T) {
 	}
 }
 
+func TestSelfCheckTreatsAgentFailureAsWarningButRequiresConfigWeb(t *testing.T) {
+	dir := t.TempDir()
+	agentFailureCurl := filepath.Join(dir, "curl-agent-failure")
+	const agentFailureScript = `#!/bin/sh
+case "$*" in
+  *127.0.0.1:8080/health) exit 1 ;;
+  *phone-bridge/status) printf '%s\n' '{"connected":false}' ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(agentFailureCurl, []byte(agentFailureScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	report := RunSelfCheck(context.Background(), SelfCheckConfig{
+		CommandTimeout: 100 * time.Millisecond,
+		Curl:           agentFailureCurl,
+		BLESocketPath:  filepath.Join(dir, "missing.sock"),
+	})
+	if got := report.Items["agent_http"].Status; got != "warn" {
+		t.Fatalf("agent_http status = %q, want warn", got)
+	}
+	if got := report.Items["config_web"].Status; got != "pass" {
+		t.Fatalf("config_web status after Agent failure = %q, want pass", got)
+	}
+
+	configFailureCurl := filepath.Join(dir, "curl-config-failure")
+	if err := os.WriteFile(configFailureCurl, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	report = RunSelfCheck(context.Background(), SelfCheckConfig{
+		CommandTimeout: 100 * time.Millisecond,
+		Curl:           configFailureCurl,
+		BLESocketPath:  filepath.Join(dir, "missing.sock"),
+	})
+	if got := report.Items["config_web"].Status; got != "fail" {
+		t.Fatalf("config_web status = %q, want fail", got)
+	}
+}
+
 func TestSafeSnapshotNameRemovesPathSeparators(t *testing.T) {
 	if got := safeSnapshotName("v1/../../release"); got != "v1_.._.._release" {
 		t.Fatalf("safeSnapshotName() = %q", got)
