@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 const (
 	notificationMemoryBatchLimit  = 10
 	notificationBatchMaxTokens    = 8000
+	notificationJSONMaxAttempts   = 2
 	notificationMemoryTTL         = 7 * 24 * time.Hour
 	notificationLongTermTTL       = 90 * 24 * time.Hour
 	notificationDefaultConfidence = 0.7
@@ -231,42 +233,48 @@ func (p *NotificationMemoryProcessor) resolveRecords(ctx context.Context, record
 	if p.merge == nil {
 		return nil
 	}
-	refsByContext := make(map[string][]MemoryMergeReference, len(records))
-	_, raw, err := p.merge.Extract(ctx, MemoryMergeRequest{
-		Search: func(ctx context.Context) ([]MemoryMergeReference, error) {
-			all := make([]MemoryMergeReference, 0, len(records)*8)
-			for _, record := range records {
-				related, err := p.searchRelatedNotificationMemories(ctx, record)
-				if err != nil {
-					return nil, err
-				}
-				refsByContext[record.ContextID] = related
-				all = append(all, related...)
-			}
-			return all, nil
-		},
-		BuildMessages: func(_ []MemoryMergeReference) ([]llms.MessageContent, error) {
-			return []llms.MessageContent{
-				llms.TextParts(llms.ChatMessageTypeSystem, "You consolidate a batch of notifications into user memory. Output JSON only."),
-				llms.TextParts(llms.ChatMessageTypeHuman, buildNotificationMemoryBatchPrompt(records, refsByContext)),
-			}, nil
-		},
-		MaxTokens: min(1400*len(records), notificationBatchMaxTokens),
-		Timeout:   45 * time.Second,
-	})
-	if err != nil {
-		return err
-	}
 	var response notificationMemoryBatchResponse
-	if err := json.Unmarshal([]byte(raw), &response); err != nil {
-		return wrapNotificationProposalError(fmt.Errorf("parse notification memory batch proposal: %w", err))
-	}
-	if len(response.Results) == 0 && len(records) == 1 {
-		var legacy notificationMemoryProposal
-		if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
-			return wrapNotificationProposalError(fmt.Errorf("parse notification memory proposal: %w", err))
+	refsByContext := make(map[string][]MemoryMergeReference, len(records))
+	var correction string
+	for attempt := 1; attempt <= notificationJSONMaxAttempts; attempt++ {
+		_, raw, err := p.merge.Extract(ctx, MemoryMergeRequest{
+			Search: func(ctx context.Context) ([]MemoryMergeReference, error) {
+				all := make([]MemoryMergeReference, 0, len(records)*8)
+				for _, record := range records {
+					related, err := p.searchRelatedNotificationMemories(ctx, record)
+					if err != nil {
+						return nil, err
+					}
+					refsByContext[record.ContextID] = related
+					all = append(all, related...)
+				}
+				return all, nil
+			},
+			BuildMessages: func(_ []MemoryMergeReference) ([]llms.MessageContent, error) {
+				prompt := buildNotificationMemoryBatchPrompt(records, refsByContext)
+				if correction != "" {
+					prompt += "\n\nThe previous response was invalid JSON (" + correction + "). Return exactly one complete JSON object matching the requested schema, with no prose or markdown."
+				}
+				return []llms.MessageContent{
+					llms.TextParts(llms.ChatMessageTypeSystem, "You consolidate a batch of notifications into user memory. Output JSON only."),
+					llms.TextParts(llms.ChatMessageTypeHuman, prompt),
+				}, nil
+			},
+			MaxTokens: min(1400*len(records), notificationBatchMaxTokens),
+			Timeout:   45 * time.Second,
+		})
+		if err != nil {
+			return err
 		}
-		response.Results = []notificationMemoryBatchResult{{ContextID: records[0].ContextID, Proposal: legacy}}
+		response, err = parseNotificationMemoryBatchResponse(raw, records)
+		if err == nil {
+			break
+		}
+		p.logNotificationMemoryResponseFailure("batch proposal parse failed", raw, err, attempt)
+		if attempt == notificationJSONMaxAttempts {
+			return wrapNotificationProposalError(err)
+		}
+		correction = err.Error()
 	}
 	if len(response.Results) != len(records) {
 		return wrapNotificationProposalError(fmt.Errorf("notification memory batch returned %d results for %d notifications", len(response.Results), len(records)))
@@ -316,6 +324,39 @@ func (p *NotificationMemoryProcessor) resolveRecords(ctx context.Context, record
 		}
 	}
 	return nil
+}
+
+func parseNotificationMemoryBatchResponse(raw string, records []NotificationRecord) (notificationMemoryBatchResponse, error) {
+	var response notificationMemoryBatchResponse
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return notificationMemoryBatchResponse{}, fmt.Errorf("parse notification memory batch proposal: %w", err)
+	}
+	if len(response.Results) == 0 && len(records) == 1 {
+		var legacy notificationMemoryProposal
+		if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+			return notificationMemoryBatchResponse{}, fmt.Errorf("parse notification memory proposal: %w", err)
+		}
+		response.Results = []notificationMemoryBatchResult{{ContextID: records[0].ContextID, Proposal: legacy}}
+	}
+	return response, nil
+}
+
+// Model output can repeat private notification content, so diagnostics retain
+// only enough metadata to correlate malformed responses without logging them.
+func (p *NotificationMemoryProcessor) logNotificationMemoryResponseFailure(reason, raw string, err error, attempt int) {
+	var syntaxErr *json.SyntaxError
+	var offset int64
+	if errors.As(err, &syntaxErr) {
+		offset = syntaxErr.Offset
+	}
+	digest := sha256.Sum256([]byte(raw))
+	if p != nil && p.logger != nil {
+		p.logger.Warn("[notification-memory] %s: attempt=%d/%d response_bytes=%d response_sha256=%x json_offset=%d",
+			reason, attempt, notificationJSONMaxAttempts, len(raw), digest, offset)
+		return
+	}
+	logging.Warnf("agent", "notification_memory", "%s: attempt=%d/%d response_bytes=%d response_sha256=%x json_offset=%d",
+		reason, attempt, notificationJSONMaxAttempts, len(raw), digest, offset)
 }
 
 func coalesceNotificationBatchTargets(results []validatedNotificationResult) []validatedNotificationResult {
