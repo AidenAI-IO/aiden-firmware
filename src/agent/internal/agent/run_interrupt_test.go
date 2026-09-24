@@ -449,15 +449,20 @@ func TestRuntimeInterruptNoticeSurvivesRestartBeforeNextModelCall(t *testing.T) 
 		return contentResponse("recovered"), nil
 	}
 	restarted := newRuntime()
+	restarted.stateManager.SetState("recovered_marker", "present")
 	if _, err := restarted.Run(context.Background(), RunRequest{Input: "next task"}); err != nil {
 		t.Fatal(err)
 	}
 	requireInterruptNotices(t, restarted.contextManager, "agent_restart")
 	list := restarted.contextManager.CloneMessageList()
 	noticeIndex, inputIndex := -1, -1
+	stateSeen := false
 	for i, message := range list {
 		if message.Role == messages.MessageRoleNotice && strings.Contains(message.Content, "agent_restart") {
 			noticeIndex = i
+		}
+		if message.Role == messages.MessageRoleState && strings.Contains(message.Content, "recovered_marker: present") {
+			stateSeen = true
 		}
 		if message.Role == messages.MessageRoleUser && message.Content == "next task" {
 			inputIndex = i
@@ -465,5 +470,8 @@ func TestRuntimeInterruptNoticeSurvivesRestartBeforeNextModelCall(t *testing.T) 
 	}
 	if noticeIndex < 0 || inputIndex <= noticeIndex {
 		t.Fatalf("notice/input order = %d/%d", noticeIndex, inputIndex)
+	}
+	if !stateSeen {
+		t.Fatal("recovered context manager did not apply runtime state hook")
 	}
 }

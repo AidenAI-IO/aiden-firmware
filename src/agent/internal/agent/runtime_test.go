@@ -29,6 +29,7 @@ import (
 	speechtext "aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tokencounter"
 
+	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
@@ -172,6 +173,34 @@ func TestRuntimeRun(t *testing.T) {
 
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}
+
+func TestRuntimeParseFallbackDoesNotPersistInterruptNotice(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: failingGenerateModel{err: fmt.Errorf("%w: raw model response", agents.ErrUnableToParseOutput)}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "parse fallback"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "raw model response" {
+		t.Fatalf("Run() output = %q, want raw model response", result.Output)
+	}
+	for _, message := range runtime.contextManager.CloneMessageList() {
+		if message.Role == messages.MessageRoleNotice && strings.HasPrefix(message.Content, "Interrupt [") {
+			t.Fatalf("recoverable parse fallback persisted interruption notice: %q", message.Content)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runtime.contextManager.GetSessionFolder(), pendingBackendRunFile)); !os.IsNotExist(err) {
+		t.Fatalf("pending run journal remains after parse fallback: %v", err)
 	}
 }
 
