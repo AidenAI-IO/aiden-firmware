@@ -153,15 +153,17 @@ cat /proc/$$/cgroup
 loginctl show-session "$XDG_SESSION_ID" -p Scope -p TTY
 ```
 
-Expect a `session-*.scope` cgroup and `TTY=pts/...`. Test broadcasts without
-powering off using `sudo shutdown -k +1`, then `sudo shutdown -c` in the same
-connection. Keep that connection open: scheduling within five minutes temporarily
-blocks new logins. On systemd 257, `shutdown -k now` does not exercise the same
-scheduled warning path. Both normal `shutdown` and `systemctl poweroff` support
-wall broadcasts unless `--no-wall` is used.
+Expect a `session-*.scope` cgroup and `TTY=pts/...`. Open a second SSH terminal
+before testing. Run `sudo shutdown -k +1` in the second terminal and observe the
+broadcast in the first, then cancel with `sudo shutdown -c` in the second.
+logind excludes the terminal that requested shutdown from the broadcast.
+Keep both connections open: scheduling within five minutes temporarily blocks
+new logins. On systemd 257, `shutdown -k now` does not exercise the same scheduled
+warning path. Both normal `shutdown` and `systemctl poweroff` support wall
+broadcasts unless `--no-wall` is used.
 
-For a real shutdown test, use `sudo shutdown now` from a fresh connection and
-observe the notification and SSH close. Full poweroff timing still requires
+For a real shutdown test, use `sudo shutdown now` in the second terminal and
+observe the notification and SSH close in the first. Full poweroff timing still requires
 serial-console observation after SSH exits; session cleanup does not prove that
 USB teardown, swapoff or filesystem unmounts finish promptly. `user@1000.service`
 is left enabled (about 3 MB on the tested board).
