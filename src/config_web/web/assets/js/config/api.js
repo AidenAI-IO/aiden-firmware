@@ -6,11 +6,15 @@ function updateActionCardVisibility(){const card=byId('actionCard');if(!card)ret
 function setBanner(message,isError){const el=byId('actionBanner');if(!el)return;bannerGeneration++;const generation=bannerGeneration;if(bannerTimer){clearTimeout(bannerTimer);bannerTimer=null;}el.textContent=message||'';el.className='banner'+(isError?' error':'');el.style.display=message?'block':'none';updateActionCardVisibility();if(message&&!isError){bannerTimer=setTimeout(function(){if(generation!==bannerGeneration)return;el.style.display='none';bannerTimer=null;updateActionCardVisibility();},4000);}}
     function updateActionDetailsVisibility(){const wrap=byId('actionDetails');const body=byId('actionDetailsText');const ota=byId('otaLogPanel');const hasText=!!(body&&body.style.display==='block'&&body.textContent);const hasOta=!!(ota&&ota.style.display==='block');wrap.style.display=(hasText||hasOta)?'block':'none';updateActionCardVisibility();}
     function setDetails(text,options){const body=byId('actionDetailsText');if(!(options&&options.keepOtaLog)){hideOtaLogPanel();}if(text){body.style.display='block';body.textContent=text;}else{body.style.display='none';body.textContent='';}updateActionDetailsVisibility();}
-    async function performRequest(url,options){const res=await fetch(url,options);const text=await res.text();let body={};try{body=text?(JSON.parse(text)??{}):{}}catch(err){body={ok:false,error:text||err.message}}if(!res.ok){if((url==='/api/config'||url==='/api/config/locale')&&body.persisted&&runtime.configApplicationSaved)runtime.configApplicationSaved({...body,state:'failed'});const error=new Error(body.error||('HTTP '+res.status));if(body&&typeof body==='object')Object.keys(body).forEach(function(key){error[key]=body[key];});error.status=res.status;throw error;}if((url==='/api/config'||url==='/api/config/locale')&&options&&options.method&&options.method!=='GET'){if(runtime.configApplicationSaved)runtime.configApplicationSaved(body);}return body;}
+function isConfigWrite(url, options) {
+  return ['/api/config', '/api/config/locale', '/api/config/backup'].includes(url)
+    && !!options?.method && options.method !== 'GET';
+}
+    async function performRequest(url,options){const res=await fetch(url,options);const text=await res.text();let body={};try{body=text?(JSON.parse(text)??{}):{}}catch(err){body={ok:false,error:text||err.message}}if(!res.ok){if(isConfigWrite(url,options)&&body.persisted&&runtime.configApplicationSaved)runtime.configApplicationSaved({...body,state:'failed'});const error=new Error(body.error||('HTTP '+res.status));if(body&&typeof body==='object')Object.keys(body).forEach(function(key){error[key]=body[key];});error.status=res.status;throw error;}if(isConfigWrite(url,options)){if(runtime.configApplicationSaved)runtime.configApplicationSaved(body);}return body;}
 
 let configSaves = Promise.resolve();
 function request(url, options) {
-  if ((url === '/api/config' || url === '/api/config/locale') && options && options.method !== 'GET') {
+  if (isConfigWrite(url, options)) {
     const pending = configSaves.then(() => performRequest(url, options));
     configSaves = pending.catch(() => {});
     return pending;
