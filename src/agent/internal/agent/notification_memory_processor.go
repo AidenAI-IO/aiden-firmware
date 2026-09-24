@@ -344,16 +344,18 @@ func parseNotificationMemoryBatchResponse(raw string, records []NotificationReco
 // Model output can repeat private notification content, so diagnostics retain
 // only enough metadata to correlate malformed responses without logging them.
 func (p *NotificationMemoryProcessor) logNotificationMemoryResponseFailure(reason, raw string, err error, attempt int) {
-	if p == nil || p.logger == nil {
-		return
-	}
 	var syntaxErr *json.SyntaxError
 	var offset int64
 	if errors.As(err, &syntaxErr) {
 		offset = syntaxErr.Offset
 	}
 	digest := sha256.Sum256([]byte(raw))
-	p.logger.Warn("[notification-memory] %s: attempt=%d/%d response_bytes=%d response_sha256=%x json_offset=%d",
+	if p != nil && p.logger != nil {
+		p.logger.Warn("[notification-memory] %s: attempt=%d/%d response_bytes=%d response_sha256=%x json_offset=%d",
+			reason, attempt, notificationJSONMaxAttempts, len(raw), digest, offset)
+		return
+	}
+	logging.Warnf("agent", "notification_memory", "%s: attempt=%d/%d response_bytes=%d response_sha256=%x json_offset=%d",
 		reason, attempt, notificationJSONMaxAttempts, len(raw), digest, offset)
 }
 

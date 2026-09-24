@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/ble"
+	"aiden-agent/internal/logging"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -672,6 +674,44 @@ func TestNotificationMemoryProcessorMalformedJSONRetryExhaustionKeepsCursor(t *t
 	}
 	if got := ctxStore.State().MemoryCursor; got != "" {
 		t.Fatalf("MemoryCursor=%q advanced after retry exhaustion", got)
+	}
+}
+
+func TestNotificationMemoryResponseFailureUsesFallbackLogger(t *testing.T) {
+	var output bytes.Buffer
+	restoreOutput := logging.SetOutput(&output)
+	defer restoreOutput()
+	restoreLevel := logging.SetMinimumLevel(logging.Debug)
+	defer restoreLevel()
+
+	raw := `{"sensitive":"otp-123456",A}`
+	var decoded any
+	parseErr := json.Unmarshal([]byte(raw), &decoded)
+	if parseErr == nil {
+		t.Fatal("malformed response unexpectedly parsed")
+	}
+	var syntaxErr *json.SyntaxError
+	if !errors.As(parseErr, &syntaxErr) {
+		t.Fatalf("parse error=%v, want json.SyntaxError", parseErr)
+	}
+
+	var processor *NotificationMemoryProcessor
+	processor.logNotificationMemoryResponseFailure("batch proposal parse failed", raw, parseErr, 1)
+
+	logged := output.String()
+	if strings.Contains(logged, "otp-123456") || strings.Contains(logged, raw) {
+		t.Fatalf("failure log persisted model response body: %q", logged)
+	}
+	for _, want := range []string{
+		"batch proposal parse failed",
+		"attempt=1/2",
+		"response_bytes=" + strconv.Itoa(len(raw)),
+		"response_sha256=",
+		"json_offset=" + strconv.FormatInt(syntaxErr.Offset, 10),
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("failure log=%q, want %q", logged, want)
+		}
 	}
 }
 
