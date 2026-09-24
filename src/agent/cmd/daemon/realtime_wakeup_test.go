@@ -512,24 +512,63 @@ func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
 	}
 }
 
-func TestRealtimeChatAdmissionIgnoresLocalEchoForServerAuthoritativeInputTurns(t *testing.T) {
+func TestRealtimeChatAdmissionQueuesDuringServerAuthoritativeLocalSpeech(t *testing.T) {
 	state := realtimeTurnState{}
 	endpoint := newRealtimeClientTurnEndpoint(800)
 	capabilities := realtimevoice.Capabilities{ServerAuthoritativeTurnDetection: true}
-	if shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
-		now := time.Now()
-		if endpoint.Observe(loudPCMFrame(), now) {
-			state.speechStarted()
-		}
-		if endpoint.Due(now.Add(endpoint.silenceDuration)) {
-			endpoint.Reset()
-			state.localSpeechStopped()
-		}
+	if !shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
+		t.Fatal("server-authoritative turn detection disabled the transient admission guard")
+	}
+	now := time.Now()
+	started, stopped := observeRealtimeAdmissionSpeech(endpoint, &state, capabilities, loudPCMFrame(), now, true)
+	if !started || stopped || !endpoint.speechActive {
+		t.Fatalf("loud frame did not start transient speech: started=%t stopped=%t endpoint=%+v", started, stopped, endpoint)
+	}
+	if state.inputSpeechActive || state.inputTurnPending || !state.canInjectResponse() {
+		t.Fatalf("transient speech claimed a provider-owned turn: %+v", state)
 	}
 
-	admission := (realtimeChatAdmissionState{turnBlocked: !state.canInjectResponse()}).admission()
+	admission := (realtimeChatAdmissionState{turnBlocked: !state.canInjectResponse(), localSpeechActive: endpoint.speechActive}).admission()
+	if admission != realtimeChatQueueAfterSpeech {
+		t.Fatalf("speech-time admission=%v, want queue without busy", admission)
+	}
+
+	started, stopped = observeRealtimeAdmissionSpeech(endpoint, &state, capabilities, nil, now.Add(endpoint.silenceDuration), true)
+	if started || !stopped || endpoint.speechActive {
+		t.Fatalf("silence did not clear transient speech: started=%t stopped=%t endpoint=%+v", started, stopped, endpoint)
+	}
+	if state.inputSpeechActive || state.inputTurnPending || !state.canInjectResponse() {
+		t.Fatalf("cleared transient speech left a pending turn: %+v", state)
+	}
+
+	admission = (realtimeChatAdmissionState{turnBlocked: !state.canInjectResponse(), localSpeechActive: endpoint.speechActive}).admission()
 	if admission != realtimeChatStart {
-		t.Fatalf("speaker echo blocked WebUI text admission: state=%+v admission=%v", state, admission)
+		t.Fatalf("cleared transient speech blocked WebUI text: state=%+v admission=%v", state, admission)
+	}
+}
+
+func TestRealtimeAdmissionSpeechPreservesLegacyPendingTurn(t *testing.T) {
+	state := realtimeTurnState{}
+	endpoint := newRealtimeClientTurnEndpoint(800)
+	now := time.Now()
+	started, stopped := observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, loudPCMFrame(), now, true)
+	if !started || stopped || !state.inputSpeechActive || !state.inputTurnPending {
+		t.Fatalf("legacy speech start was not promoted: started=%t stopped=%t state=%+v", started, stopped, state)
+	}
+	_, stopped = observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, nil, now.Add(endpoint.silenceDuration), true)
+	if !stopped || state.inputSpeechActive || !state.inputTurnPending {
+		t.Fatalf("legacy speech stop changed pending-turn behavior: stopped=%t state=%+v", stopped, state)
+	}
+}
+
+func TestRealtimeAdmissionSpeechLeavesClientEndpointForCommitTimer(t *testing.T) {
+	state := realtimeTurnState{}
+	endpoint := newRealtimeClientTurnEndpoint(800)
+	now := time.Now()
+	observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, loudPCMFrame(), now, false)
+	_, stopped := observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, nil, now.Add(endpoint.silenceDuration), false)
+	if stopped || !endpoint.speechActive || !state.inputSpeechActive || !state.inputTurnPending {
+		t.Fatalf("client endpoint was cleared before its commit timer: stopped=%t endpoint=%+v state=%+v", stopped, endpoint, state)
 	}
 }
 
@@ -833,6 +872,13 @@ func TestRealtimeChatAdmissionQueuesTextWhileFarewellResponseIsActive(t *testing
 	state.standbyPending = false
 	if got := state.admission(); got != realtimeChatRejectBusy {
 		t.Fatalf("admission without standby request = %v, want busy", got)
+	}
+}
+
+func TestRealtimeChatAdmissionRejectsProviderOwnedSpeechInsteadOfQueuing(t *testing.T) {
+	state := realtimeChatAdmissionState{turnBlocked: true, localSpeechActive: true}
+	if got := state.admission(); got != realtimeChatRejectBusy {
+		t.Fatalf("admission() = %v, want busy for a provider-owned pending turn", got)
 	}
 }
 

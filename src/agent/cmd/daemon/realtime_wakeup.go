@@ -175,6 +175,7 @@ const (
 	realtimeChatStart realtimeChatAdmission = iota
 	realtimeChatQueueAfterResponse
 	realtimeChatRejectBusy
+	realtimeChatQueueAfterSpeech
 )
 
 type realtimeChatAdmissionState struct {
@@ -182,6 +183,7 @@ type realtimeChatAdmissionState struct {
 	queuedChat           bool
 	responseActive       bool
 	turnBlocked          bool
+	localSpeechActive    bool
 	notificationActive   bool
 	notificationDraining bool
 	standbyPending       bool
@@ -190,6 +192,9 @@ type realtimeChatAdmissionState struct {
 func (s realtimeChatAdmissionState) admission() realtimeChatAdmission {
 	if s.activeChat || s.queuedChat || s.notificationActive || s.notificationDraining {
 		return realtimeChatRejectBusy
+	}
+	if s.localSpeechActive && !s.responseActive && !s.turnBlocked {
+		return realtimeChatQueueAfterSpeech
 	}
 	if s.standbyPending {
 		if s.responseActive {
@@ -676,24 +681,52 @@ func (e *realtimeClientTurnEndpoint) Reset() {
 	e.lastSpeechAt = time.Time{}
 }
 
+func realtimeAdmissionSpeechActive(endpoint *realtimeClientTurnEndpoint) bool {
+	return endpoint != nil && endpoint.speechActive
+}
+
 // shouldTrackRealtimeAdmissionSpeech prevents the local energy gate from
 // racing an explicit text response during session startup. The first audio
 // chunk can be microphone startup noise (or audio already buffered before the
 // chat command is selected); treating it as a new turn retires the pending
 // anonymous response before Gemini emits response.created. Providers with
-// server-authoritative turn detection do not use this local gate because only
-// provider events may promote audio into an input turn.
+// server-authoritative turn detection still use the gate as a transient
+// injection guard, but only provider events may promote audio into an input
+// turn.
 func shouldTrackRealtimeAdmissionSpeech(state *realtimeTurnState, chatPending bool, capabilities realtimevoice.Capabilities) bool {
-	if state == nil || chatPending || state.responseRequestPending {
+	if state == nil || state.responseRequestPending {
 		return false
 	}
-	if capabilities.ServerAuthoritativeTurnDetection {
+	if chatPending && !capabilities.ServerAuthoritativeTurnDetection {
 		return false
 	}
 	if capabilities.ServerAuthoritativeInterruption && (state.responseActive || state.responseTerminalPending) {
 		return false
 	}
 	return true
+}
+
+// observeRealtimeAdmissionSpeech updates the local energy endpoint without
+// claiming provider-owned turns. Server-authoritative providers use the
+// endpoint only to prevent text injection while speech is still in progress.
+func observeRealtimeAdmissionSpeech(endpoint *realtimeClientTurnEndpoint, state *realtimeTurnState, capabilities realtimevoice.Capabilities, pcm []byte, now time.Time, clearAfterSilence bool) (started, stopped bool) {
+	if endpoint == nil || state == nil {
+		return false, false
+	}
+	wasActive := endpoint.speechActive
+	endpoint.Observe(pcm, now)
+	started = !wasActive && endpoint.speechActive
+	if started && !capabilities.ServerAuthoritativeTurnDetection {
+		state.speechStarted()
+	}
+	if !clearAfterSilence || !endpoint.speechActive || !endpoint.Due(now) {
+		return started, false
+	}
+	endpoint.Reset()
+	if !capabilities.ServerAuthoritativeTurnDetection {
+		state.localSpeechStopped()
+	}
+	return started, true
 }
 
 func pcm16MeanAbs(pcm []byte) int {
@@ -1484,7 +1517,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		}
 	}()
 	tryInjectTaskUpdates := func() error {
-		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || !turnState.canInjectResponse() || activeNotificationToken != "" || notificationDrainDone != nil || activeChat != nil || sleep.pending() || chatBridgeHasPending(chatBridge) {
+		if !taskUpdatesReady || len(pendingTaskUpdates) == 0 || !turnState.canInjectResponse() || realtimeAdmissionSpeechActive(admissionTurnEndpoint) || activeNotificationToken != "" || notificationDrainDone != nil || activeChat != nil || sleep.pending() || chatBridgeHasPending(chatBridge) {
 			return nil
 		}
 		if !supportsText {
@@ -1518,7 +1551,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		return nil
 	}
 	tryInjectVoiceNotification := func() error {
-		if runtime == nil || !supportsText || activeNotificationToken != "" || notificationDrainDone != nil || !turnState.canInjectResponse() || activeChat != nil || sleep.pending() || chatBridgeHasPending(chatBridge) {
+		if runtime == nil || !supportsText || activeNotificationToken != "" || notificationDrainDone != nil || !turnState.canInjectResponse() || realtimeAdmissionSpeechActive(admissionTurnEndpoint) || activeChat != nil || sleep.pending() || chatBridgeHasPending(chatBridge) {
 			return nil
 		}
 		prepared := runtime.PrepareVoiceNotification(ctx)
@@ -1559,6 +1592,14 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			return fmt.Errorf("create realtime chat response: %w", err)
 		}
 		return nil
+	}
+	tryStartQueuedChat := func() error {
+		if queuedChat == nil || realtimeAdmissionSpeechActive(admissionTurnEndpoint) || !turnState.canInjectResponse() {
+			return nil
+		}
+		command := *queuedChat
+		queuedChat = nil
+		return startChat(command)
 	}
 	sessionErrors := session.Errors()
 	// The event stream is the authoritative completion signal. Providers may
@@ -1675,10 +1716,8 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			}
 			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat), info.Capabilities) {
 				now := time.Now()
-				wasActive := admissionTurnEndpoint.speechActive
-				admissionTurnEndpoint.Observe(pcm, now)
-				if !wasActive && admissionTurnEndpoint.speechActive {
-					turnState.speechStarted()
+				started, stopped := observeRealtimeAdmissionSpeech(admissionTurnEndpoint, &turnState, info.Capabilities, pcm, now, clientTurnEndpoint == nil)
+				if started {
 					if sleep.abandon() {
 						logging.Infof("agent", "realtime", "Standby canceled by local user speech")
 					}
@@ -1686,9 +1725,10 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				if clientTurnEndpoint != nil && admissionTurnEndpoint.speechActive {
 					armClientTurnCommitTimer()
 				}
-				if clientTurnEndpoint == nil && admissionTurnEndpoint.speechActive && admissionTurnEndpoint.Due(now) {
-					admissionTurnEndpoint.Reset()
-					turnState.localSpeechStopped()
+				if clientTurnEndpoint == nil && stopped {
+					if err := tryStartQueuedChat(); err != nil {
+						return err
+					}
 					if err := tryInjectTaskUpdates(); err != nil {
 						return err
 					}
@@ -1760,14 +1800,15 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				queuedChat:           queuedChat != nil,
 				responseActive:       turnState.responseActive,
 				turnBlocked:          !turnState.canInjectResponse(),
+				localSpeechActive:    realtimeAdmissionSpeechActive(admissionTurnEndpoint),
 				notificationActive:   activeNotificationToken != "",
 				notificationDraining: notificationDrainDone != nil,
 				standbyPending:       sleep.pending(),
 			}).admission()
-			logging.Infof("agent", "realtime", "Chat admission: request_id=%s active_request_id=%s response_id=%s occupied_ms=%d active_chat=%t queued_chat=%t response_active=%t terminal_pending=%t can_inject=%t input_speech=%t input_pending=%t notification=%t draining=%t standby=%t admission=%d",
+			logging.Infof("agent", "realtime", "Chat admission: request_id=%s active_request_id=%s response_id=%s occupied_ms=%d active_chat=%t queued_chat=%t response_active=%t terminal_pending=%t can_inject=%t input_speech=%t input_pending=%t local_speech=%t notification=%t draining=%t standby=%t admission=%d",
 				command.request.RequestID, realtimeChatRequestID(activeChat), turnState.responseID, watchdog.age().Milliseconds(),
 				activeChat != nil, queuedChat != nil, turnState.responseActive, turnState.responseTerminalPending, turnState.canInjectResponse(),
-				turnState.inputSpeechActive, turnState.inputTurnPending, activeNotificationToken != "", notificationDrainDone != nil, sleep.pending(), admission)
+				turnState.inputSpeechActive, turnState.inputTurnPending, realtimeAdmissionSpeechActive(admissionTurnEndpoint), activeNotificationToken != "", notificationDrainDone != nil, sleep.pending(), admission)
 			if admission == realtimeChatRejectBusy {
 				logging.Warnf("agent", "realtime", "Chat rejected busy: request_id=%s active_request_id=%s", command.request.RequestID, realtimeChatRequestID(activeChat))
 				sendRealtimeChatEvent(command, agent.RealtimeChatEvent{Type: agent.RealtimeChatEventError, Error: "realtime response is busy"})
@@ -1777,7 +1818,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			if sleep.abandon() {
 				logging.Infof("agent", "realtime", "Standby canceled by text request")
 			}
-			if admission == realtimeChatQueueAfterResponse {
+			if admission == realtimeChatQueueAfterResponse || admission == realtimeChatQueueAfterSpeech {
 				queuedChat = &command
 				continue
 			}
@@ -1901,6 +1942,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				if !turnState.responseStarted(event.ResponseID) {
 					logging.Warnf("agent", "realtime", "Ignoring stale response.created: response_id=%s input_turn=%d request_turn=%d", event.ResponseID, turnState.inputTurnSequence, turnState.responseRequestTurn)
 					continue
+				}
+				if info.Capabilities.ServerAuthoritativeTurnDetection {
+					admissionTurnEndpoint.Reset()
 				}
 				logging.Infof("agent", "realtime", "Response created: provider=%s session_id=%s request_id=%s response_id=%s", providerName, info.ID, realtimeChatRequestID(activeChat), event.ResponseID)
 				responseSuppressed = bindSuppressedRealtimeNotificationResponse(event.ResponseID, &suppressedNotificationResponsePending, suppressedNotificationResponseIDs)
@@ -2104,12 +2148,8 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					close(activeChat.events)
 					activeChat = nil
 				}
-				if queuedChat != nil {
-					command := *queuedChat
-					queuedChat = nil
-					if err := startChat(command); err != nil {
-						return err
-					}
+				if err := tryStartQueuedChat(); err != nil {
+					return err
 				}
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
