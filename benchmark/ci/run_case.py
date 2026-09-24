@@ -181,18 +181,18 @@ def _stop_mobilegym_by_run_id(run_id: str) -> None:
 
 
 def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
-    """Treat infrastructure skips as CI failures instead of false greens."""
+    """Fail CI on execution errors, not on benchmark quality failures."""
     if not manifest_path.is_file():
         return returncode or 1
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         totals = manifest["totals"]
         tasks = int(totals["tasks"])
+        passed = int(totals["passed"])
+        failed = int(totals["failed"])
         skipped = int(totals["skipped"])
-        accounted_failures = sum(
-            int(totals.get(key, 0))
-            for key in ("failed", "judge_error", "timeout")
-        )
+        judge_errors = int(totals.get("judge_error", 0))
+        timeouts = int(totals.get("timeout", 0))
         results_path = manifest_path.with_name("results.jsonl")
         unexpected_skips = 0
         for line in results_path.read_text(encoding="utf-8").splitlines():
@@ -207,7 +207,15 @@ def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
                 unexpected_skips += 1
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return returncode or 1
-    if unexpected_skips or (tasks > 0 and skipped == tasks and accounted_failures == 0):
+    completed = passed + failed + skipped + judge_errors + timeouts
+    if (
+        tasks < 1
+        or completed != tasks
+        or judge_errors
+        or timeouts
+        or unexpected_skips
+        or skipped == tasks
+    ):
         return 1
     return returncode
 

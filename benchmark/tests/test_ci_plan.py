@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -218,6 +219,47 @@ def test_ci_allows_platform_ineligible_skips(tmp_path: Path) -> None:
     assert _effective_exit_code(0, manifest) == 0
 
 
+def test_ci_allows_completed_run_with_benchmark_failures(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"totals":{"tasks":2,"passed":1,"failed":1,"skipped":0,'
+        '"judge_error":0,"timeout":0}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "results.jsonl").write_text(
+        '{"status":"passed","metrics":{}}\n'
+        '{"status":"failed","metrics":{}}\n',
+        encoding="utf-8",
+    )
+
+    assert _effective_exit_code(0, manifest) == 0
+
+
+@pytest.mark.parametrize("error_status", ["judge_error", "timeout"])
+def test_ci_rejects_completed_run_with_execution_error(
+    tmp_path: Path,
+    error_status: str,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    totals = {
+        "tasks": 2,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "judge_error": int(error_status == "judge_error"),
+        "timeout": int(error_status == "timeout"),
+    }
+    manifest.write_text(json.dumps({"totals": totals}), encoding="utf-8")
+    (tmp_path / "results.jsonl").write_text(
+        '{"status":"passed","metrics":{}}\n'
+        + json.dumps({"status": error_status, "metrics": {"error": "boom"}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _effective_exit_code(0, manifest) == 1
+
+
 def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None:
     workflow = (
         Path(__file__).resolve().parents[2] / ".github" / "workflows" / "benchmark.yml"
@@ -230,6 +272,7 @@ def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None
     assert "cli-services" not in artifact_paths
     assert "workers" not in artifact_paths
     assert "auto-agent-setup.log" in artifact_paths
+    assert "tasks/**" not in artifact_paths
 
 
 def test_workflow_checks_docker_and_surfaces_setup_failures() -> None:

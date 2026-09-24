@@ -143,7 +143,7 @@ def run_cases(
         except OSError:
             pass
         duration = time.monotonic() - case_started
-        verdict = "PASS" if returncode == 0 else f"FAIL rc={returncode}"
+        verdict = "COMPLETE" if returncode == 0 else f"ERROR rc={returncode}"
         emit(f"DONE    {case.id} {verdict} in {duration / 60:.1f}m")
         return CaseOutcome(
             case_id=case.id,
@@ -177,7 +177,7 @@ def _write_step_summary(outcomes: list[CaseOutcome]) -> None:
         return
     lines = ["## Benchmark cases", "", "| Case | Result | Duration |", "| --- | --- | --- |"]
     for outcome in outcomes:
-        verdict = "pass" if outcome.ok else f"fail (rc={outcome.returncode})"
+        verdict = "complete" if outcome.ok else f"error (rc={outcome.returncode})"
         lines.append(
             f"| {outcome.case_id} | {verdict} | {outcome.duration_seconds / 60:.1f}m |"
         )
@@ -239,7 +239,7 @@ def cli(argv: list[str] | None = None) -> int:
     print("", flush=True)
     print("=== benchmark case results ===", flush=True)
     for outcome in outcomes:
-        verdict = "PASS" if outcome.ok else f"FAIL rc={outcome.returncode}"
+        verdict = "COMPLETE" if outcome.ok else f"ERROR rc={outcome.returncode}"
         print(
             f"  {outcome.case_id:<28} {verdict:<12} {outcome.duration_seconds / 60:5.1f}m",
             flush=True,
@@ -254,9 +254,12 @@ def cli(argv: list[str] | None = None) -> int:
         print("::endgroup::", flush=True)
     if failed:
         names = ", ".join(outcome.case_id for outcome in failed)
-        print(f"\n{len(failed)} of {len(outcomes)} case(s) failed: {names}", flush=True)
+        print(f"\n{len(failed)} of {len(outcomes)} case(s) had errors: {names}", flush=True)
         return 1
-    print(f"\nall {len(outcomes)} case(s) passed", flush=True)
+    print(
+        f"\nall {len(outcomes)} case(s) completed without execution errors",
+        flush=True,
+    )
     return 0
 
 

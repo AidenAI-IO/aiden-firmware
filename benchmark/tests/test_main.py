@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -51,6 +53,45 @@ def test_publish_langfuse_cli_returns_failure(monkeypatch, capsys):
 
     assert main.cli(["publish-langfuse", "--run-dir", "runs/ci-123"]) == 2
     assert "score storage unavailable" in capsys.readouterr().err
+
+
+def test_runner_module_propagates_cli_exit_code(tmp_path):
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "runner",
+            "publish-langfuse",
+            "--run-dir",
+            str(tmp_path / "missing-run"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "benchmark run directory does not exist" in completed.stderr
+
+
+@pytest.mark.parametrize("error_status", ["judge_error", "timeout"])
+def test_run_exit_code_distinguishes_benchmark_failures_from_errors(error_status):
+    benchmark_failure = {
+        "tasks": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "judge_error": 0,
+        "timeout": 0,
+    }
+    execution_error = {
+        **benchmark_failure,
+        "failed": 0,
+        error_status: 1,
+    }
+
+    assert main._run_exit_code(benchmark_failure) == 0
+    assert main._run_exit_code(execution_error) == 1
 
 
 @pytest.mark.parametrize("target_platform", ["windows", "linux"])
@@ -651,7 +692,7 @@ def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
         ]
     )
 
-    assert rc == 1
+    assert rc == 0
     assert observed_before_second_task["completed"] == 1
     assert observed_before_second_task["totals"] == {
         "tasks": 2,

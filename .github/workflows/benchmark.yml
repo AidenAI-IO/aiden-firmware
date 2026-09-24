@@ -365,19 +365,26 @@ jobs:
           RUN_ID_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -uo pipefail
-          published=0
+          attempted=0
+          succeeded=0
+          failed=0
           for manifest in runs/"${RUN_ID_PREFIX}"-*/manifest.json; do
             [[ -f "$manifest" ]] || continue
             run_dir="$(dirname "$manifest")"
             echo "::group::publish $(basename "$run_dir")"
-            uv run python -m runner publish-langfuse --run-dir "$run_dir" || \
+            if uv run python -m runner publish-langfuse --run-dir "$run_dir"; then
+              succeeded=$((succeeded + 1))
+            else
+              failed=$((failed + 1))
               echo "::warning::Langfuse publication failed for $(basename "$run_dir")"
+            fi
             echo "::endgroup::"
-            published=$((published + 1))
+            attempted=$((attempted + 1))
           done
-          if (( published == 0 )); then
+          if (( attempted == 0 )); then
             echo "::warning::No completed manifest under ${RUN_ID_PREFIX}-*; skipping Langfuse publication"
           fi
+          echo "Langfuse publication: $succeeded succeeded, $failed failed" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark artifacts
         if: ${{ always() }}
         # No downstream job consumes these; a blob-storage hiccup must not turn a
@@ -395,6 +402,5 @@ jobs:
             benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/suite.json
             benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/auto-agent-setup.log
             benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/ci-case.log
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/tasks/**
           if-no-files-found: warn
           retention-days: 14

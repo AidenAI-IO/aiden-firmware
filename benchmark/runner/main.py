@@ -338,9 +338,13 @@ def _result_totals(results: list[object], total_tasks: int | None = None) -> dic
 
 
 def _run_exit_code(totals: dict[str, int]) -> int:
-    if totals.get("failed", 0) or totals.get("judge_error", 0) or totals.get("timeout", 0):
+    if totals.get("judge_error", 0) or totals.get("timeout", 0):
         return 1
-    accounted = totals.get("passed", 0) + totals.get("skipped", 0)
+    accounted = (
+        totals.get("passed", 0)
+        + totals.get("failed", 0)
+        + totals.get("skipped", 0)
+    )
     return 0 if accounted == totals.get("tasks", 0) else 1
 
 
@@ -894,6 +898,10 @@ def _cmd_run_auto_agent_setup_inner(
     print(f"Passed:        {manifest['totals']['passed']}", flush=True)
     print(f"Failed:        {manifest['totals']['failed']}", flush=True)
     print(f"Skipped:       {manifest['totals']['skipped']}", flush=True)
+    if manifest["totals"]["timeout"] > 0:
+        print(f"Timeout:        {manifest['totals']['timeout']}", flush=True)
+    if manifest["totals"]["judge_error"] > 0:
+        print(f"Judge Error:    {manifest['totals']['judge_error']}", flush=True)
     print(f"Results saved to: {run_dir}", flush=True)
     print("="*60 + "\n", flush=True)
     return _run_exit_code(manifest["totals"])
