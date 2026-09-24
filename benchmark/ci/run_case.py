@@ -180,10 +180,44 @@ def _stop_mobilegym_by_run_id(run_id: str) -> None:
     )
 
 
-def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
-    """Fail CI on execution errors, not on benchmark quality failures."""
+def _stop_daemon_projects_by_run_id(run_id: str) -> None:
+    workers_dir = BENCHMARK_ROOT / "runs" / run_id / "workers"
+    try:
+        worker_dirs = [path for path in workers_dir.iterdir() if path.is_dir()]
+    except OSError:
+        return
+    compose_file = BENCHMARK_ROOT / "docker" / "docker-compose.agent-daemon.yml"
+    for worker_dir in worker_dirs:
+        project = f"aiden-benchmark-agent-{run_id}-{worker_dir.name}"
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    str(compose_file),
+                    "-p",
+                    project,
+                    "down",
+                    "--volumes",
+                    "--remove-orphans",
+                ],
+                cwd=BENCHMARK_ROOT / "docker",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def _execution_error_reasons(returncode: int, manifest_path: Path) -> list[str]:
+    """Describe execution errors without treating quality failures as errors."""
     if not manifest_path.is_file():
-        return returncode or 1
+        return ["manifest_missing", f"runner_exit={returncode}"] if returncode else [
+            "manifest_missing"
+        ]
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         totals = manifest["totals"]
@@ -193,31 +227,110 @@ def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
         skipped = int(totals["skipped"])
         judge_errors = int(totals.get("judge_error", 0))
         timeouts = int(totals.get("timeout", 0))
+    except (
+        AttributeError,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        return ["manifest_invalid", f"runner_exit={returncode}"] if returncode else [
+            "manifest_invalid"
+        ]
+
+    reasons: list[str] = []
+    completed = passed + failed + skipped + judge_errors + timeouts
+    if tasks < 1:
+        reasons.append(f"tasks={tasks}")
+    if completed != tasks:
+        reasons.append(f"completed={completed}/{tasks}")
+    if judge_errors:
+        reasons.append(f"judge_error={judge_errors}")
+    if timeouts:
+        reasons.append(f"timeout={timeouts}")
+    if skipped == tasks:
+        reasons.append("all_tasks_skipped")
+
+    try:
         results_path = manifest_path.with_name("results.jsonl")
         unexpected_skips = 0
+        execution_errors = 0
+        result_rows = 0
+        unknown_statuses = 0
+        result_counts = {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "judge_error": 0,
+            "timeout": 0,
+        }
         for line in results_path.read_text(encoding="utf-8").splitlines():
-            row = json.loads(line)
-            if row.get("status") != "skipped":
+            if not line.strip():
                 continue
-            reason = str((row.get("metrics") or {}).get("error") or "")
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise TypeError("result row must be an object")
+            result_rows += 1
+            status = str(row.get("status") or "")
+            if status in result_counts:
+                result_counts[status] += 1
+            else:
+                unknown_statuses += 1
+            metrics = row.get("metrics") or {}
+            if not isinstance(metrics, dict):
+                raise TypeError("result metrics must be an object")
+            if status == "failed" and (
+                metrics.get("agent_error")
+                or metrics.get("error")
+                or metrics.get("failure_class")
+                in {"environment", "evaluation", "unknown"}
+            ):
+                execution_errors += 1
+            if status != "skipped":
+                continue
+            reason = str(metrics.get("error") or "")
             if not (
                 reason.startswith("task platforms ")
                 or "target platform constraint does not match source" in reason
             ):
                 unexpected_skips += 1
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return returncode or 1
-    completed = passed + failed + skipped + judge_errors + timeouts
-    if (
-        tasks < 1
-        or completed != tasks
-        or judge_errors
-        or timeouts
-        or unexpected_skips
-        or skipped == tasks
+    except (
+        AttributeError,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
     ):
-        return 1
-    return returncode
+        reasons.append("results_invalid")
+    else:
+        manifest_counts = {
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "judge_error": judge_errors,
+            "timeout": timeouts,
+        }
+        if result_rows != tasks:
+            reasons.append(f"results={result_rows}/{tasks}")
+        if result_counts != manifest_counts:
+            reasons.append("results_totals_mismatch")
+        if unknown_statuses:
+            reasons.append(f"unknown_status={unknown_statuses}")
+        if execution_errors:
+            reasons.append(f"execution_error={execution_errors}")
+        if unexpected_skips:
+            reasons.append(f"unexpected_skip={unexpected_skips}")
+
+    if returncode and not reasons:
+        reasons.append(f"runner_exit={returncode}")
+    return reasons
+
+
+def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
+    """Fail CI on execution errors, not on benchmark quality failures."""
+    return 1 if _execution_error_reasons(returncode, manifest_path) else 0
 
 
 def run_case(
@@ -315,6 +428,7 @@ def run_case(
                 return 1
         return _effective_exit_code(returncode, BENCHMARK_ROOT / "runs" / run_id / "manifest.json")
     finally:
+        _stop_daemon_projects_by_run_id(run_id)
         _stop_service(service)
         if case.environment == "mobilegym" and service is None:
             _stop_mobilegym_by_run_id(run_id)

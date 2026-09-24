@@ -8,6 +8,7 @@ from ci import run_case as run_case_module
 from ci.plan import CatalogError, load_catalog, select_cases
 from ci.run_case import (
     _effective_exit_code,
+    _execution_error_reasons,
     _environment_url,
     _images_prepared,
     _runtime_environment,
@@ -235,6 +236,51 @@ def test_ci_allows_completed_run_with_benchmark_failures(tmp_path: Path) -> None
     assert _effective_exit_code(0, manifest) == 0
 
 
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"agent_error": "agent request failed", "failure_class": "unknown"},
+        {"error": "setup failed", "failure_class": "environment"},
+    ],
+)
+def test_ci_rejects_failed_result_with_execution_error(
+    tmp_path: Path,
+    metrics: dict[str, str],
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"totals":{"tasks":1,"passed":0,"failed":1,"skipped":0,'
+        '"judge_error":0,"timeout":0}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "results.jsonl").write_text(
+        json.dumps({"status": "failed", "metrics": metrics}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert _effective_exit_code(0, manifest) == 1
+    assert _execution_error_reasons(0, manifest) == ["execution_error=1"]
+
+
+def test_ci_rejects_results_that_do_not_match_manifest_totals(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"totals":{"tasks":2,"passed":1,"failed":1,"skipped":0,'
+        '"judge_error":0,"timeout":0}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "results.jsonl").write_text(
+        '{"status":"passed","metrics":{}}\n',
+        encoding="utf-8",
+    )
+
+    assert _effective_exit_code(0, manifest) == 1
+    assert _execution_error_reasons(0, manifest) == [
+        "results=1/2",
+        "results_totals_mismatch",
+    ]
+
+
 @pytest.mark.parametrize("error_status", ["judge_error", "timeout"])
 def test_ci_rejects_completed_run_with_execution_error(
     tmp_path: Path,
@@ -258,6 +304,9 @@ def test_ci_rejects_completed_run_with_execution_error(
     )
 
     assert _effective_exit_code(0, manifest) == 1
+    assert _execution_error_reasons(0, manifest) == [
+        f"{error_status}=1",
+    ]
 
 
 def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None:
@@ -273,6 +322,9 @@ def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None
     assert "workers" not in artifact_paths
     assert "auto-agent-setup.log" in artifact_paths
     assert "tasks/**" not in artifact_paths
+    assert "id: upload_benchmark_artifacts" in workflow
+    assert "steps.upload_benchmark_artifacts.outcome == 'failure'" in workflow
+    assert "overwrite: true" in workflow
 
 
 def test_workflow_checks_docker_and_surfaces_setup_failures() -> None:
@@ -283,6 +335,11 @@ def test_workflow_checks_docker_and_surfaces_setup_failures() -> None:
     assert "docker version" in workflow
     assert "docker compose version" in workflow
     assert "docker info" in workflow
+    assert "runnable) timeout_minutes=1440" in workflow
+    assert "hardware) timeout_minutes=4320" in workflow
+    assert "all) timeout_minutes=5760" in workflow
+    assert "timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout_minutes) }}" in workflow
+    assert "docker network ls" in workflow
     # The fan-out driver replaced the per-case setup-log step: it tails each
     # failing case's log into the job output so a failure is triageable without
     # downloading the artifact.
@@ -307,7 +364,7 @@ def test_workflow_schedules_all_runnable_cases_on_monday_wednesday_friday() -> N
         "&& github.event_name != 'pull_request' "
         "&& github.event_name != 'pull_request_target' }}"
     )
-    assert workflow.count(self_hosted_guard) == 2
+    assert workflow.count(self_hosted_guard) == 1
     assert "github.ref == 'refs/heads/main'" not in workflow
     assert (
         'elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "push" ]]; then\n'
@@ -364,6 +421,12 @@ def test_workflow_uses_mirrored_container_sources() -> None:
         "dockerfile: ${DAEMON_DOCKERFILE:-benchmark/docker/Dockerfile.agent-daemon}"
         in compose
     )
-    assert "prepare-images:" in workflow
-    assert "- prepare-images" in workflow
+    assert "  prepare-images:" not in workflow
+    assert "- prepare-images" not in workflow
+    assert workflow.count("astral-sh/setup-uv@v6") == 1
+    assert workflow.count("Install Python and benchmark dependencies") == 1
+    assert workflow.count("Install Docker Compose V2") == 1
+    assert workflow.count("Set up Docker Buildx") == 1
+    assert workflow.count("Validate Docker runtime") == 1
+    assert workflow.count("uv run python -m ci.prepare_images") == 1
     assert "BENCHMARK_CI_IMAGES_PREPARED: '1'" in workflow

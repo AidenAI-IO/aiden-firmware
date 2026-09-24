@@ -65,12 +65,50 @@ def test_run_cases_starts_mobilegym_together_without_prepopulating_run_dirs(
         )
 
 
+def test_run_cases_emits_an_annotation_for_an_execution_error(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    case = _case("judge-broken", "isolated")
+    run_id = "ci-test-judge-broken"
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        '{"totals":{"tasks":1,"passed":0,"failed":0,"skipped":0,'
+        '"judge_error":1,"timeout":0}}',
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        '{"status":"judge_error","metrics":{"error":"judge unavailable"}}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(run_cases_module, "BENCHMARK_ROOT", tmp_path)
+    monkeypatch.setattr(run_cases_module, "run_case", lambda *args, **kwargs: 1)
+
+    outcomes = run_cases_module.run_cases(
+        (case,),
+        run_id_prefix="ci-test",
+        environment={},
+        max_parallel=1,
+    )
+
+    assert outcomes[0].error_summary == "judge_error=1"
+    assert (
+        "::error title=Benchmark case judge-broken::judge_error=1"
+        in capsys.readouterr().out
+    )
+
+
 def test_run_case_terminates_the_runner_process_group_on_timeout(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     case = _case("isolated", "isolated")
     captured: dict[str, object] = {}
+    worker_dir = tmp_path / "runs" / "ci-timeout" / "workers" / "worker-token"
+    worker_dir.mkdir(parents=True)
 
     class FakeProcess:
         pid = 4321
@@ -91,7 +129,8 @@ def test_run_case_terminates_the_runner_process_group_on_timeout(
     monkeypatch.setattr(
         run_case_module.subprocess,
         "run",
-        lambda *args, **kwargs: pytest.fail("run_case must use a controllable Popen"),
+        lambda command, **kwargs: captured.setdefault("cleanup_command", command)
+        or subprocess.CompletedProcess(command, 0),
     )
     monkeypatch.setattr(
         run_case_module,
@@ -111,6 +150,17 @@ def test_run_case_terminates_the_runner_process_group_on_timeout(
     assert returncode == 1
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["terminated"] is not None
+    assert captured["cleanup_command"] == [
+        "docker",
+        "compose",
+        "-f",
+        str(tmp_path / "docker" / "docker-compose.agent-daemon.yml"),
+        "-p",
+        "aiden-benchmark-agent-ci-timeout-worker-token",
+        "down",
+        "--volumes",
+        "--remove-orphans",
+    ]
 
 
 def test_run_json_terminates_environment_startup_process_group_on_timeout(

@@ -371,16 +371,19 @@ below.
   `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`.
 
 The benchmark job uses the dedicated `aiden-hosted-01` runner because the
-MobileGym and agent-daemon paths require Docker. One job performs setup once and
-fans the selected cases out with a configurable concurrency limit. MobileGym
-cases are scheduled first so multiple container-backed benchmarks can overlap;
+MobileGym and agent-daemon paths require Docker. One job performs checkout,
+dependency and Docker setup once, prepares the reusable images, and fans the
+selected cases out with a configurable concurrency limit. MobileGym cases are
+scheduled first so multiple container-backed benchmarks can overlap;
 hardware-backed cases share an exclusive lock to avoid device/bridge contention.
 Every completed run uploads a 14-day diagnostic bundle containing its manifest,
-metrics, results, summary, HTML report, suite snapshot, and setup/case logs. The
-per-task trace and screenshot tree is omitted to keep the bundle reliable on the
-self-hosted runner's constrained uplink. The bundle is sufficient to inspect
-statuses and retry `runner publish-langfuse`; generated worker configs are also
-excluded because they contain materialized Agent credentials.
+metrics, results, summary, HTML report, suite snapshot, setup/case logs, and an
+image-build log when an image had to be built. The upload is retried once after a
+transient failure. The per-task trace and screenshot tree is omitted to keep the
+bundle reliable on the self-hosted runner's constrained uplink. The bundle is
+sufficient to inspect statuses and retry `runner publish-langfuse`; generated
+worker configs are also excluded because they contain materialized Agent
+credentials.
 
 ## Runner and Local CLI Environment Variables
 

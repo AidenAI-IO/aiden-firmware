@@ -30,7 +30,7 @@ from ci.plan import (
     CatalogError,
     SuiteCase,
 )
-from ci.run_case import run_case
+from ci.run_case import _execution_error_reasons, run_case
 
 DEFAULT_MAX_PARALLEL = 2
 LOG_TAIL_LINES = 40
@@ -43,6 +43,7 @@ class CaseOutcome:
     returncode: int
     duration_seconds: float
     log_path: Path
+    error_summary: str = ""
 
     @property
     def ok(self) -> bool:
@@ -143,7 +144,19 @@ def run_cases(
         except OSError:
             pass
         duration = time.monotonic() - case_started
-        verdict = "COMPLETE" if returncode == 0 else f"ERROR rc={returncode}"
+        error_summary = ""
+        if returncode:
+            reasons = _execution_error_reasons(
+                returncode,
+                BENCHMARK_ROOT / "runs" / run_id / "manifest.json",
+            )
+            error_summary = ", ".join(reasons) or f"runner_exit={returncode}"
+            with print_lock:
+                print(
+                    f"::error title=Benchmark case {case.id}::{error_summary}",
+                    flush=True,
+                )
+        verdict = "COMPLETE" if returncode == 0 else f"ERROR {error_summary}"
         emit(f"DONE    {case.id} {verdict} in {duration / 60:.1f}m")
         return CaseOutcome(
             case_id=case.id,
@@ -151,6 +164,7 @@ def run_cases(
             returncode=returncode,
             duration_seconds=duration,
             log_path=outcome_log_path,
+            error_summary=error_summary,
         )
 
     workers = max(1, min(max_parallel, len(cases)))
@@ -177,7 +191,7 @@ def _write_step_summary(outcomes: list[CaseOutcome]) -> None:
         return
     lines = ["## Benchmark cases", "", "| Case | Result | Duration |", "| --- | --- | --- |"]
     for outcome in outcomes:
-        verdict = "complete" if outcome.ok else f"error (rc={outcome.returncode})"
+        verdict = "complete" if outcome.ok else f"error ({outcome.error_summary})"
         lines.append(
             f"| {outcome.case_id} | {verdict} | {outcome.duration_seconds / 60:.1f}m |"
         )
@@ -239,7 +253,7 @@ def cli(argv: list[str] | None = None) -> int:
     print("", flush=True)
     print("=== benchmark case results ===", flush=True)
     for outcome in outcomes:
-        verdict = "COMPLETE" if outcome.ok else f"ERROR rc={outcome.returncode}"
+        verdict = "COMPLETE" if outcome.ok else f"ERROR {outcome.error_summary}"
         print(
             f"  {outcome.case_id:<28} {verdict:<12} {outcome.duration_seconds / 60:5.1f}m",
             flush=True,
