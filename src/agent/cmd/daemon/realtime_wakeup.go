@@ -312,6 +312,9 @@ func relayRealtimeSessionEvents(ctx context.Context, source <-chan realtimevoice
 	reengagement := make(chan struct{}, 1)
 	go func() {
 		defer close(events)
+		// Track source ordering before the event loop consumes it, so a delayed
+		// transcript refining an active response cannot win the farewell drain.
+		providerResponseActive := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -320,8 +323,14 @@ func relayRealtimeSessionEvents(ctx context.Context, source <-chan realtimevoice
 				if !ok {
 					return
 				}
+				switch event.Kind {
+				case realtimevoice.EventResponseStarted:
+					providerResponseActive = true
+				case realtimevoice.EventResponseDone, realtimevoice.EventResponseCancelled:
+					providerResponseActive = false
+				}
 				if event.Kind == realtimevoice.EventSpeechStarted || event.Kind == realtimevoice.EventInterruption ||
-					((event.Kind == realtimevoice.EventTranscriptDelta || event.Kind == realtimevoice.EventTranscriptFinal) && event.Role == "user") {
+					(!providerResponseActive && (event.Kind == realtimevoice.EventTranscriptDelta || event.Kind == realtimevoice.EventTranscriptFinal) && event.Role == "user") {
 					select {
 					case reengagement <- struct{}{}:
 					default:
@@ -1616,10 +1625,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	sessionEvents, realtimeReengagement := relayRealtimeSessionEvents(ctx, session.Events())
 	observeProviderUserTranscript := func() {
 		consumeRealtimeReengagement(realtimeReengagement)
-		if sleep.abandon() {
+		if turnState.userTranscriptObserved() && sleep.abandon() {
 			logging.Infof("agent", "realtime", "Standby canceled by provider user transcript")
 		}
-		turnState.userTranscriptObserved()
 	}
 	for {
 		watchdog.setBusy(cancelPending || activeChat != nil || turnState.responseActive || turnState.responseRequestPending || turnState.responseTerminalPending || len(foregroundTools) > 0 ||
@@ -2364,12 +2372,12 @@ func (s *realtimeTurnState) localSpeechStopped() {
 	}
 }
 
-func (s *realtimeTurnState) userTranscriptObserved() {
+func (s *realtimeTurnState) userTranscriptObserved() bool {
 	if s.responseActive && !s.inputTurnPending {
 		// A provider may finish refining the input transcript after it has
 		// already started the answer. That refinement belongs to the turn that
 		// produced the current response, not to a new pending user turn.
-		return
+		return false
 	}
 	// A transcript is the first provider-neutral marker of a new turn for
 	// adapters whose response events do not carry IDs (Gemini Live).
@@ -2379,6 +2387,7 @@ func (s *realtimeTurnState) userTranscriptObserved() {
 		s.inputTurnSequence++
 	}
 	s.inputTurnPending = true
+	return true
 }
 
 // responseStarted returns false when the event belongs to a response request

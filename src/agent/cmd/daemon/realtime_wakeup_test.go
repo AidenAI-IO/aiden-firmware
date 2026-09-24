@@ -380,7 +380,9 @@ func TestRealtimeTurnStateKeepsTranscriptFromInterruptedTurn(t *testing.T) {
 func TestRealtimeTurnStateIgnoresLateTranscriptForActiveResponse(t *testing.T) {
 	state := realtimeTurnState{}
 	state.responseStarted("response-1")
-	state.userTranscriptObserved()
+	if state.userTranscriptObserved() {
+		t.Fatal("late transcript refinement was classified as a new user turn")
+	}
 	if state.inputTurnPending || state.inputTurnSequence != 0 {
 		t.Fatalf("late transcript opened a new input turn: %+v", state)
 	}
@@ -996,6 +998,37 @@ func TestRealtimeFarewellDrainYieldsToProviderUserTranscript(t *testing.T) {
 		}
 	default:
 		t.Fatal("user transcript was consumed while prioritizing re-engagement")
+	}
+}
+
+func TestRealtimeFarewellDrainIgnoresTranscriptRefinement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	source := make(chan realtimevoice.Event, 2)
+	events, reengagement := relayRealtimeSessionEvents(ctx, source)
+	source <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted, ResponseID: "farewell"}
+	source <- realtimevoice.Event{Kind: realtimevoice.EventTranscriptFinal, Role: "user", Text: "goodbye"}
+
+	deadline := time.Now().Add(time.Second)
+	for len(events) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("farewell response events were not relayed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if consumeRealtimeReengagement(reengagement) {
+		t.Fatal("late farewell transcript was marked as user re-engagement")
+	}
+
+	state := realtimeTurnState{}
+	if !state.responseStarted("farewell") {
+		t.Fatal("farewell response did not start")
+	}
+	<-events
+	transcript := <-events
+	if transcript.Kind != realtimevoice.EventTranscriptFinal || state.userTranscriptObserved() {
+		t.Fatal("late farewell transcript was classified as a new user turn")
 	}
 }
 
