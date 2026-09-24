@@ -80,6 +80,22 @@ func TestSelfCheckReportCountsRequiredFailures(t *testing.T) {
 
 func TestSelfCheckTreatsAgentFailureAsWarningButRequiresConfigWeb(t *testing.T) {
 	dir := t.TempDir()
+	assertFatalMatchesItems := func(report SelfCheckReport) {
+		t.Helper()
+		// Hardware and storage checks can fail independently on the test host.
+		wantFailures := 0
+		for _, item := range report.Items {
+			if item.Status == "fail" {
+				wantFailures++
+			}
+		}
+		if report.Failures != wantFailures {
+			t.Fatalf("Failures = %d, want %d: %+v", report.Failures, wantFailures, report)
+		}
+		if got := report.Fatal(); got != (wantFailures > 0) {
+			t.Fatalf("Fatal() = %v, want %v: %+v", got, wantFailures > 0, report)
+		}
+	}
 	agentFailureCurl := filepath.Join(dir, "curl-agent-failure")
 	const agentFailureScript = `#!/bin/sh
 case "$*" in
@@ -103,6 +119,7 @@ exit 0
 	if got := report.Items["config_web"].Status; got != "pass" {
 		t.Fatalf("config_web status after Agent failure = %q, want pass", got)
 	}
+	assertFatalMatchesItems(report)
 
 	configFailureCurl := filepath.Join(dir, "curl-config-failure")
 	if err := os.WriteFile(configFailureCurl, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
@@ -116,6 +133,7 @@ exit 0
 	if got := report.Items["config_web"].Status; got != "fail" {
 		t.Fatalf("config_web status = %q, want fail", got)
 	}
+	assertFatalMatchesItems(report)
 }
 
 func TestSafeSnapshotNameRemovesPathSeparators(t *testing.T) {

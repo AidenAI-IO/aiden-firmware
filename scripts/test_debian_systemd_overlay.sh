@@ -207,9 +207,17 @@ if grep -Eq '(^Wants=|^After=).*aiden-agent\.service' \
     "${UNIT_DIR}/aiden-config-web.service"; then
     fail "Config Web must not wait for the Agent to start"
 fi
+if grep -Eq '^Requires=.*aiden-agent\.service' \
+    "${UNIT_DIR}/aiden-config-web.service"; then
+    fail "Config Web must not require the Agent"
+fi
 if grep -Eq '(^Wants=|^After=).*aiden-agent\.service' \
     "${UNIT_DIR}/aiden-ota-health-marker.service"; then
     fail "OTA health marker must not wait for the Agent to start"
+fi
+if grep -Eq '^Requires=.*aiden-agent\.service' \
+    "${UNIT_DIR}/aiden-ota-health-marker.service"; then
+    fail "OTA health marker must not require the Agent"
 fi
 while IFS= read -r log_path; do
     log_directory=${log_path%/*}
