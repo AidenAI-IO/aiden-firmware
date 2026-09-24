@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/ble"
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestNotificationMemoryProcessorFiltersNoiseAndWritesTemporaryMemory(t *testing.T) {
@@ -599,6 +600,78 @@ func TestNotificationMemoryProcessorRejectsBatchProtocolErrorWithoutAdvancingCur
 	}
 	if got := ctxStore.State().MemoryCursor; got != "" {
 		t.Fatalf("MemoryCursor=%q advanced after batch protocol error", got)
+	}
+}
+
+func TestNotificationMemoryProcessorRetriesMalformedJSONAndAdvancesCursor(t *testing.T) {
+	tests := []struct {
+		name      string
+		malformed string
+	}{
+		{name: "prose response", malformed: `I cannot produce that response.`},
+		{name: "invalid object suffix", malformed: `{"results":[]A}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+				return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{{
+					ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1",
+					AppIdentifier: "com.mail", Title: "会议", Message: "明天开会", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z",
+				}}}, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := &episodeMemoryScriptedModel{responses: []string{
+				tt.malformed,
+				`{"results":[{"context_id":"1","proposal":{"actions":[{"action":"ignore"}]}}]}`,
+			}}
+			processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+
+			if _, err := processor.ProcessBatch(context.Background(), nil); err != nil {
+				t.Fatalf("ProcessBatch() error=%v, want malformed JSON recovery", err)
+			}
+			if got := model.callCount(); got != 2 {
+				t.Fatalf("model calls=%d, want one correction retry", got)
+			}
+			if got := ctxStore.State().MemoryCursor; got != "1" {
+				t.Fatalf("MemoryCursor=%q, want corrected batch committed", got)
+			}
+			model.mu.Lock()
+			retryMessages := append([]llms.MessageContent(nil), model.calls[1]...)
+			model.mu.Unlock()
+			if !episodeMemoryMessagesContain(retryMessages, "previous response was invalid JSON") {
+				t.Fatal("correction retry did not explain the JSON failure")
+			}
+		})
+	}
+}
+
+func TestNotificationMemoryProcessorMalformedJSONRetryExhaustionKeepsCursor(t *testing.T) {
+	root := t.TempDir()
+	ctxStore, err := NewNotificationContext(root, func(context.Context, string, string, int) (ble.EventPage, error) {
+		return ble.EventPage{Generation: "g", Events: []ble.NotificationEvent{{
+			ID: "1", Source: "android", SourceID: "n1", NotificationUID: 1, SourceEventID: "evt-1",
+			AppIdentifier: "com.mail", Title: "会议", Message: "明天开会", Event: "added", ReceivedAt: "2026-08-21T00:00:00Z",
+		}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &episodeMemoryScriptedModel{responses: []string{`I cannot produce JSON.`, `{"results":[]A}`}}
+	processor := NewNotificationMemoryProcessor(ctxStore, root, nil, model)
+
+	_, err = processor.ProcessBatch(context.Background(), nil)
+	var proposalErr *notificationProposalError
+	if !errors.As(err, &proposalErr) || !strings.Contains(err.Error(), "parse notification memory batch proposal") {
+		t.Fatalf("ProcessBatch() error=%v, want malformed batch proposal error", err)
+	}
+	if got := model.callCount(); got != 2 {
+		t.Fatalf("model calls=%d, want exactly one correction retry", got)
+	}
+	if got := ctxStore.State().MemoryCursor; got != "" {
+		t.Fatalf("MemoryCursor=%q advanced after retry exhaustion", got)
 	}
 }
 
