@@ -175,7 +175,6 @@ const (
 	realtimeChatStart realtimeChatAdmission = iota
 	realtimeChatQueueAfterResponse
 	realtimeChatRejectBusy
-	realtimeChatQueueAfterSpeech
 )
 
 type realtimeChatAdmissionState struct {
@@ -194,7 +193,7 @@ func (s realtimeChatAdmissionState) admission() realtimeChatAdmission {
 		return realtimeChatRejectBusy
 	}
 	if s.localSpeechActive && !s.responseActive && !s.turnBlocked {
-		return realtimeChatQueueAfterSpeech
+		return realtimeChatQueueAfterResponse
 	}
 	if s.standbyPending {
 		if s.responseActive {
@@ -321,7 +320,8 @@ func relayRealtimeSessionEvents(ctx context.Context, source <-chan realtimevoice
 				if !ok {
 					return
 				}
-				if event.Kind == realtimevoice.EventSpeechStarted || event.Kind == realtimevoice.EventInterruption {
+				if event.Kind == realtimevoice.EventSpeechStarted || event.Kind == realtimevoice.EventInterruption ||
+					((event.Kind == realtimevoice.EventTranscriptDelta || event.Kind == realtimevoice.EventTranscriptFinal) && event.Role == "user") {
 					select {
 					case reengagement <- struct{}{}:
 					default:
@@ -1594,8 +1594,17 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 		return nil
 	}
 	tryStartQueuedChat := func() error {
-		if queuedChat == nil || realtimeAdmissionSpeechActive(admissionTurnEndpoint) || !turnState.canInjectResponse() {
+		if queuedChat == nil || realtimeAdmissionSpeechActive(admissionTurnEndpoint) {
 			return nil
+		}
+		if !turnState.canInjectResponse() {
+			// Providers without speech boundary events still use the local gate
+			// as an admission guard. Once that synthetic gate has gone quiet, a
+			// queued chat must retain the pre-existing terminal-event behavior;
+			// there is no provider transcript or client-side commit to wait for.
+			if info.Capabilities.EmitsSpeechEvents || clientTurnEndpoint != nil || turnState.inputSpeechActive || turnState.inputTurnTranscriptSeen || turnState.responseActive || turnState.responseTerminalPending {
+				return nil
+			}
 		}
 		command := *queuedChat
 		queuedChat = nil
@@ -1605,6 +1614,13 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 	// The event stream is the authoritative completion signal. Providers may
 	// close Done before the final buffered transcript or response event is read.
 	sessionEvents, realtimeReengagement := relayRealtimeSessionEvents(ctx, session.Events())
+	observeProviderUserTranscript := func() {
+		consumeRealtimeReengagement(realtimeReengagement)
+		if sleep.abandon() {
+			logging.Infof("agent", "realtime", "Standby canceled by provider user transcript")
+		}
+		turnState.userTranscriptObserved()
+	}
 	for {
 		watchdog.setBusy(cancelPending || activeChat != nil || turnState.responseActive || turnState.responseRequestPending || turnState.responseTerminalPending || len(foregroundTools) > 0 ||
 			(turnState.inputTurnPending && !turnState.inputSpeechActive))
@@ -1717,7 +1733,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat), info.Capabilities) {
 				now := time.Now()
 				started, stopped := observeRealtimeAdmissionSpeech(admissionTurnEndpoint, &turnState, info.Capabilities, pcm, now, clientTurnEndpoint == nil)
-				if started {
+				if started && !info.Capabilities.ServerAuthoritativeTurnDetection {
 					if sleep.abandon() {
 						logging.Infof("agent", "realtime", "Standby canceled by local user speech")
 					}
@@ -1818,7 +1834,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			if sleep.abandon() {
 				logging.Infof("agent", "realtime", "Standby canceled by text request")
 			}
-			if admission == realtimeChatQueueAfterResponse || admission == realtimeChatQueueAfterSpeech {
+			if admission == realtimeChatQueueAfterResponse {
 				queuedChat = &command
 				continue
 			}
@@ -1911,6 +1927,9 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 						return err
 					}
 				}
+				if err := tryStartQueuedChat(); err != nil {
+					return err
+				}
 				if err := tryInjectTaskUpdates(); err != nil {
 					return err
 				}
@@ -1920,7 +1939,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 				logging.Infof("agent", "realtime", "Input audio committed: provider=%s session_id=%s item_id=%s previous_item_id=%s", providerName, info.ID, event.ItemID, event.PreviousItemID)
 			case realtimevoice.EventTranscriptFinal:
 				if event.Role == "user" {
-					turnState.userTranscriptObserved()
+					observeProviderUserTranscript()
 					logging.Infof("agent", "realtime", "User transcript: provider=%s session_id=%s item_id=%s sequence=%d status=completed transcript_len=%d", providerName, info.ID, event.ItemID, event.Sequence, len([]rune(strings.TrimSpace(event.Text))))
 					if err := appendRealtimeUserMessage(userContext, event.Text); err != nil {
 						return fmt.Errorf("persist realtime user transcript: %w", err)
@@ -1963,7 +1982,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			case realtimevoice.EventTranscriptDelta:
 				if event.Role != "assistant" {
 					if event.Role == "user" {
-						turnState.userTranscriptObserved()
+						observeProviderUserTranscript()
 					}
 					continue
 				}

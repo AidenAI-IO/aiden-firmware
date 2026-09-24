@@ -527,9 +527,8 @@ func TestRealtimeChatAdmissionQueuesDuringServerAuthoritativeLocalSpeech(t *test
 	if state.inputSpeechActive || state.inputTurnPending || !state.canInjectResponse() {
 		t.Fatalf("transient speech claimed a provider-owned turn: %+v", state)
 	}
-
 	admission := (realtimeChatAdmissionState{turnBlocked: !state.canInjectResponse(), localSpeechActive: endpoint.speechActive}).admission()
-	if admission != realtimeChatQueueAfterSpeech {
+	if admission != realtimeChatQueueAfterResponse {
 		t.Fatalf("speech-time admission=%v, want queue without busy", admission)
 	}
 
@@ -963,6 +962,40 @@ func TestRealtimeFarewellDrainYieldsToReadySpeechEvent(t *testing.T) {
 		}
 	default:
 		t.Fatal("speech event was consumed while prioritizing re-engagement")
+	}
+}
+
+func TestRealtimeFarewellDrainYieldsToProviderUserTranscript(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	source := make(chan realtimevoice.Event, 1)
+	events, reengagement := relayRealtimeSessionEvents(ctx, source)
+	source <- realtimevoice.Event{Kind: realtimevoice.EventTranscriptFinal, Role: "user", Text: "hello"}
+
+	deadline := time.Now().Add(time.Second)
+	for len(events) == 0 || len(reengagement) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("provider user transcript was not relayed with its re-engagement marker")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var sleep realtimeSleepState
+	sleep.request()
+	if !abandonSleepForPendingRealtimeReengagement(&sleep, reengagement) {
+		t.Fatal("provider user transcript did not override farewell standby")
+	}
+	if sleep.pending() {
+		t.Fatal("standby remained pending after provider user transcript")
+	}
+	select {
+	case event := <-events:
+		if event.Kind != realtimevoice.EventTranscriptFinal || event.Role != "user" {
+			t.Fatalf("relayed event = %+v, want user transcript", event)
+		}
+	default:
+		t.Fatal("user transcript was consumed while prioritizing re-engagement")
 	}
 }
 

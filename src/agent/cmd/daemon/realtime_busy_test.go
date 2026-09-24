@@ -395,6 +395,59 @@ func TestRealtimeBusySpeechStoppedReleasesAdmission(t *testing.T) {
 	requireBusyEvent(t, next, agent.RealtimeChatEventDone)
 }
 
+func TestRealtimeBusyQueuedChatReleasesWhenSpeechStopsAfterResponseTerminal(t *testing.T) {
+	s, bridge, done := startBusyTestSession(t, time.Second)
+
+	// Put an otherwise idle provider response into the farewell state so the
+	// next WebUI request is parked while the response is still active.
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted, ResponseID: "farewell"}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventToolCall, ResponseID: "farewell", CallID: "farewell", Name: "end_conversation", Arguments: "{}"}
+	select {
+	case <-s.toolResults:
+	case err := <-done:
+		t.Fatalf("session exited before farewell tool result: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("farewell tool result was not sent")
+	}
+	// The second tool result is a barrier after sleep.request() has run.
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventToolCall, ResponseID: "farewell", CallID: "barrier", Name: "unknown_tool", Arguments: "{}"}
+	select {
+	case <-s.toolResults:
+	case err := <-done:
+		t.Fatalf("session exited before farewell barrier: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("farewell barrier was not processed")
+	}
+
+	events, err := bridge.Handle(context.Background(), agent.RealtimeChatRequest{RequestID: "queued-after-speech", Message: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for realtimeChatPending(bridge, nil) {
+		if time.Now().After(deadline) {
+			t.Fatal("queued chat command was not admitted to the realtime loop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Providers can acknowledge the response before they report that the
+	// interrupting speech stopped. The queued request must be retried from the
+	// latter event instead of remaining busy forever.
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStarted}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, ResponseID: "farewell", Status: "completed"}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventSpeechStopped}
+	select {
+	case <-s.created:
+	case err := <-done:
+		t.Fatalf("session exited before queued response: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("queued chat was not started after speech stopped")
+	}
+	s.events <- realtimevoice.Event{Kind: realtimevoice.EventResponseDone, Status: "completed"}
+	requireBusyEvent(t, events, agent.RealtimeChatEventDone)
+}
+
 func TestRealtimeBusyGeminiInterruptionTerminalReleasesChat(t *testing.T) {
 	s, bridge, done := startBusyTestSession(t, time.Second)
 	events := busyTestRequest(t, s, bridge, done, "interrupted")
