@@ -20,9 +20,11 @@ void set_log_service(const char* service);
 // This hook is primarily intended for tests.
 void set_log_output(FILE* output);
 
-// Writes one event using the common format. The formatted message is emitted
-// as a quoted message= field with control characters escaped, so one call
-// always produces exactly one physical line.
+// Writes one event using the common format. Every line includes monotonic_ms,
+// pid, and the native thread id so userspace operations can be correlated with
+// monotonic kernel timestamps and per-thread /proc state. The formatted
+// message is emitted as a quoted message= field with control characters
+// escaped, so one call always produces exactly one physical line.
 void log_event(LogLevel level,
                const char* component,
                const char* event,
