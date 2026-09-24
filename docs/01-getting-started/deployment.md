@@ -57,6 +57,12 @@ The image installs these main runtime trees:
 /userdata/debian/ota/config.json               # Debian OTA factory configuration
 ```
 
+The Pico Zero Debian device tree does not enable the vendor
+`restart-poweroff` node. A kernel poweroff therefore follows the board's
+native power-management path instead of deliberately rebooting through U-Boot.
+This applies after rebuilding and flashing the BSP boot images; an existing
+board keeps the device tree from its currently installed image.
+
 `overlay-debian/` owns the Debian platform additions. The rootfs stage installs
 `aiden-business`, BSP libraries and modules, and the OTA trust key. Business models
 and notification sounds come from `assets/business/`. Both rootfs slots start with

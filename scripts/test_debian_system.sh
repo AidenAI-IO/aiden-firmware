@@ -171,6 +171,10 @@ for symbol in CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
 done
 grep -Fq "RK_KERNEL_CMDLINE_EXTRA=net.ifnames\$'\\x3d'0" \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+if grep -Eq '^[[:space:]]*(restart-poweroff|compatible = "restart-poweroff")' \
+    "${REPO_ROOT}/pico-sdk/sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-zero.dts"; then
+    fail "Pico Zero device tree still converts poweroff into a reboot"
+fi
 
 # The pinned submodule must be present: silently skipping the checks below
 # would let an uninitialized or incomplete checkout pass this suite. The only
