@@ -71,6 +71,7 @@ type textInputArgs struct {
 	Focus            focusPointArgs `json:"focus"`
 	CurrentIMEPart   string         `json:"-"`
 	VerifyTextSuffix bool           `json:"-"`
+	ReplaceField     bool           `json:"-"`
 }
 
 type textInputResult struct {
@@ -132,7 +133,7 @@ func (e *textInputEngine) RunSegmented(ctx context.Context, args textInputArgs) 
 		segments, planErr := e.planCompositionSegmentsForChunks(planCtx, chunks)
 		planResultCh <- compositionPlanResult{chunks: chunks, segments: segments, err: planErr}
 	}()
-	currentMode, _, err := e.probeTextInputMode(ctx, platform, args.Focus)
+	currentMode, _, err := e.probeTextInputMode(ctx, platform, args.Focus, args.ReplaceField)
 	if err != nil {
 		cancelPlanning()
 		return textInputResult{Reason: err.Error()}, nil
@@ -310,13 +311,17 @@ func (e *textInputEngine) planCompositionSegmentsForChunks(ctx context.Context, 
 	return segments, nil
 }
 
-func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform string, focus focusPointArgs) (mode textInputMode, vlmCalls int, err error) {
-	undoKeys, err := textInputKeyboardKeysForUndo(platform)
+func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform string, focus focusPointArgs, replaceField bool) (mode textInputMode, vlmCalls int, err error) {
+	cleanupKeys, err := textInputKeyboardKeysForUndo(platform)
+	if replaceField {
+		cleanupKeys, err = textInputKeyboardKeysForSelectAll(platform)
+	}
 	if err != nil {
 		return textInputModeUnknown, vlmCalls, err
 	}
 	var probeBeforeScreenshot screenshotResult
 	cleanupVision, cleanupSupported := e.vision.(textInputProbeCleanupVision)
+	cleanupSupported = cleanupSupported && !replaceField
 	if cleanupSupported {
 		probeBeforeScreenshot, err = e.captureScreenshot(ctx)
 		if err != nil {
@@ -328,8 +333,26 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		return textInputModeUnknown, vlmCalls, fmt.Errorf("input mode probe: type a: %w", err)
 	}
 	defer func() {
+		if replaceField {
+			// Search replaces the whole query. Undo can resurrect a previous
+			// query when the probe is uncommitted IME text, so clear explicitly
+			// while the keyboard remains isolated and before entering the query.
+			clearErr := e.tapKeys(ctx, cleanupKeys)
+			if clearErr == nil {
+				clearErr = e.sleepFor(ctx, textInputKeystrokeGap)
+			}
+			if clearErr == nil {
+				clearErr = e.tapKeys(ctx, []string{"backspace"})
+			}
+			if clearErr == nil {
+				clearErr = e.sleepFor(ctx, textInputProbeSettleDelay)
+			}
+			logging.Infof("agent", "text_input", "phase=probe_cleanup method=clear_field error=%v", clearErr)
+			err = errors.Join(err, clearErr)
+			return
+		}
 		// Send undo keys
-		undoErr := e.tapKeys(ctx, undoKeys)
+		undoErr := e.tapKeys(ctx, cleanupKeys)
 		if undoErr == nil {
 			undoErr = e.sleepFor(ctx, textInputKeystrokeGap)
 		}
@@ -397,6 +420,7 @@ func (e *textInputEngine) probeTextInputMode(ctx context.Context, platform strin
 		return textInputModeUnknown, vlmCalls, analyzeErr
 	}
 	mode = analysis.Mode
+	logging.Infof("agent", "text_input", "phase=input_mode_probe mode=%q preedit=%t candidates=%t evidence=%q", mode, analysis.InlinePreeditVisible, analysis.CandidatePopupVisible, truncateForLog(analysis.Evidence, 512))
 	if mode != textInputModeASCII && mode != textInputModeComposition {
 		return textInputModeUnknown, vlmCalls, fmt.Errorf("input mode probe returned %q", mode)
 	}
@@ -592,6 +616,9 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 }
 
 func (e *textInputEngine) analyzeScreen(ctx context.Context, platform string, args textInputArgs, segments []string) (analysis textInputScreenAnalysis, vlmCalls int, err error) {
+	defer func() {
+		logging.Infof("agent", "text_input", "phase=field_analysis target=%q mode=%q target_matched=%t composition_pending=%t field_text=%q wrong_ime=%t error=%v", truncateForLog(args.Text, 256), analysis.ObservedMode, analysis.TargetMatched, analysis.CompositionPending, truncateForLog(analysis.FieldText, 256), analysis.WrongIMESuspected, err)
+	}()
 	shot, err := e.captureScreenshot(ctx)
 	if err != nil {
 		return textInputScreenAnalysis{}, 0, err
@@ -603,18 +630,13 @@ func (e *textInputEngine) analyzeScreen(ctx context.Context, platform string, ar
 		Focus:           args.Focus,
 		Segments:        segments,
 	}
-	for attempt := 1; attempt <= textInputVisionParseAttempts; attempt++ {
-		analysis, err = e.vision.AnalyzeScreen(ctx, shot, req)
-		vlmCalls++
-		if err == nil {
-			break
-		}
-		var syntaxErr *json.SyntaxError
-		if !errors.As(err, &syntaxErr) || attempt == textInputVisionParseAttempts {
-			return textInputScreenAnalysis{}, vlmCalls, err
-		}
+	// The model boundary owns protocol validation and its retry budget. Never
+	// retry it here: this layer owns screenshots and hardware state transitions.
+	if vision, ok := e.vision.(*llmTextInputVision); ok {
+		return vision.analyzeScreen(ctx, shot, req)
 	}
-	return analysis, vlmCalls, nil
+	analysis, err = e.vision.AnalyzeScreen(ctx, shot, req)
+	return analysis, 1, err
 }
 
 func (e *textInputEngine) decideCandidateAction(ctx context.Context, platform string, args textInputArgs, segments []string, selectedCandidateText string) (textInputCandidateAction, int, error) {
@@ -634,6 +656,7 @@ func (e *textInputEngine) decideCandidateAction(ctx context.Context, platform st
 		Focus:                  args.Focus,
 		Segments:               segments,
 	})
+	logging.Infof("agent", "text_input", "phase=candidate_action action=%q offset=%d text=%q completes_part=%t error=%v", action.Action, action.Offset, truncateForLog(action.Text, 256), action.CompletesPart, err)
 	return action, 1, err
 }
 
@@ -738,6 +761,7 @@ func (e *textInputEngine) typeASCIIChunk(ctx context.Context, text string) error
 }
 
 func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Context, platform string, args textInputArgs, segments []string) (committed bool, fieldText string, wrongIME bool, vlmCalls int, err error) {
+	logging.Infof("agent", "text_input", "phase=composition_input target=%q segments=%q", truncateForLog(args.Text, 256), segments)
 	for _, segment := range segments {
 		out, err := callTextInputTool(ctx, e.hw.keyboardText, jsonString(map[string]string{"text": segment}))
 		if err != nil {

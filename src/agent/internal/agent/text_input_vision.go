@@ -85,65 +85,77 @@ func newLLMTextInputVision(models model.Model) textInputVision {
 }
 
 func (v *llmTextInputVision) AnalyzeScreen(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
-	prompt := buildTextInputAnalysisPrompt(req)
-	raw, err := v.visionJSON(ctx, "screen_analysis", prompt, screenshot)
-	if err != nil {
-		return textInputScreenAnalysis{}, err
-	}
+	analysis, _, err := v.analyzeScreen(ctx, screenshot, req)
+	return analysis, err
+}
+
+func (v *llmTextInputVision) analyzeScreen(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, int, error) {
+	return requestVisionDecision(ctx, v, "screen_analysis", buildTextInputAnalysisPrompt(req), parseTextInputScreenAnalysis, screenshot)
+}
+
+func parseTextInputScreenAnalysis(raw string) (textInputScreenAnalysis, error) {
 	var parsed struct {
 		ObservedMode       string `json:"observed_mode"`
 		FieldText          string `json:"field_text"`
-		TargetMatched      bool   `json:"target_matched"`
-		CompositionPending bool   `json:"composition_pending"`
+		TargetMatched      *bool  `json:"target_matched"`
+		CompositionPending *bool  `json:"composition_pending"`
 		WrongIMESuspected  bool   `json:"wrong_ime_suspected"`
 		SuggestSwitchIME   bool   `json:"suggest_switch_ime"`
 	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+	if err := decodeVisionJSONObject(raw, &parsed, "observed_mode", "field_text", "target_matched", "composition_pending"); err != nil {
 		return textInputScreenAnalysis{}, fmt.Errorf("parse screen analysis: %w", err)
 	}
 	mode, err := parseObservedTextInputMode(parsed.ObservedMode)
 	if err != nil {
-		mode = textInputModeUnknown
+		return textInputScreenAnalysis{}, fmt.Errorf("parse screen analysis: %w", err)
+	}
+	if parsed.TargetMatched == nil || parsed.CompositionPending == nil {
+		return textInputScreenAnalysis{}, fmt.Errorf("parse screen analysis: target_matched and composition_pending are required")
 	}
 	return textInputScreenAnalysis{
 		ObservedMode:       mode,
 		FieldText:          strings.TrimSpace(parsed.FieldText),
-		TargetMatched:      parsed.TargetMatched,
-		CompositionPending: parsed.CompositionPending,
+		TargetMatched:      *parsed.TargetMatched,
+		CompositionPending: *parsed.CompositionPending,
 		WrongIMESuspected:  parsed.WrongIMESuspected,
 		SuggestSwitchIME:   parsed.SuggestSwitchIME,
 	}, nil
 }
 
 func (v *llmTextInputVision) DecideCandidateAction(ctx context.Context, screenshot screenshotResult, req textInputScreenAnalysisRequest) (textInputCandidateAction, error) {
-	raw, err := v.visionJSON(ctx, "candidate_action", buildTextInputCandidateActionPrompt(req), screenshot)
-	if err != nil {
+	action, _, err := requestVisionDecision(ctx, v, "candidate_action", buildTextInputCandidateActionPrompt(req), parseTextInputCandidateAction, screenshot)
+	return action, err
+}
+
+func parseTextInputCandidateAction(raw string) (textInputCandidateAction, error) {
+	var action textInputCandidateAction
+	if err := decodeVisionJSONObject(raw, &action, "action"); err != nil {
 		return textInputCandidateAction{}, err
 	}
-	var action textInputCandidateAction
-	if err := json.Unmarshal([]byte(raw), &action); err != nil {
-		return textInputCandidateAction{}, fmt.Errorf("parse candidate action: %w", err)
-	}
-	action.Action = textInputCandidateActionKind(strings.ToLower(strings.TrimSpace(string(action.Action))))
 	switch action.Action {
 	case textInputCandidateActionSelect:
-		action.Text = strings.TrimSpace(action.Text)
+		if err := decodeVisionJSONObject(raw, &action, "offset", "text", "completes_part"); err != nil {
+			return textInputCandidateAction{}, err
+		}
+		if strings.TrimSpace(action.Text) == "" || action.Offset > textInputCandidateMoveMax || action.Offset < -textInputCandidateMoveMax {
+			return textInputCandidateAction{}, fmt.Errorf("select requires visible candidate text and offset within +/- %d", textInputCandidateMoveMax)
+		}
 	case textInputCandidateActionExpand, textInputCandidateActionUp, textInputCandidateActionNone:
 		action.Offset = 0
 		action.Text = ""
 		action.CompletesPart = false
 	default:
-		action = textInputCandidateAction{Action: textInputCandidateActionNone}
+		return textInputCandidateAction{}, fmt.Errorf("unsupported candidate action %q", action.Action)
 	}
 	return action, nil
 }
 
 func (v *llmTextInputVision) ProbeInputMode(ctx context.Context, screenshot screenshotResult, platform string, focus focusPointArgs) (textInputProbeAnalysis, error) {
-	prompt := buildTextInputProbePrompt(platform, focus)
-	raw, err := v.visionJSON(ctx, "ime_probe", prompt, screenshot)
-	if err != nil {
-		return textInputProbeAnalysis{}, err
-	}
+	analysis, _, err := requestVisionDecision(ctx, v, "ime_probe", buildTextInputProbePrompt(platform, focus), parseTextInputProbeAnalysis, screenshot)
+	return analysis, err
+}
+
+func parseTextInputProbeAnalysis(raw string) (textInputProbeAnalysis, error) {
 	var parsed struct {
 		Mode                    string `json:"mode"`
 		TypedAVisible           bool   `json:"typed_a_visible"`
@@ -153,7 +165,7 @@ func (v *llmTextInputVision) ProbeInputMode(ctx context.Context, screenshot scre
 		OnscreenKeyboardVisible bool   `json:"onscreen_keyboard_visible"`
 		Evidence                string `json:"evidence"`
 	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+	if err := decodeVisionJSONObject(raw, &parsed, "mode", "typed_a_visible", "inline_preedit_visible", "candidate_popup_visible", "cjk_candidate_visible", "onscreen_keyboard_visible"); err != nil {
 		return textInputProbeAnalysis{}, fmt.Errorf("parse input mode probe: %w", err)
 	}
 	mode, err := parseObservedTextInputMode(parsed.Mode)
@@ -203,17 +215,17 @@ Classification rules:
 }
 
 func (v *llmTextInputVision) VerifyProbeCleanup(ctx context.Context, before, after screenshotResult, platform string, focus focusPointArgs) (bool, error) {
-	prompt := buildTextInputProbeCleanupPrompt(platform, focus)
-	raw, err := v.visionJSONWithScreenshots(ctx, "probe_cleanup", prompt, before, after)
-	if err != nil {
-		return false, err
-	}
+	visible, _, err := requestVisionDecision(ctx, v, "probe_cleanup", buildTextInputProbeCleanupPrompt(platform, focus), parseTextInputProbeCleanup, before, after)
+	return visible, err
+}
+
+func parseTextInputProbeCleanup(raw string) (bool, error) {
 	var parsed struct {
 		ProbeCharacterVisible *bool  `json:"probe_character_visible"`
 		CleanupSafe           bool   `json:"cleanup_safe"`
 		Evidence              string `json:"evidence"`
 	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+	if err := decodeVisionJSONObject(raw, &parsed, "probe_character_visible", "cleanup_safe"); err != nil {
 		return false, fmt.Errorf("parse probe cleanup verification: %w", err)
 	}
 	if parsed.ProbeCharacterVisible == nil {
@@ -488,43 +500,6 @@ Rules:
 - offset is the signed number of moves from the highlighted candidate: positive=Right, negative=Left, zero=select the highlighted candidate
 - text must exactly transcribe the visible candidate selected and is used only for logging
 - When the visible text or its relationship to the remaining target is uncertain, use none`, req.TargetText, candidateTarget, req.CandidateCommittedText, req.Focus.X, req.Focus.Y))
-}
-
-func (v *llmTextInputVision) visionJSON(ctx context.Context, operation, prompt string, screenshot screenshotResult) (string, error) {
-	return v.visionJSONWithScreenshots(ctx, operation, prompt, screenshot)
-}
-
-func (v *llmTextInputVision) visionJSONWithScreenshots(ctx context.Context, operation, prompt string, screenshots ...screenshotResult) (string, error) {
-	if len(screenshots) == 0 {
-		return "", fmt.Errorf("screenshot data missing")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-	msgs := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, "You analyze device screenshots for text input automation. Output JSON only."),
-	}
-	parts := []llms.ContentPart{llms.TextPart(prompt)}
-	for _, screenshot := range screenshots {
-		if strings.TrimSpace(screenshot.Data) == "" {
-			return "", fmt.Errorf("screenshot data missing")
-		}
-		parts = append(parts, llms.ImageURLPart("data:image/jpeg;base64,"+screenshot.Data))
-	}
-	msgs = append(msgs, llms.MessageContent{Role: llms.ChatMessageTypeHuman, Parts: parts})
-	// Use the model's configured temperature for vision analysis. Previously
-	// hardcoded to 0 for determinism, but that breaks kimi-k3 (requires temp=1)
-	// and the temperature difference has minimal impact on vision text extraction.
-	resp, err := v.generateContent(ctx, operation, msgs,
-		llms.WithJSONMode(),
-		llms.WithMaxTokens(textInputVisionMaxTokens),
-	)
-	if err != nil {
-		return "", err
-	}
-	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("empty vision response")
-	}
-	return stripJSONCodeFence(resp.Choices[0].Content), nil
 }
 
 func (v *llmTextInputVision) generateContent(ctx context.Context, operation string, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {

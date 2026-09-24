@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,30 +12,29 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-type retryingTextInputVision struct {
-	calls int
-}
-
-func (v *retryingTextInputVision) AnalyzeScreen(_ context.Context, _ screenshotResult, req textInputScreenAnalysisRequest) (textInputScreenAnalysis, error) {
-	v.calls++
-	if v.calls == 1 {
-		var truncated any
-		err := json.Unmarshal([]byte(`{"target_matched":`), &truncated)
-		return textInputScreenAnalysis{}, fmt.Errorf("parse screen analysis: %w", err)
-	}
-	return textInputScreenAnalysis{FieldText: req.TargetText, TargetMatched: true}, nil
-}
-
 type textInputVisionRecordingModel struct {
-	options  []llms.CallOption
-	content  string
-	contents []string
-	calls    int
+	options        []llms.CallOption
+	optionHistory  []llms.CallOptions
+	messageHistory [][]llms.MessageContent
+	err            error
+	response       *llms.ContentResponse
+	content        string
+	contents       []string
+	calls          int
 }
 
-func (m *textInputVisionRecordingModel) GenerateContent(_ context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *textInputVisionRecordingModel) GenerateContent(_ context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	m.options = options
+	var callOptions llms.CallOptions
+	for _, option := range options {
+		option(&callOptions)
+	}
+	m.optionHistory = append(m.optionHistory, callOptions)
 	m.calls++
+	m.messageHistory = append(m.messageHistory, messages)
+	if m.err != nil || m.response != nil {
+		return m.response, m.err
+	}
 	content := m.content
 	if len(m.contents) > 0 {
 		index := m.calls - 1
@@ -60,18 +57,18 @@ func (m *textInputVisionRecordingModel) CallOptions() []chains.ChainCallOption {
 
 func (m *textInputVisionRecordingModel) Spec() modelpkg.ModelSpec { return modelpkg.ModelSpec{} }
 
-func TestVisionJSONBoundsOutputTokens(t *testing.T) {
-	model := &textInputVisionRecordingModel{}
+func TestVisionDecisionBoundsOutputTokens(t *testing.T) {
+	model := &textInputVisionRecordingModel{content: `{"opened":false}`}
 	vision := &llmTextInputVision{models: model}
-	if _, err := vision.visionJSON(context.Background(), "test", "return json", screenshotResult{Data: "ZmFrZQ=="}); err != nil {
-		t.Fatalf("visionJSON() error = %v", err)
+	if _, _, err := requestVisionDecision(context.Background(), vision, "test", "return json", parseAppOpenConfirmation, screenshotResult{Data: "ZmFrZQ=="}); err != nil {
+		t.Fatalf("requestVisionDecision() error = %v", err)
 	}
 	options := llms.CallOptions{}
 	for _, option := range model.options {
 		option(&options)
 	}
 	if !options.JSONMode {
-		t.Fatal("visionJSON() must request JSON mode")
+		t.Fatal("requestVisionDecision() must request JSON mode")
 	}
 	if options.MaxTokens != textInputVisionMaxTokens {
 		t.Fatalf("MaxTokens = %d, want %d", options.MaxTokens, textInputVisionMaxTokens)
@@ -83,9 +80,9 @@ func TestVisionJSONBoundsOutputTokens(t *testing.T) {
 
 func TestTextInputMetricsCountVLLMCalls(t *testing.T) {
 	ctx, metrics := withTextInputMetrics(context.Background())
-	model := &textInputVisionRecordingModel{content: `{}`}
+	model := &textInputVisionRecordingModel{content: `{"opened":false}`}
 	vision := &llmTextInputVision{models: model}
-	if _, err := vision.visionJSON(ctx, "test_operation", "return json", screenshotResult{Data: "ZmFrZQ=="}); err != nil {
+	if _, _, err := requestVisionDecision(ctx, vision, "test_operation", "return json", parseAppOpenConfirmation, screenshotResult{Data: "ZmFrZQ=="}); err != nil {
 		t.Fatal(err)
 	}
 	if calls := metrics.vllmCalls.Load(); calls != 1 {
@@ -103,7 +100,7 @@ func TestTextInputDurationPerCharacter(t *testing.T) {
 }
 
 func TestCandidateActionParsesSelectResponse(t *testing.T) {
-	model := &textInputVisionRecordingModel{content: `{"action":"select","offset":0,"text":"你好"}`}
+	model := &textInputVisionRecordingModel{content: `{"action":"select","offset":0,"text":"你好","completes_part":true}`}
 	vision := &llmTextInputVision{models: model}
 	action, err := vision.DecideCandidateAction(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, textInputScreenAnalysisRequest{TargetText: "你好"})
 	if err != nil {
@@ -127,7 +124,7 @@ func TestCandidateActionParsesUpWithoutSelectionFields(t *testing.T) {
 }
 
 func TestTextInputProbeParsesCompositionResponse(t *testing.T) {
-	model := &textInputVisionRecordingModel{content: `{"mode":"composition","evidence":"candidate 啊 is visible"}`}
+	model := &textInputVisionRecordingModel{content: `{"mode":"composition","typed_a_visible":true,"inline_preedit_visible":true,"candidate_popup_visible":true,"cjk_candidate_visible":true,"onscreen_keyboard_visible":false,"evidence":"candidate 啊 is visible"}`}
 	vision := &llmTextInputVision{models: model}
 	analysis, err := vision.ProbeInputMode(context.Background(), screenshotResult{Data: "ZmFrZQ=="}, "ios", focusPointArgs{X: 500, Y: 300})
 	if err != nil {
@@ -218,7 +215,11 @@ func TestTextInputPartitionRejectsLossyOrOversizedParts(t *testing.T) {
 }
 
 func TestAnalyzeScreenRetriesTruncatedVisionJSON(t *testing.T) {
-	vision := &retryingTextInputVision{}
+	model := &textInputVisionRecordingModel{contents: []string{
+		`{"target_matched":`,
+		`{"observed_mode":"composition","field_text":"你好","target_matched":true,"composition_pending":false}`,
+	}}
+	vision := &llmTextInputVision{models: model}
 	engine := newTextInputEngine(textInputHardwareDeps{
 		screenshot: textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, vision)
@@ -232,8 +233,32 @@ func TestAnalyzeScreenRetriesTruncatedVisionJSON(t *testing.T) {
 	if !analysis.TargetMatched {
 		t.Fatal("analyzeScreen() did not return the successful retry")
 	}
-	if calls != 2 || vision.calls != 2 {
-		t.Fatalf("calls = %d, vision calls = %d; want 2", calls, vision.calls)
+	if calls != 2 || model.calls != 2 {
+		t.Fatalf("calls = %d, vision calls = %d; want 2", calls, model.calls)
+	}
+}
+
+func TestAnalyzeScreenRetriesMissingCompositionDecision(t *testing.T) {
+	model := &textInputVisionRecordingModel{contents: []string{
+		`{}`,
+		`{"observed_mode":"composition","target_matched":false}`,
+		`{"observed_mode":"composition","field_text":"豆包","target_matched":false,"composition_pending":true}`,
+	}}
+	engine := newTextInputEngine(textInputHardwareDeps{
+		screenshot: textInputStubTool{name: "screenshot", out: `{"data":"abc"}`},
+	}, &llmTextInputVision{models: model})
+	analysis, calls, err := engine.analyzeScreen(context.Background(), "ios", textInputArgs{Text: "豆包"}, nil)
+	if err != nil || !analysis.CompositionPending || calls != 3 {
+		t.Fatalf("analysis=%+v calls=%d err=%v", analysis, calls, err)
+	}
+}
+
+func TestTextInputProbeRetriesMissingMode(t *testing.T) {
+	model := &textInputVisionRecordingModel{contents: []string{`{}`, `{"mode":"composition","typed_a_visible":true,"inline_preedit_visible":false,"candidate_popup_visible":true,"cjk_candidate_visible":true,"onscreen_keyboard_visible":false}`}}
+	vision := &llmTextInputVision{models: model}
+	analysis, err := vision.ProbeInputMode(context.Background(), screenshotResult{Data: "abc"}, "ios", focusPointArgs{})
+	if err != nil || analysis.Mode != textInputModeComposition || model.calls != 2 {
+		t.Fatalf("analysis=%+v calls=%d err=%v", analysis, model.calls, err)
 	}
 }
 

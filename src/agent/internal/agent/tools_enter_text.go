@@ -26,6 +26,13 @@ type enterTextArgs struct {
 	Focus *focusPointArgs `json:"focus"`
 }
 
+// Search owns the whole query field, while public enter_text may append to an
+// existing document. Keep replacement intent internal and per call.
+type enterTextOptions struct {
+	disableBridge bool
+	replaceField  bool
+}
+
 type enterTextToolResult struct {
 	OK         bool   `json:"ok"`
 	Suggestion string `json:"suggestion,omitempty"`
@@ -89,10 +96,10 @@ func (t *EnterTextTool) ArgsSchema() map[string]any {
 }
 
 func (t *EnterTextTool) Call(ctx context.Context, input string) (string, error) {
-	return t.enterTextInner(ctx, input, false)
+	return t.enterTextInner(ctx, input, enterTextOptions{})
 }
 
-func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disableBridge bool) (string, error) {
+func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, options enterTextOptions) (string, error) {
 	started := time.Now()
 	ctx, metrics := withTextInputMetrics(ctx)
 	var output string
@@ -100,7 +107,7 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 	defer func() {
 		duration := time.Since(started)
 		characters := metrics.characters.Load()
-		logging.Debugf("agent", "text_input", "enter_text end ok=%t chars=%d duration=%s time_per_char=%s vllm_calls=%d", enterTextOutputOK(output, callErr), characters, duration, textInputDurationPerCharacter(duration, characters), metrics.vllmCalls.Load())
+		logging.Infof("agent", "text_input", "enter_text end ok=%t chars=%d duration=%s time_per_char=%s vllm_calls=%d error=%v", enterTextOutputOK(output, callErr), characters, duration, textInputDurationPerCharacter(duration, characters), metrics.vllmCalls.Load(), callErr)
 	}()
 	var controller *iosKeyboardIsolationController
 	if t != nil {
@@ -119,6 +126,7 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 		}
 		metrics.characters.Store(int64(len([]rune(publicArgs.Text))))
 		args := publicArgs.toEngineArgs()
+		args.ReplaceField = options.replaceField
 		if strings.TrimSpace(args.Text) == "" {
 			return enterTextToolFailure(batchCtx, CodeInvalidArguments, "Provide non-empty text, then retry enter_text."), nil
 		}
@@ -127,7 +135,7 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 		if localController == nil {
 			localController = iosKeyboardIsolationControllerFromContext(batchCtx)
 		}
-		if !disableBridge && t.bridgeAvailable(args) {
+		if !options.disableBridge && t.bridgeAvailable(args) {
 			bridgeResult, attempted := t.bridgeTool.runClipboardFirstResult(batchCtx, args)
 			if attempted && bridgeResult.OK {
 				return enterTextToolResultString(bridgeResult), nil
@@ -152,8 +160,10 @@ func (t *EnterTextTool) enterTextInner(ctx context.Context, input string, disabl
 			err = runLocal()
 		}
 		if err != nil {
+			logging.Warnf("agent", "text_input", "local entry failed platform=%q error=%q", platform, err.Error())
 			return enterTextToolFailure(batchCtx, CodeToolExecutionFailed, "Inspect the latest screen, refocus the target field, then retry enter_text."), nil
 		}
+		logging.Infof("agent", "text_input", "local entry result ok=%t committed=%t wrong_ime=%t field_text=%q reason=%q", result.OK, result.Committed, result.WrongIMESuspected, truncateForLog(result.FieldText, 256), truncateForLog(result.Reason, 2048))
 		return enterTextToolResultString(result), nil
 	})
 	return output, callErr
