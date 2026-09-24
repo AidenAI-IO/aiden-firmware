@@ -34,7 +34,9 @@ Production images use A/B layout:
 5. Linux mounts the matching `rootfs_*`.
 6. `aiden-slot-resolve.service` resolves stable partition paths for the active slot.
 7. `userdata.mount` and `userdata-ota.mount` mount persistent data and the dedicated OTA workspace. Platform files and business binaries are already in the active rootfs.
-8. `aiden-ota-health-marker.service` aggregates application health, then `aiden-ota-health.service` processes pending OTA state once.
+8. `aiden-ota-health-marker.service` aggregates required application health and
+   the Config Web recovery portal, then `aiden-ota-health.service` processes
+   pending OTA state once. Agent startup is optional during this confirmation.
 
 ## Update Process
 

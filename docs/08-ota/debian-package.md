@@ -160,7 +160,9 @@ sudo apt install --reinstall ./aiden-business_0.0.1-2_armhf.deb
 恢复先前服务；恢复失败时保留快照且维护脚本返回失败，可修复原因后执行
 `sudo dpkg --configure -a` 重试。不要在修复前删除快照。
 维护脚本不自动回退包文件、迁移配置或运行硬件健康自检；安装成功后仍应运行上面的
-self-check，失败时根据备份恢复旧包。托管包由 preinst 自动核对契约。
+self-check，失败时根据备份恢复旧包。自检将 Agent HTTP 不可用记录为告警，但要求
+Config Web 可访问，以便 Agent 配置损坏时仍能通过恢复门户修复。托管包由 preinst
+自动核对契约。
 
 从此前测试包 `5.2.1-2` 重新编号到 `0.0.1-2` 属于一次明确降级；自动安装时额外使用
 `apt install -y --allow-downgrades ./aiden-business_0.0.1-2_armhf.deb`。
