@@ -99,6 +99,21 @@ func (s *Session) Snapshot() ([]messages.Message, uint64) {
 	return cloneMessages(s.messageList), s.version
 }
 
+// ViewMessages calls fn with a read-only view of the current message slice
+// while the session read lock is held. fn must not mutate or retain the slice.
+func (s *Session) ViewMessages(fn func([]messages.Message)) {
+	if fn == nil {
+		return
+	}
+	if s == nil {
+		fn(nil)
+		return
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	fn(s.messageList)
+}
+
 // IsEmpty reports whether the session contains no messages.
 func (s *Session) IsEmpty() bool {
 	if s == nil {

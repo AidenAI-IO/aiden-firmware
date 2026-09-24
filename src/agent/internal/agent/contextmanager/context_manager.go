@@ -427,25 +427,26 @@ func (c *ContextManager) StoreArtifact(mimeType string, data []byte, metadata Ar
 	return c.currentSession.StoreArtifact(mimeType, data, metadata)
 }
 
-func (c *ContextManager) appendToList(messages []messages.Message) error {
+func (c *ContextManager) appendToList(messagesToAppend []messages.Message) error {
 	c.operationMu.Lock()
 	defer c.operationMu.Unlock()
 	if c.currentSession == nil {
 		return fmt.Errorf("current session is unavailable")
 	}
-	currentMessages := c.currentSession.CloneMessageList()
-	messages = repairToolCallTailBeforeAppend(currentMessages, messages)
-	if len(messages) == 0 {
+	c.currentSession.ViewMessages(func(currentMessages []messages.Message) {
+		messagesToAppend = repairToolCallTailBeforeAppend(currentMessages, messagesToAppend)
+	})
+	if len(messagesToAppend) == 0 {
 		return nil
 	}
 	now := time.Now().UTC()
-	for i := range messages {
-		if messages[i].Timestamp.IsZero() {
-			messages[i].Timestamp = now
+	for i := range messagesToAppend {
+		if messagesToAppend[i].Timestamp.IsZero() {
+			messagesToAppend[i].Timestamp = now
 		}
 	}
 
-	if err := c.currentSession.AppendMessages(messages); err != nil {
+	if err := c.currentSession.AppendMessages(messagesToAppend); err != nil {
 		logging.Errorf("agent", "cm", "Failed to append messages to session %v", c.currentSession.SessionID())
 		return err
 	}
@@ -588,18 +589,17 @@ func (c *ContextManager) ReadAttachment(attachmentID string) ([]byte, error) {
 		return nil, fmt.Errorf("current session is unavailable")
 	}
 	filePath := ""
-	for _, message := range c.currentSession.CloneMessageList() {
-		for _, attachment := range message.Attachments {
-			candidate := strings.TrimSpace(attachment.FilePath)
-			if candidate != "" && filepath.Base(candidate) == attachmentID {
-				filePath = candidate
-				break
+	c.currentSession.ViewMessages(func(currentMessages []messages.Message) {
+		for _, message := range currentMessages {
+			for _, attachment := range message.Attachments {
+				candidate := strings.TrimSpace(attachment.FilePath)
+				if candidate != "" && filepath.Base(candidate) == attachmentID {
+					filePath = candidate
+					return
+				}
 			}
 		}
-		if filePath != "" {
-			break
-		}
-	}
+	})
 	sessionFolder := c.sessionFolder
 
 	if filePath == "" {
