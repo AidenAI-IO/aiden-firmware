@@ -41,6 +41,9 @@ func TestActivePromptTokensUsesUsageAndEstimatesOnlyNewContext(t *testing.T) {
 	if got := estimateActivePromptTokens(manager, options); got != want {
 		t.Fatalf("initial prompt tokens = %d, want %d", got, want)
 	}
+	if got := activeMessageTokens(manager, callOptions); got != want-schemaTokens {
+		t.Fatalf("initial message tokens = %d, want %d", got, want-schemaTokens)
+	}
 
 	if err := manager.AppendMessage(messages.Message{
 		Role: messages.MessageRoleAssistant, Content: "ok",
@@ -50,6 +53,9 @@ func TestActivePromptTokensUsesUsageAndEstimatesOnlyNewContext(t *testing.T) {
 	}
 	if got := estimateActivePromptTokens(manager, options); got != 820 {
 		t.Fatalf("measured prompt tokens = %d, want 820 without counting schema twice", got)
+	}
+	if got := activeMessageTokens(manager, callOptions); got != max(0, 820-schemaTokens) {
+		t.Fatalf("measured message tokens = %d, want schema excluded", got)
 	}
 	delta := messages.Message{Role: messages.MessageRoleUser, Content: "next question"}
 	if err := manager.AppendMessage(delta); err != nil {
@@ -66,6 +72,19 @@ func TestActivePromptTokensUsesUsageAndEstimatesOnlyNewContext(t *testing.T) {
 	want = tokencounter.EstimateMessagesTokens(revision.CloneMessageList()) + schemaTokens
 	if got := estimateActivePromptTokens(revision, options); got != want {
 		t.Fatalf("revised prompt tokens = %d, want fresh estimate %d", got, want)
+	}
+	if got := activeMessageTokens(revision, callOptions); got != want-schemaTokens {
+		t.Fatalf("revised message tokens = %d, want %d", got, want-schemaTokens)
+	}
+	largeSchema := llms.CallOptions{}
+	llms.WithTools([]llms.Tool{{
+		Type: "function",
+		Function: &llms.FunctionDefinition{
+			Name: "large", Description: strings.Repeat("schema ", 1_000),
+		},
+	}})(&largeSchema)
+	if got := activeMessageTokens(manager, largeSchema); got != 0 {
+		t.Fatalf("message tokens with schema larger than usage = %d, want zero", got)
 	}
 }
 

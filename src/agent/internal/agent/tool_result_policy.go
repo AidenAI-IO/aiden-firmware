@@ -235,6 +235,12 @@ func estimateActivePromptTokens(manager *contextmanager.ContextManager, options 
 	return activePromptTokens(manager, callOptions)
 }
 
+// activeMessageTokens excludes schema overhead from message-only prune budgets.
+// Usage includes schemas, so remove their estimate without re-estimating messages.
+func activeMessageTokens(manager *contextmanager.ContextManager, options llms.CallOptions) int {
+	return max(0, activePromptTokens(manager, options)-tokencounter.EstimateToolSchemaTokens(options))
+}
+
 func activePromptTokens(manager *contextmanager.ContextManager, options llms.CallOptions) int {
 	if manager == nil {
 		return tokencounter.EstimateToolSchemaTokens(options)
