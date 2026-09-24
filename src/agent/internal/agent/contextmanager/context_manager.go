@@ -69,12 +69,22 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 	switch {
 	case err != nil:
 		logging.Warnf("agent", "cm", "Failed to load session metadata for %s: %v", sessionID, err)
+		// The lost metadata may have marked a revision's inherited usage as
+		// invalid. Do not reinstate those measurements while recovering.
+		metadata = sessionMetadata{UsageStartIndex: len(messageList)}
 	case found:
 		parentSessionID = strings.TrimSpace(metadata.ParentSessionID)
 	}
+	// Older revisions have no usage boundary. Conservatively ignore inherited
+	// usage until a new response arrives rather than using the parent's count.
+	if metadata.Tokens == nil && parentSessionID != "" {
+		metadata.UsageStartIndex = len(messageList)
+	}
+	metadata.UsageStartIndex = min(max(metadata.UsageStartIndex, 0), len(messageList))
+	persistTokens := tokenMetadataWriter(sessionFolder, sessionID, metadata)
 
-	return &ContextManager{
-		currentSession: session.NewWithStoresAndPersistence(
+	manager := &ContextManager{
+		currentSession: session.NewWithTokenPersistence(
 			sessionID,
 			parentSessionID,
 			messageList,
@@ -83,9 +93,15 @@ func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*C
 			func(messageList []messages.Message) error {
 				return appendSession(sessionFolder, sessionID, messageList)
 			},
+			metadata.UsageStartIndex,
+			persistTokens,
 		),
 		sessionFolder: sessionFolder,
-	}, nil
+	}
+	// Rebuild from the transcript rather than trusting a snapshot that may lag
+	// after a crash between the transcript append and sidecar rename.
+	persistTokens(manager.currentSession.TokenSnapshot())
+	return manager, nil
 }
 
 func LoadContextManagerFromCurrentSession(sessionFolder string) (*ContextManager, error) {
@@ -202,11 +218,12 @@ func newContextManagerFromMessageList(sessionFolder, sessionID, parentSessionID 
 	}
 	parentSessionID = strings.TrimSpace(parentSessionID)
 	now := time.Now().UTC()
-	if err := saveSessionMetadata(sessionFolder, sessionID, sessionMetadata{
+	metadata := sessionMetadata{
 		ParentSessionID: parentSessionID,
 		CreatedAt:       now,
-	}); err != nil {
-		return nil, err
+	}
+	if parentSessionID != "" {
+		metadata.UsageStartIndex = len(messageList)
 	}
 	initialMessages := cloneMessages(messageList)
 	for i := range initialMessages {
@@ -215,7 +232,7 @@ func newContextManagerFromMessageList(sessionFolder, sessionID, parentSessionID 
 		}
 	}
 	manager := &ContextManager{
-		currentSession: session.NewWithStoresAndPersistence(
+		currentSession: session.NewWithTokenPersistence(
 			sessionID,
 			parentSessionID,
 			initialMessages,
@@ -224,13 +241,53 @@ func newContextManagerFromMessageList(sessionFolder, sessionID, parentSessionID 
 			func(messageList []messages.Message) error {
 				return appendSession(sessionFolder, sessionID, messageList)
 			},
+			metadata.UsageStartIndex,
+			tokenMetadataWriter(sessionFolder, sessionID, metadata),
 		),
 		sessionFolder: sessionFolder,
+	}
+	state := manager.currentSession.TokenSnapshot()
+	metadata.Tokens = &state
+	if err := saveSessionMetadata(sessionFolder, sessionID, metadata); err != nil {
+		return nil, err
 	}
 	if err := manager.flushFull(); err != nil {
 		return nil, err
 	}
 	return manager, nil
+}
+
+// TokenCount returns the active session's context occupancy.
+func (c *ContextManager) TokenCount() int {
+	if c == nil {
+		return 0
+	}
+	c.operationMu.Lock()
+	defer c.operationMu.Unlock()
+	if c.currentSession == nil {
+		return 0
+	}
+	return c.currentSession.TokenCount()
+}
+
+// HasTokenUsage reports whether occupancy has a provider-usage baseline.
+func (c *ContextManager) HasTokenUsage() bool {
+	if c == nil {
+		return false
+	}
+	c.operationMu.Lock()
+	defer c.operationMu.Unlock()
+	return c.currentSession != nil && c.currentSession.HasTokenUsage()
+}
+
+// TokenSnapshot reads count and baseline validity from the same active session.
+func (c *ContextManager) TokenSnapshot() session.TokenState {
+	if c == nil {
+		return session.TokenState{}
+	}
+	c.operationMu.Lock()
+	defer c.operationMu.Unlock()
+	return c.currentSession.TokenSnapshot()
 }
 
 func newSessionID() string {
