@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <fcntl.h>
@@ -133,6 +134,47 @@ static int xioctl(int fd, unsigned long request, void* arg) {
         ret = ioctl(fd, request, arg);
     } while (ret < 0 && errno == EINTR);
 
+    return ret;
+}
+
+static int traced_xioctl(int fd,
+                         unsigned long request,
+                         void* arg,
+                         const char* operation,
+                         const char* device) {
+    AIDEN_LOG_INFO("v4l2", "ioctl_started",
+                   "operation=%s device=%s fd=%d request=%#lx",
+                   operation ? operation : "unknown",
+                   device ? device : "", fd, request);
+    const std::chrono::steady_clock::time_point started =
+        std::chrono::steady_clock::now();
+    errno = 0;
+    const int ret = xioctl(fd, request, arg);
+    const int operation_errno = ret < 0 ? errno : 0;
+    const uint64_t elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count());
+    if (ret < 0) {
+        AIDEN_LOG_WARN("v4l2", "ioctl_completed",
+                       "operation=%s device=%s fd=%d request=%#lx ret=%d errno=%d error=%s elapsed_ms=%llu",
+                       operation ? operation : "unknown",
+                       device ? device : "", fd, request, ret,
+                       operation_errno, strerror(operation_errno),
+                       static_cast<unsigned long long>(elapsed_ms));
+    } else if (elapsed_ms >= 100) {
+        AIDEN_LOG_WARN("v4l2", "ioctl_completed",
+                       "operation=%s device=%s fd=%d request=%#lx ret=%d errno=0 slow=1 elapsed_ms=%llu",
+                       operation ? operation : "unknown",
+                       device ? device : "", fd, request, ret,
+                       static_cast<unsigned long long>(elapsed_ms));
+    } else {
+        AIDEN_LOG_INFO("v4l2", "ioctl_completed",
+                       "operation=%s device=%s fd=%d request=%#lx ret=%d errno=0 elapsed_ms=%llu",
+                       operation ? operation : "unknown",
+                       device ? device : "", fd, request, ret,
+                       static_cast<unsigned long long>(elapsed_ms));
+    }
+    errno = operation_errno;
     return ret;
 }
 
@@ -386,7 +428,9 @@ static int push_edid(int subdev_fd, const CameraConfig& config) {
     // the installed v4l-utils disagreed about the command line, logging
     // edid_fallback_failed on a push that then succeeded through the ioctl
     // anyway. Keep v4l2-ctl for kernels or bridges that reject the ioctl.
-    if (xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid) < 0) {
+    if (traced_xioctl(subdev_fd, VIDIOC_SUBDEV_S_EDID, &edid,
+                      "subdev_set_edid",
+                      config.subdev_device ? config.subdev_device : "") < 0) {
         AIDEN_LOG_WARN("hdmi", "edid_ioctl_failed",
                        "device=%s error=%s trying=v4l2-ctl",
                        config.subdev_device ? config.subdev_device : "",
@@ -401,13 +445,22 @@ static int push_edid(int subdev_fd, const CameraConfig& config) {
     return 0;
 }
 
-static int query_and_set_timings(int subdev_fd, struct v4l2_dv_timings* timings) {
+static int query_and_set_timings(int subdev_fd,
+                                 const char* subdev_device,
+                                 struct v4l2_dv_timings* timings) {
     memset(timings, 0, sizeof(*timings));
 
-    if (xioctl(subdev_fd, VIDIOC_SUBDEV_QUERY_DV_TIMINGS, timings) < 0) {
+    if (traced_xioctl(subdev_fd, VIDIOC_SUBDEV_QUERY_DV_TIMINGS, timings,
+                      "subdev_query_dv_timings", subdev_device) < 0) {
         return -1;
     }
-    if (xioctl(subdev_fd, VIDIOC_SUBDEV_S_DV_TIMINGS, timings) < 0) {
+    AIDEN_LOG_INFO("hdmi", "timings_detected",
+                   "device=%s width=%u height=%u pixelclock=%llu",
+                   subdev_device ? subdev_device : "",
+                   timings->bt.width, timings->bt.height,
+                   static_cast<unsigned long long>(timings->bt.pixelclock));
+    if (traced_xioctl(subdev_fd, VIDIOC_SUBDEV_S_DV_TIMINGS, timings,
+                      "subdev_set_dv_timings", subdev_device) < 0) {
         return -2;
     }
 
@@ -416,24 +469,48 @@ static int query_and_set_timings(int subdev_fd, struct v4l2_dv_timings* timings)
 
 static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_t* height) {
     if (!config.enable_hdmi_sync) {
+        AIDEN_LOG_INFO("hdmi", "sync_skipped",
+                       "reason=disabled width=%d height=%d",
+                       config.width, config.height);
         *width = static_cast<uint32_t>(config.width);
         *height = static_cast<uint32_t>(config.height);
         return true;
     }
 
     const char* subdev_device = config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2";
+    const std::chrono::steady_clock::time_point sync_started =
+        std::chrono::steady_clock::now();
+    AIDEN_LOG_INFO("hdmi", "sync_started",
+                   "device=%s force_trigger=%d allow_edid_fallback=%d trigger_retries=%d trigger_delay_ms=%d expected_width=%d expected_height=%d",
+                   subdev_device, config.force_trigger ? 1 : 0,
+                   config.allow_edid_fallback ? 1 : 0, config.trigger_retries,
+                   config.trigger_delay_ms, config.width, config.height);
+    AIDEN_LOG_INFO("hdmi", "subdevice_open_started",
+                   "device=%s", subdev_device);
+    errno = 0;
     int subdev_fd = open(subdev_device, O_RDWR);
     if (subdev_fd < 0) {
+        const int open_errno = errno;
+        const uint64_t elapsed_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - sync_started).count());
         AIDEN_LOG_ERROR("hdmi", "subdevice_open_failed", "device=%s error=%s",
-                        subdev_device, strerror(errno));
+                        subdev_device, strerror(open_errno));
+        AIDEN_LOG_WARN("hdmi", "sync_completed",
+                       "device=%s ok=0 phase=subdevice_open errno=%d elapsed_ms=%llu",
+                       subdev_device, open_errno,
+                       static_cast<unsigned long long>(elapsed_ms));
+        errno = open_errno;
         return false;
     }
+    AIDEN_LOG_INFO("hdmi", "subdevice_open_completed",
+                   "device=%s fd=%d", subdev_device, subdev_fd);
 
     struct v4l2_dv_timings timings;
     const int trigger_attempts = config.trigger_retries;
 
     if (!config.force_trigger) {
-        int ret = query_and_set_timings(subdev_fd, &timings);
+        int ret = query_and_set_timings(subdev_fd, subdev_device, &timings);
         if (ret == 0) {
             if (!timings_match_request(config, timings)) {
                 AIDEN_LOG_WARN("hdmi", "timing_mismatch",
@@ -445,6 +522,13 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
                 *width = timings.bt.width;
                 *height = timings.bt.height;
                 close(subdev_fd);
+                const uint64_t elapsed_ms = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - sync_started).count());
+                AIDEN_LOG_INFO("hdmi", "sync_completed",
+                               "device=%s ok=1 phase=timings width=%u height=%u elapsed_ms=%llu",
+                               subdev_device, *width, *height,
+                               static_cast<unsigned long long>(elapsed_ms));
                 return true;
             }
         } else if (ret == -2) {
@@ -460,21 +544,39 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
             // force-trigger attempts separately.
             AIDEN_LOG_WARN("hdmi", "timing_probe_pending", "device=%s error=%s",
                            subdev_device, strerror(errno));
+            const int probe_errno = errno;
             close(subdev_fd);
+            const uint64_t elapsed_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - sync_started).count());
+            AIDEN_LOG_WARN("hdmi", "sync_completed",
+                           "device=%s ok=0 phase=timing_probe errno=%d elapsed_ms=%llu",
+                           subdev_device, probe_errno,
+                           static_cast<unsigned long long>(elapsed_ms));
+            errno = probe_errno;
             return false;
         }
     }
 
     for (int attempt = 0; attempt <= trigger_attempts; ++attempt) {
         if (push_edid(subdev_fd, config) < 0) {
+            const int edid_errno = errno;
             close(subdev_fd);
+            const uint64_t elapsed_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - sync_started).count());
+            AIDEN_LOG_WARN("hdmi", "sync_completed",
+                           "device=%s ok=0 phase=edid errno=%d elapsed_ms=%llu trigger_attempt=%d",
+                           subdev_device, edid_errno,
+                           static_cast<unsigned long long>(elapsed_ms), attempt + 1);
+            errno = edid_errno;
             return false;
         }
         if (config.trigger_delay_ms > 0) {
             usleep(static_cast<useconds_t>(config.trigger_delay_ms) * 1000);
         }
 
-        int ret = query_and_set_timings(subdev_fd, &timings);
+        int ret = query_and_set_timings(subdev_fd, subdev_device, &timings);
         if (ret == 0) {
             if (!timings_match_request(config, timings)) {
                 AIDEN_LOG_WARN("hdmi", "timing_mismatch",
@@ -488,6 +590,13 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
             *width = timings.bt.width;
             *height = timings.bt.height;
             close(subdev_fd);
+            const uint64_t elapsed_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - sync_started).count());
+            AIDEN_LOG_INFO("hdmi", "sync_completed",
+                           "device=%s ok=1 phase=triggered_timings width=%u height=%u elapsed_ms=%llu trigger_attempt=%d",
+                           subdev_device, *width, *height,
+                           static_cast<unsigned long long>(elapsed_ms), attempt + 1);
             return true;
         }
 
@@ -503,7 +612,16 @@ static bool sync_hdmi_input(const CameraConfig& config, uint32_t* width, uint32_
 
     AIDEN_LOG_ERROR("hdmi", "timing_sync_failed", "device=%s error=%s",
                     subdev_device, strerror(errno));
+    const int sync_errno = errno;
     close(subdev_fd);
+    const uint64_t elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - sync_started).count());
+    AIDEN_LOG_WARN("hdmi", "sync_completed",
+                   "device=%s ok=0 phase=timing_sync errno=%d elapsed_ms=%llu",
+                   subdev_device, sync_errno,
+                   static_cast<unsigned long long>(elapsed_ms));
+    errno = sync_errno;
     return false;
 }
 
@@ -1112,14 +1230,27 @@ public:
         if (streaming) {
             return true;
         }
+        const char* device = config.device_name ? config.device_name : "/dev/video0";
+        const std::chrono::steady_clock::time_point queue_started =
+            std::chrono::steady_clock::now();
+        AIDEN_LOG_INFO("camera", "buffer_queue_batch_started",
+                       "device=%s count=%zu", device, buffers.size());
         for (uint32_t i = 0; i < buffers.size(); ++i) {
             if (!queue_buffer(i)) {
+                const int queue_errno = errno;
+                const uint64_t elapsed_ms = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - queue_started).count());
                 AIDEN_LOG_ERROR("camera", "buffer_requeue_failed",
-                                "buffer_index=%u error=%s", i, strerror(errno));
+                                "device=%s buffer_index=%u errno=%d error=%s elapsed_ms=%llu",
+                                device, i, queue_errno, strerror(queue_errno),
+                                static_cast<unsigned long long>(elapsed_ms));
+                errno = queue_errno;
                 return false;
             }
         }
-        if (xioctl(video_fd, VIDIOC_STREAMON, &buf_type) < 0) {
+        if (traced_xioctl(video_fd, VIDIOC_STREAMON, &buf_type,
+                          "video_stream_on", device) < 0) {
             AIDEN_LOG_ERROR("camera", "stream_start_failed", "error=%s",
                             strerror(errno));
             return false;
@@ -1133,7 +1264,9 @@ public:
         if (!streaming) {
             return true;
         }
-        if (xioctl(video_fd, VIDIOC_STREAMOFF, &buf_type) < 0) {
+        const char* device = config.device_name ? config.device_name : "/dev/video0";
+        if (traced_xioctl(video_fd, VIDIOC_STREAMOFF, &buf_type,
+                          "video_stream_off", device) < 0) {
             AIDEN_LOG_ERROR("camera", "stream_stop_failed", "error=%s",
                             strerror(errno));
             return false;
@@ -1340,31 +1473,60 @@ bool CameraCapture::init(const CameraConfig& config) {
     impl_->video_fd = -1;
     impl_->buffers.clear();
 
-    auto fail = [this]() {
+    const char* device = config.device_name ? config.device_name : "/dev/video0";
+    const char* subdev = config.subdev_device ? config.subdev_device : "/dev/v4l-subdev2";
+    const std::chrono::steady_clock::time_point initialization_started =
+        std::chrono::steady_clock::now();
+    const char* initialization_stage = "configuration";
+    AIDEN_LOG_INFO("camera", "initialization_started",
+                   "device=%s subdev=%s pixel_format=%s width=%d height=%d hdmi_sync=%d force_trigger=%d",
+                   device, subdev, config.pixel_format ? config.pixel_format : "",
+                   config.width, config.height, config.enable_hdmi_sync ? 1 : 0,
+                   config.force_trigger ? 1 : 0);
+
+    auto fail = [this, &initialization_stage, &initialization_started, device, subdev]() {
+        const int failure_errno = errno;
+        const uint64_t elapsed_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - initialization_started).count());
+        AIDEN_LOG_WARN("camera", "initialization_completed",
+                       "device=%s subdev=%s ok=0 stage=%s errno=%d error=%s elapsed_ms=%llu",
+                       device, subdev, initialization_stage, failure_errno,
+                       failure_errno == 0 ? "not_set" : strerror(failure_errno),
+                       static_cast<unsigned long long>(elapsed_ms));
         impl_->cleanup_device();
         impl_->initialized = false;
+        errno = failure_errno;
         return false;
     };
 
     uint32_t synced_width = static_cast<uint32_t>(config.width);
     uint32_t synced_height = static_cast<uint32_t>(config.height);
+    initialization_stage = "hdmi_sync";
     if (!sync_hdmi_input(config, &synced_width, &synced_height)) {
         return fail();
     }
     impl_->config.width = static_cast<int>(synced_width);
     impl_->config.height = static_cast<int>(synced_height);
 
-    const char* device = config.device_name ? config.device_name : "/dev/video0";
+    initialization_stage = "video_open";
+    AIDEN_LOG_INFO("camera", "device_open_started",
+                   "device=%s", device);
+    errno = 0;
     impl_->video_fd = open(device, O_RDWR | O_NONBLOCK);
     if (impl_->video_fd < 0) {
         AIDEN_LOG_ERROR("camera", "device_open_failed", "device=%s error=%s", device,
                         strerror(errno));
         return fail();
     }
+    AIDEN_LOG_INFO("camera", "device_open_completed",
+                   "device=%s fd=%d", device, impl_->video_fd);
 
     struct v4l2_capability cap;
     memset(&cap, 0, sizeof(cap));
-    if (xioctl(impl_->video_fd, VIDIOC_QUERYCAP, &cap) < 0) {
+    initialization_stage = "video_query_capabilities";
+    if (traced_xioctl(impl_->video_fd, VIDIOC_QUERYCAP, &cap,
+                      "video_query_capabilities", device) < 0) {
         AIDEN_LOG_ERROR("camera", "capability_query_failed", "device=%s error=%s", device,
                         strerror(errno));
         return fail();
@@ -1401,7 +1563,9 @@ bool CameraCapture::init(const CameraConfig& config) {
         fmt.fmt.pix.field = V4L2_FIELD_NONE;
     }
 
-    if (xioctl(impl_->video_fd, VIDIOC_S_FMT, &fmt) < 0) {
+    initialization_stage = "video_set_format";
+    if (traced_xioctl(impl_->video_fd, VIDIOC_S_FMT, &fmt,
+                      "video_set_format", device) < 0) {
         AIDEN_LOG_ERROR("camera", "format_set_failed", "device=%s error=%s", device,
                         strerror(errno));
         return fail();
@@ -1465,7 +1629,9 @@ bool CameraCapture::init(const CameraConfig& config) {
     req.count = 4;
     req.type = impl_->buf_type;
     req.memory = V4L2_MEMORY_MMAP;
-    if (xioctl(impl_->video_fd, VIDIOC_REQBUFS, &req) < 0) {
+    initialization_stage = "video_request_buffers";
+    if (traced_xioctl(impl_->video_fd, VIDIOC_REQBUFS, &req,
+                      "video_request_buffers", device) < 0) {
         AIDEN_LOG_ERROR("camera", "buffer_request_failed", "device=%s error=%s", device,
                         strerror(errno));
         return fail();
@@ -1491,7 +1657,9 @@ bool CameraCapture::init(const CameraConfig& config) {
             buf.length = VIDEO_MAX_PLANES;
         }
 
-        if (xioctl(impl_->video_fd, VIDIOC_QUERYBUF, &buf) < 0) {
+        initialization_stage = "video_query_buffer";
+        if (traced_xioctl(impl_->video_fd, VIDIOC_QUERYBUF, &buf,
+                          "video_query_buffer", device) < 0) {
             AIDEN_LOG_ERROR("camera", "buffer_query_failed",
                             "device=%s buffer_index=%u error=%s", device, i,
                             strerror(errno));
@@ -1513,6 +1681,7 @@ bool CameraCapture::init(const CameraConfig& config) {
 
     }
 
+    initialization_stage = "video_stream_on";
     if (!impl_->start_streaming()) {
         AIDEN_LOG_ERROR("camera", "stream_start_failed", "device=%s error=%s",
                         device, strerror(errno));
@@ -1520,6 +1689,14 @@ bool CameraCapture::init(const CameraConfig& config) {
     }
 
     impl_->initialized = true;
+    const uint64_t elapsed_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - initialization_started).count());
+    AIDEN_LOG_INFO("camera", "initialization_completed",
+                   "device=%s subdev=%s ok=1 stage=ready width=%d height=%d buffers=%zu elapsed_ms=%llu",
+                   device, subdev, impl_->config.width, impl_->config.height,
+                   impl_->buffers.size(),
+                   static_cast<unsigned long long>(elapsed_ms));
     return true;
 }
 
