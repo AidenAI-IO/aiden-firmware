@@ -141,7 +141,8 @@ static int traced_xioctl(int fd,
                          unsigned long request,
                          void* arg,
                          const char* operation,
-                         const char* device) {
+                         const char* device,
+                         bool suppress_fast_success_log = false) {
     AIDEN_LOG_INFO("v4l2", "ioctl_started",
                    "operation=%s device=%s fd=%d request=%#lx",
                    operation ? operation : "unknown",
@@ -167,7 +168,7 @@ static int traced_xioctl(int fd,
                        operation ? operation : "unknown",
                        device ? device : "", fd, request, ret,
                        static_cast<unsigned long long>(elapsed_ms));
-    } else {
+    } else if (!suppress_fast_success_log) {
         AIDEN_LOG_INFO("v4l2", "ioctl_completed",
                        "operation=%s device=%s fd=%d request=%#lx ret=%d errno=0 elapsed_ms=%llu",
                        operation ? operation : "unknown",
@@ -1250,7 +1251,7 @@ public:
             }
         }
         if (traced_xioctl(video_fd, VIDIOC_STREAMON, &buf_type,
-                          "video_stream_on", device) < 0) {
+                          "video_stream_on", device, true) < 0) {
             AIDEN_LOG_ERROR("camera", "stream_start_failed", "error=%s",
                             strerror(errno));
             return false;
@@ -1266,7 +1267,7 @@ public:
         }
         const char* device = config.device_name ? config.device_name : "/dev/video0";
         if (traced_xioctl(video_fd, VIDIOC_STREAMOFF, &buf_type,
-                          "video_stream_off", device) < 0) {
+                          "video_stream_off", device, true) < 0) {
             AIDEN_LOG_ERROR("camera", "stream_stop_failed", "error=%s",
                             strerror(errno));
             return false;

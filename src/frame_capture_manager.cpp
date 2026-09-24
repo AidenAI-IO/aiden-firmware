@@ -492,6 +492,12 @@ void FrameCaptureManager::run() {
             captured_since_open = true;
             backoff_ms = initial_backoff_ms();
             server_->set_state("RUNNING");
+            AIDEN_LOG_INFO("capture", "worker_idle",
+                           "open_attempt=%llu stream_active=%d requested_generation=%llu completed_generation=%llu",
+                           static_cast<unsigned long long>(open_attempt),
+                           options_.keep_streamon ? 1 : 0,
+                           static_cast<unsigned long long>(generation),
+                           static_cast<unsigned long long>(generation));
         }
     }
 }
