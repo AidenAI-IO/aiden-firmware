@@ -1444,10 +1444,16 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
-	// Resolve a recoverable parser error before finishing notice tracking. A raw
-	// model response is a successful result and must not be persisted as an
-	// interrupted run.
-	output, err = resolveAgentOutputFallback(output, err)
+	// If the agent couldn't parse the LLM output format, extract the raw
+	// text and return it as the response instead of failing.
+	if errors.Is(err, agents.ErrUnableToParseOutput) {
+		raw := err.Error()
+		const prefix = "unable to parse agent output: "
+		if idx := strings.Index(raw, prefix); idx >= 0 {
+			output = strings.TrimSpace(raw[idx+len(prefix):])
+			err = nil
+		}
+	}
 	// End execution tracking before session bookkeeping and TTS. Canceling
 	// playback after a completed loop must not mark its task interrupted.
 	if noticeErr := notices.finish(ctx, err); noticeErr != nil {
@@ -1506,19 +1512,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		SleepRequested:         waitForWakeupRequested,
 		SleepReason:            waitForWakeupReason,
 	}, nil
-}
-
-func resolveAgentOutputFallback(output string, runErr error) (string, error) {
-	if !errors.Is(runErr, agents.ErrUnableToParseOutput) {
-		return output, runErr
-	}
-	raw := runErr.Error()
-	const prefix = "unable to parse agent output: "
-	idx := strings.Index(raw, prefix)
-	if idx < 0 {
-		return output, runErr
-	}
-	return strings.TrimSpace(raw[idx+len(prefix):]), nil
 }
 
 func (r *Runtime) getSystemPrompt() string {

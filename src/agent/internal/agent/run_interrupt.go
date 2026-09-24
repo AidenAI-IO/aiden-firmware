@@ -134,18 +134,11 @@ func startRunNotices(manager func() *contextmanager.ContextManager, runID string
 	return n, nil
 }
 
-// recoverPendingBackendRun preserves the historical error-only helper for
-// callers that do not need to replace their active context manager.
-func recoverPendingBackendRun(folder string, live *contextmanager.ContextManager) error {
-	_, err := recoverPendingBackendRunManager(folder, live)
-	return err
-}
-
 // recoverPendingBackendRunManager is called under Runtime's run gate, before
 // adding another user input or rotating the conversation. A hard kill cannot
-// execute a defer, so an unfinished journal is resolved here instead. The
-// returned manager is the context that received the notice; callers must use it
-// when recovery falls back from a damaged compaction revision.
+// execute a defer, so an unfinished journal is resolved here instead. It returns
+// the context to continue using; recovery of an unrelated conversation must not
+// replace the active conversation.
 func recoverPendingBackendRunManager(folder string, live *contextmanager.ContextManager) (*contextmanager.ContextManager, error) {
 	data, err := os.ReadFile(filepath.Join(folder, pendingBackendRunFile))
 	if os.IsNotExist(err) {
@@ -180,8 +173,10 @@ func recoverPendingBackendRunManager(folder string, live *contextmanager.Context
 			return nil, fmt.Errorf("load interrupted context: %w", err)
 		}
 	}
-	// Walk lineage without switching .current_session or mutating a different
-	// live context. A cleared/rotated history must stay clear.
+	activeManager := manager
+	resumePending := false
+	// Walk lineage without mutating a different live context. A cleared/rotated
+	// history must stay clear.
 	ancestor := manager
 	seen := map[string]bool{}
 	for ancestor.GetSessionID() != pending.SessionID {
@@ -197,6 +192,7 @@ func recoverPendingBackendRunManager(folder string, live *contextmanager.Context
 				return nil, err
 			}
 			manager, err = contextmanager.LoadContextManagerFromSessionID(folder, pending.SessionID)
+			// Only repair the old transcript; keep the active conversation.
 			break
 		}
 		if !safeRunSessionID(parent) {
@@ -219,6 +215,7 @@ func recoverPendingBackendRunManager(folder string, live *contextmanager.Context
 			if err != nil {
 				return nil, fmt.Errorf("load pending interrupted context: %w", err)
 			}
+			resumePending = true
 			break
 		}
 		ancestor = next
@@ -237,15 +234,26 @@ func recoverPendingBackendRunManager(folder string, live *contextmanager.Context
 	if pending.Notice != nil {
 		message = *pending.Notice
 	}
+	noticeExists := false
 	for _, existing := range manager.CloneMessageList() {
 		if existing.Role == messages.MessageRoleNotice && existing.Content == message.Content {
-			return manager, removePendingBackendRun(folder)
+			noticeExists = true
+			break
 		}
 	}
-	if err := manager.AppendMessage(message); err != nil {
-		return nil, fmt.Errorf("recover interrupted backend run: %w", err)
+	if !noticeExists {
+		if err := manager.AppendMessage(message); err != nil {
+			return nil, fmt.Errorf("recover interrupted backend run: %w", err)
+		}
 	}
-	return manager, removePendingBackendRun(folder)
+	if resumePending {
+		// Keep the active session and its on-disk pointer in sync before removing
+		// the journal, so another restart retains the recovered context.
+		if err := activeManager.Activate(manager); err != nil {
+			return nil, fmt.Errorf("activate recovered backend context: %w", err)
+		}
+	}
+	return activeManager, removePendingBackendRun(folder)
 }
 
 func safeRunSessionID(id string) bool {

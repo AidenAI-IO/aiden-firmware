@@ -202,8 +202,7 @@ execution. It clears the record after a normal end or after persisting an
 interruption. A failed notice write leaves a recovery record; if recovery also
 fails, the next run reports the error instead of executing without that context.
 Recovery follows active compaction lineage, deduplicates notices, and preserves
-history rotation/clearing. Runs started by older binaries have no such journal;
-their existing Episode interruption recovery still applies.
+history rotation/clearing.
 
 Notices are appended after tool results, preserving tool-call/result pairing.
 They tell the model to verify the current device state before repeating an action,

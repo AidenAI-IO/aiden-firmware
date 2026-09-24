@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/messages"
@@ -251,7 +252,7 @@ func TestInterruptJournalRecoveryFollowsCompactionAndIsIdempotent(t *testing.T) 
 	if err := contextmanager.SwitchSession(manager.GetSessionFolder(), manager.GetSessionID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverPendingBackendRun(manager.GetSessionFolder(), nil); err != nil {
+	if _, err := recoverPendingBackendRunManager(manager.GetSessionFolder(), nil); err != nil {
 		t.Fatal(err)
 	}
 	requireInterruptNotices(t, manager, "agent_restart")
@@ -259,7 +260,7 @@ func TestInterruptJournalRecoveryFollowsCompactionAndIsIdempotent(t *testing.T) 
 	if err := savePendingBackendRun(manager.GetSessionFolder(), n.journal); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverPendingBackendRun(manager.GetSessionFolder(), nil); err != nil {
+	if _, err := recoverPendingBackendRunManager(manager.GetSessionFolder(), nil); err != nil {
 		t.Fatal(err)
 	}
 	requireInterruptNotices(t, manager, "agent_restart")
@@ -295,7 +296,18 @@ func TestInterruptJournalFallsBackWhenIntermediateCompactionIsCorrupt(t *testing
 	if recovered.GetSessionID() != root.GetSessionID() {
 		t.Fatalf("recovered session = %q, want pending session %q", recovered.GetSessionID(), root.GetSessionID())
 	}
+	if recovered != current {
+		t.Fatal("fallback replaced the long-lived context manager")
+	}
+	reloaded, err := contextmanager.LoadContextManagerFromCurrentSession(root.GetSessionFolder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.GetSessionID() != recovered.GetSessionID() {
+		t.Fatal("fallback did not persist the recovered active session")
+	}
 	requireInterruptNotices(t, recovered, "agent_restart")
+	requireInterruptNotices(t, reloaded, "agent_restart")
 	if !runtimeModelCallContains(messages.ConvertMessageList(recovered.CloneMessageList()), "Interrupt [agent_restart]:") {
 		t.Fatal("active recovered context is missing restart notice")
 	}
@@ -316,8 +328,12 @@ func TestInterruptJournalDoesNotContaminateNewConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverPendingBackendRun(current.GetSessionFolder(), current); err != nil {
+	recovered, err := recoverPendingBackendRunManager(current.GetSessionFolder(), current)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if recovered != current {
+		t.Fatal("recovery replaced the active conversation with the interrupted conversation")
 	}
 	requireInterruptNotices(t, current)
 	requireInterruptNotices(t, original, "agent_restart")
@@ -353,7 +369,7 @@ func TestInterruptJournalRetriesFailedNoticePersistence(t *testing.T) {
 	if err := os.Rename(path+".saved", path); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverPendingBackendRun(manager.GetSessionFolder(), manager); err != nil {
+	if _, err := recoverPendingBackendRunManager(manager.GetSessionFolder(), manager); err != nil {
 		t.Fatal(err)
 	}
 	requireInterruptNotices(t, manager, "canceled")
@@ -380,7 +396,7 @@ func TestInterruptJournalCompletedRunIgnoresLaterCancellation(t *testing.T) {
 	if err := savePendingBackendRun(manager.GetSessionFolder(), n.journal); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverPendingBackendRun(manager.GetSessionFolder(), manager); err != nil {
+	if _, err := recoverPendingBackendRunManager(manager.GetSessionFolder(), manager); err != nil {
 		t.Fatal(err)
 	}
 	requireInterruptNotices(t, manager)
@@ -411,7 +427,7 @@ func TestInterruptJournalClearedHistoryIsNotRestored(t *testing.T) {
 	if err := contextmanager.ClearAllSessions(manager.GetSessionFolder()); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverPendingBackendRun(manager.GetSessionFolder(), nil); err != nil {
+	if _, err := recoverPendingBackendRunManager(manager.GetSessionFolder(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(manager.GetSessionFolder(), pendingBackendRunFile)); !os.IsNotExist(err) {
@@ -473,5 +489,47 @@ func TestRuntimeInterruptNoticeSurvivesRestartBeforeNextModelCall(t *testing.T) 
 	}
 	if !stateSeen {
 		t.Fatal("recovered context manager did not apply runtime state hook")
+	}
+}
+
+func TestRuntimeInterruptRecoveryKeepsRotatedConversation(t *testing.T) {
+	cfg := withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"})
+	model := &interruptTestModel{generate: func(_ context.Context, input []llms.MessageContent) (*llms.ContentResponse, error) {
+		if runtimeModelCallContains(input, "old conversation task") || runtimeModelCallContains(input, "Interrupt [agent_restart]:") {
+			t.Fatal("recovery injected the old conversation into the next model request")
+		}
+		if !runtimeModelCallContains(input, "new conversation task") {
+			t.Fatal("next model request is missing the new input")
+		}
+		return contentResponse("done"), nil
+	}}
+	runtime := NewRuntimeWithDeps(cfg, &testModelResolver{model: model}, NewMemoryManager(""), &ToolSet{tools: map[string]langtools.Tool{}}, NewSkillIndex())
+	defer runtime.Close()
+	folder := agentpath.ContextManagerSessionFolder(cfg.ConfigDir)
+	original, err := freshNewContextManager(runtime.getSystemPrompt(), "old conversation task", nil, folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := startRunNotices(func() *contextmanager.ContextManager { return original }, "run_old_conversation"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := contextmanager.NewContextManager(folder, runtime.getSystemPrompt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "new conversation task"}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.contextManager.GetSessionID() != current.GetSessionID() {
+		t.Fatal("runtime resumed the old conversation after rotation")
+	}
+	requireInterruptNotices(t, current)
+	requireInterruptNotices(t, original, "agent_restart")
+	oldContext, err := contextmanager.LoadContextManagerFromSessionID(folder, original.GetSessionID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeModelCallContains(messages.ConvertMessageList(oldContext.CloneMessageList()), "new conversation task") {
+		t.Fatal("new input was persisted in the old conversation")
 	}
 }
