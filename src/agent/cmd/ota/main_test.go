@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -13,8 +14,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"aiden-agent/internal/ota"
 )
@@ -140,6 +143,81 @@ func TestDefaultRebootIsRealUnlessDryRun(t *testing.T) {
 	}
 	if err := dryRunReboot(); err != nil {
 		t.Fatalf("dry-run reboot error = %v", err)
+	}
+}
+
+func TestSelfCheckCommandOutcomes(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		agentStatus     string
+		configWebStatus string
+		passed          int
+		warnings        int
+		failures        int
+		wantError       string
+	}{
+		{"healthy", "pass", "pass", 2, 0, 0, ""},
+		{"agent only failure", "warn", "pass", 1, 1, 0, ""},
+		{"config web failure", "pass", "fail", 1, 0, 1, "self-check failed: 1 required check(s)"},
+		{"both unavailable", "warn", "fail", 0, 1, 1, "self-check failed: 1 required check(s)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := filepath.Join(dir, "state")
+			configPath := filepath.Join(dir, "config.json")
+			if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			startedAt := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
+			// Probe classification is covered by internal/ota tests. Here the
+			// report isolates the command's success/error and reporting contract.
+			wantReport := ota.SelfCheckReport{
+				StartedAt:  startedAt,
+				FinishedAt: startedAt.Add(time.Second),
+				Items: map[string]ota.SelfCheckItem{
+					"agent_http": {Status: tt.agentStatus},
+					"config_web": {Status: tt.configWebStatus},
+				},
+				Passed: tt.passed, Warnings: tt.warnings, Failures: tt.failures,
+			}
+			probeCalls := 0
+			var out bytes.Buffer
+			err := runWithDependencies([]string{"self-check", "--config", configPath, "--state-dir", stateDir}, &out,
+				func(config *ota.UpdaterConfig) { config.StorageMountPoint = stateDir },
+				func(ctx context.Context, config ota.SelfCheckConfig) ota.SelfCheckReport {
+					probeCalls++
+					if err := ctx.Err(); err != nil {
+						t.Fatalf("probe context: %v", err)
+					}
+					if config != ota.DefaultSelfCheckConfig() {
+						t.Fatalf("probe config = %+v, want defaults", config)
+					}
+					return wantReport
+				})
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("self-check returned an error: %v", err)
+				}
+			} else if err == nil || err.Error() != tt.wantError {
+				t.Fatalf("self-check error = %v, want %q", err, tt.wantError)
+			}
+			if probeCalls != 1 {
+				t.Fatalf("probe calls = %d, want 1", probeCalls)
+			}
+			persisted, err := os.ReadFile(filepath.Join(stateDir, "health", "current.json"))
+			if err != nil {
+				t.Fatalf("read self-check report: %v", err)
+			}
+			for name, data := range map[string][]byte{"stdout": out.Bytes(), "persisted": persisted} {
+				var report ota.SelfCheckReport
+				if err := json.Unmarshal(data, &report); err != nil {
+					t.Fatalf("decode %s report: %v", name, err)
+				}
+				if !reflect.DeepEqual(report, wantReport) {
+					t.Fatalf("%s report = %+v, want %+v", name, report, wantReport)
+				}
+			}
+		})
 	}
 }
 
