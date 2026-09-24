@@ -19,6 +19,75 @@ import (
 	"github.com/tmc/langchaingo/schema"
 )
 
+func TestActivePromptTokensUsesUsageAndEstimatesOnlyNewContext(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := []llms.CallOption{llms.WithTools([]llms.Tool{{
+		Type: "function",
+		Function: &llms.FunctionDefinition{
+			Name:        "shell",
+			Description: "Execute a shell command",
+		},
+	}})}
+	var callOptions llms.CallOptions
+	options[0](&callOptions)
+	schemaTokens := tokencounter.EstimateToolSchemaTokens(callOptions)
+	if schemaTokens <= 0 {
+		t.Fatal("test requires a nonempty schema estimate")
+	}
+	want := tokencounter.EstimateMessagesTokens(manager.CloneMessageList()) + schemaTokens
+	if got := estimateActivePromptTokens(manager, options); got != want {
+		t.Fatalf("initial prompt tokens = %d, want %d", got, want)
+	}
+	if got := activeMessageTokens(manager, callOptions); got != want-schemaTokens {
+		t.Fatalf("initial message tokens = %d, want %d", got, want-schemaTokens)
+	}
+
+	if err := manager.AppendMessage(messages.Message{
+		Role: messages.MessageRoleAssistant, Content: "ok",
+		Usage: &messages.Usage{InputTokens: 800, OutputTokens: 20, TotalTokens: 820},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := estimateActivePromptTokens(manager, options); got != 820 {
+		t.Fatalf("measured prompt tokens = %d, want 820 without counting schema twice", got)
+	}
+	if got := activeMessageTokens(manager, callOptions); got != max(0, 820-schemaTokens) {
+		t.Fatalf("measured message tokens = %d, want schema excluded", got)
+	}
+	delta := messages.Message{Role: messages.MessageRoleUser, Content: "next question"}
+	if err := manager.AppendMessage(delta); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := estimateActivePromptTokens(manager, options), 820+tokencounter.EstimateMessageTokens(delta); got != want {
+		t.Fatalf("incremental prompt tokens = %d, want %d", got, want)
+	}
+
+	revision, err := contextmanager.NewContextManagerRevisionFromMessageList(manager, manager.CloneMessageList())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = tokencounter.EstimateMessagesTokens(revision.CloneMessageList()) + schemaTokens
+	if got := estimateActivePromptTokens(revision, options); got != want {
+		t.Fatalf("revised prompt tokens = %d, want fresh estimate %d", got, want)
+	}
+	if got := activeMessageTokens(revision, callOptions); got != want-schemaTokens {
+		t.Fatalf("revised message tokens = %d, want %d", got, want-schemaTokens)
+	}
+	largeSchema := llms.CallOptions{}
+	llms.WithTools([]llms.Tool{{
+		Type: "function",
+		Function: &llms.FunctionDefinition{
+			Name: "large", Description: strings.Repeat("schema ", 1_000),
+		},
+	}})(&largeSchema)
+	if got := activeMessageTokens(manager, largeSchema); got != 0 {
+		t.Fatalf("message tokens with schema larger than usage = %d, want zero", got)
+	}
+}
+
 func TestToolResultPolicyKeepsSmallResultInline(t *testing.T) {
 	policy := NewToolResultPolicy()
 	prepared, err := policy.Prepare(context.Background(), ToolResultPrepareInput{

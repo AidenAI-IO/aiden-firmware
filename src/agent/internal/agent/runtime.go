@@ -1231,8 +1231,14 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget, cfg.ContextCompactionThresholdOrDefault())
 	contextBudgetOptions := chains.GetLLMCallOptions(callOptions...)
 	contextBudgetOptions = append(contextBudgetOptions, llms.WithTools((&FunctionAgent{Tools: profile.Tools}).toolsAsLLM()))
+	var contextBudgetCallOptions llms.CallOptions
+	for _, option := range contextBudgetOptions {
+		if option != nil {
+			option(&contextBudgetCallOptions)
+		}
+	}
 	tokenUsage := estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
-	messageTokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+	messageTokenUsage := activeMessageTokens(r.contextManager, contextBudgetCallOptions)
 
 	// Historical state and tool-result pruning is deterministic and has its own
 	// configurable trigger. It is intentionally independent from conversation
@@ -1258,7 +1264,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			if err = r.contextManager.Activate(newManager); err != nil {
 				return RunResult{}, err
 			}
-			messageTokenUsage = tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 			tokenUsage = estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
 		}
 	}
@@ -1301,7 +1306,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if currentManager == nil {
 			return nil, false, nil
 		}
-		messageTokens := tokencounter.EstimateMessagesTokens(currentManager.CloneMessageList())
+		messageTokens := activeMessageTokens(currentManager, options)
 		toolSchemaTokens := tokencounter.EstimateToolSchemaTokens(options)
 		targetTokens := 0
 		reason := ""
@@ -1310,7 +1315,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			targetTokens = pruneTarget
 			reason = "active_turn_threshold"
 		}
-		if usableInputBudget > 0 && messageTokens+toolSchemaTokens > usableInputBudget {
+		if usableInputBudget > 0 && activePromptTokens(currentManager, options) > usableInputBudget {
 			hardBudgetExceeded = true
 			hardTarget := max(1, usableInputBudget-toolSchemaTokens)
 			// The emergency pass may break recent-exchange protection, so only
@@ -1346,8 +1351,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		var budgetErr error
 		if pruneErr == nil && hardBudgetExceeded {
-			afterMessageTokens := tokencounter.EstimateMessagesTokens(activeManager.CloneMessageList())
-			if afterMessageTokens+toolSchemaTokens > usableInputBudget {
+			afterMessageTokens := activeMessageTokens(activeManager, options)
+			if activePromptTokens(activeManager, options) > usableInputBudget {
 				budgetErr = fmt.Errorf("context remains over usable input budget after pruning: messageTokens=%d toolSchemaTokens=%d usableInputBudget=%d",
 					afterMessageTokens, toolSchemaTokens, usableInputBudget)
 			}
@@ -1382,8 +1387,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				activeManager = compactedManager
 				changed = true
 			}
-			afterMessageTokens := tokencounter.EstimateMessagesTokens(activeManager.CloneMessageList())
-			if afterMessageTokens+toolSchemaTokens > usableInputBudget {
+			afterMessageTokens := activeMessageTokens(activeManager, options)
+			if activePromptTokens(activeManager, options) > usableInputBudget {
 				return nil, false, fmt.Errorf("context remains over usable input budget after pruning and compaction: messageTokens=%d toolSchemaTokens=%d usableInputBudget=%d",
 					afterMessageTokens, toolSchemaTokens, usableInputBudget)
 			}
