@@ -680,14 +680,17 @@ func (e *realtimeClientTurnEndpoint) Reset() {
 // racing an explicit text response during session startup. The first audio
 // chunk can be microphone startup noise (or audio already buffered before the
 // chat command is selected); treating it as a new turn retires the pending
-// anonymous response before Gemini emits response.created. Provider VAD and
-// interruption events remain authoritative once the explicit response has
-// started.
-func shouldTrackRealtimeAdmissionSpeech(state *realtimeTurnState, chatPending, serverAuthoritativeInterruption bool) bool {
+// anonymous response before Gemini emits response.created. Providers with
+// server-authoritative turn detection do not use this local gate because only
+// provider events may promote audio into an input turn.
+func shouldTrackRealtimeAdmissionSpeech(state *realtimeTurnState, chatPending bool, capabilities realtimevoice.Capabilities) bool {
 	if state == nil || chatPending || state.responseRequestPending {
 		return false
 	}
-	if serverAuthoritativeInterruption && (state.responseActive || state.responseTerminalPending) {
+	if capabilities.ServerAuthoritativeTurnDetection {
+		return false
+	}
+	if capabilities.ServerAuthoritativeInterruption && (state.responseActive || state.responseTerminalPending) {
 		return false
 	}
 	return true
@@ -1670,7 +1673,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 			if err := session.SendAudio(ctx, pcm); err != nil {
 				return markRealtimeProviderFailure(err)
 			}
-			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat), info.Capabilities.ServerAuthoritativeInterruption) {
+			if admissionTurnEndpoint != nil && shouldTrackRealtimeAdmissionSpeech(&turnState, realtimeChatPending(chatBridge, queuedChat), info.Capabilities) {
 				now := time.Now()
 				wasActive := admissionTurnEndpoint.speechActive
 				admissionTurnEndpoint.Observe(pcm, now)

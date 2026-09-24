@@ -489,22 +489,22 @@ func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
 		t.Fatal("test endpoint did not detect its loud frame")
 	}
 	endpoint.Reset()
-	if shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, realtimevoice.Capabilities{}) {
 		endpoint.Observe(loudPCMFrame(), time.Now())
 	}
 	if endpoint.speechActive {
 		t.Fatal("test endpoint should not be consulted while a text response is pending")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, true, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, true, realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate tracked microphone audio while a chat command was queued")
 	}
-	if !shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, false, false) {
+	if !shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, false, realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate did not track audio for an idle realtime session")
 	}
 
 	state = realtimeTurnState{}
 	state.responseRequested()
-	if shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate tracked microphone audio after startChat requested a response")
 	}
 	if !state.responseStarted("") {
@@ -512,18 +512,43 @@ func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
 	}
 }
 
+func TestRealtimeChatAdmissionIgnoresLocalEchoForServerAuthoritativeInputTurns(t *testing.T) {
+	state := realtimeTurnState{}
+	endpoint := newRealtimeClientTurnEndpoint(800)
+	capabilities := realtimevoice.Capabilities{ServerAuthoritativeTurnDetection: true}
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
+		now := time.Now()
+		if endpoint.Observe(loudPCMFrame(), now) {
+			state.speechStarted()
+		}
+		if endpoint.Due(now.Add(endpoint.silenceDuration)) {
+			endpoint.Reset()
+			state.localSpeechStopped()
+		}
+	}
+
+	admission := (realtimeChatAdmissionState{turnBlocked: !state.canInjectResponse()}).admission()
+	if admission != realtimeChatStart {
+		t.Fatalf("speaker echo blocked WebUI text admission: state=%+v admission=%v", state, admission)
+	}
+}
+
 func TestRealtimeAdmissionSpeechDefersToAuthoritativeInterruptionDuringResponse(t *testing.T) {
 	state := realtimeTurnState{}
+	capabilities := realtimevoice.Capabilities{ServerAuthoritativeInterruption: true}
+	if !shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
+		t.Fatal("interruption authority disabled the local admission gate while idle")
+	}
 	if !state.responseStarted("") {
 		t.Fatal("anonymous Gemini response did not start")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&state, false, true) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
 		t.Fatal("local admission VAD tracked speaker echo during an authoritative provider response")
 	}
 	if !state.acceptsResponseEvent("") {
 		t.Fatalf("active anonymous response was marked stale: %+v", state)
 	}
-	if !shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
+	if !shouldTrackRealtimeAdmissionSpeech(&state, false, realtimevoice.Capabilities{}) {
 		t.Fatal("legacy provider behavior changed without the authoritative capability")
 	}
 }
@@ -549,7 +574,7 @@ func TestRealtimeChatPendingCoversQueuedCommand(t *testing.T) {
 	if !realtimeChatPending(bridge, &command) {
 		t.Fatal("queued chat command was not reported as pending")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, realtimeChatPending(bridge, &command), false) {
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, realtimeChatPending(bridge, &command), realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate tracked microphone audio while a chat command was parked in queuedChat")
 	}
 }

@@ -154,7 +154,7 @@ func TestGeminiProviderNormalizesLiveSession(t *testing.T) {
 	}
 }
 
-func TestGeminiExtendedThinkingSessionUsesServerAuthoritativeInterruption(t *testing.T) {
+func TestGeminiExtendedThinkingSessionUsesServerAuthoritativeCapabilities(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -191,6 +191,9 @@ func TestGeminiExtendedThinkingSessionUsesServerAuthoritativeInterruption(t *tes
 			defer session.Close()
 			if got := session.Info().Capabilities.ServerAuthoritativeInterruption; got != tc.want {
 				t.Fatalf("ServerAuthoritativeInterruption = %t, want %t", got, tc.want)
+			}
+			if got := session.Info().Capabilities.ServerAuthoritativeTurnDetection; got != tc.want {
+				t.Fatalf("ServerAuthoritativeTurnDetection = %t, want %t", got, tc.want)
 			}
 		})
 	}
