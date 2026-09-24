@@ -747,3 +747,98 @@ func TestConvertToStandardMessageListReportsMissingAttachment(t *testing.T) {
 		t.Fatalf("missing attachment part = %#v", messages[0].Parts[1])
 	}
 }
+
+func TestContextManagerSwitchKeepsManagerAndHooks(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := NewContextManager(sessionFolder, "system")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	managerPointer := manager
+	var hookCalls int
+	manager.AddAppendMessageHook(func(message messages.Message) AppendMessageHookResult {
+		hookCalls++
+		message.Content = "hooked:" + message.Content
+		return AppendMessageHookResult{Message: &message}
+	})
+
+	candidate, err := NewContextManagerRevisionFromMessageList(manager, []messages.Message{
+		{Role: messages.MessageRoleSystem, Content: "system"},
+		{Role: messages.MessageRoleUser, Content: "revision"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerRevisionFromMessageList() error = %v", err)
+	}
+	parentID := manager.GetSessionID()
+	if err := manager.Activate(candidate); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+
+	if manager != managerPointer {
+		t.Fatal("manager pointer changed during session activation")
+	}
+	if manager.GetSessionID() == parentID {
+		t.Fatal("session ID did not change during activation")
+	}
+	activeID := manager.GetSessionID()
+	if got := CurrentSessionID(sessionFolder); got != manager.GetSessionID() {
+		t.Fatalf("current session file = %q, manager session = %q", got, manager.GetSessionID())
+	}
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "next"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("hook calls = %d, want 1 after switching sessions", hookCalls)
+	}
+	if got := manager.CloneMessageList()[2].Content; got != "hooked:next" {
+		t.Fatalf("switched session message = %q, want hooked message", got)
+	}
+	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, activeID)
+	if err != nil {
+		t.Fatalf("reload active session: %v", err)
+	}
+	if got := reloaded.CloneMessageList()[2].Content; got != "hooked:next" {
+		t.Fatalf("reloaded active session message = %q, want hooked message", got)
+	}
+	parent, err := LoadContextManagerFromSessionID(sessionFolder, parentID)
+	if err != nil {
+		t.Fatalf("reload parent session: %v", err)
+	}
+	if len(parent.CloneMessageList()) != 1 {
+		t.Fatalf("parent session was appended after activation: %#v", parent.CloneMessageList())
+	}
+}
+
+func TestContextManagerRejectsStaleRevisionActivation(t *testing.T) {
+	manager, err := NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	candidate, err := NewContextManagerRevisionFromMessageList(manager, manager.CloneMessageList())
+	if err != nil {
+		t.Fatalf("NewContextManagerRevisionFromMessageList() error = %v", err)
+	}
+	if err := manager.AppendMessage(messages.Message{Role: messages.MessageRoleUser, Content: "new parent message"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	if err := manager.Activate(candidate); err == nil {
+		t.Fatal("Activate() succeeded for a revision based on a stale parent")
+	}
+	if got := manager.GetSessionID(); got != candidate.GetParentSessionID() {
+		t.Fatalf("session changed after stale activation: got %q, want parent %q", got, candidate.GetParentSessionID())
+	}
+}
+
+func TestContextManagerSwitchRejectsMissingSession(t *testing.T) {
+	manager, err := NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	originalID := manager.GetSessionID()
+	if err := manager.SwitchSession("s_missing"); err == nil {
+		t.Fatal("SwitchSession() succeeded for a missing session")
+	}
+	if got := manager.GetSessionID(); got != originalID {
+		t.Fatalf("session changed after missing-session switch: got %q, want %q", got, originalID)
+	}
+}

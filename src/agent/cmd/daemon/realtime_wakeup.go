@@ -2760,6 +2760,7 @@ func rotateRealtimeContextForReplay(manager *contextmanager.ContextManager, maxT
 	if len(recent) == len(all) {
 		return manager, nil
 	}
+	parentSessionID := manager.GetSessionID()
 	retained := make([]messages.Message, 0, len(recent)+1)
 	if len(all) > 0 && all[0].Role == messages.MessageRoleSystem {
 		retained = append(retained, all[0])
@@ -2769,12 +2770,12 @@ func rotateRealtimeContextForReplay(manager *contextmanager.ContextManager, maxT
 	if err != nil {
 		return nil, err
 	}
-	if err := contextmanager.SwitchSession(revision.GetSessionFolder(), revision.GetSessionID()); err != nil {
+	if err := manager.Activate(revision); err != nil {
 		return nil, err
 	}
 	logging.Warnf("agent", "realtime", "Rotated user context after replay truncation: parent=%s session=%s retained_messages=%d",
-		manager.GetSessionID(), revision.GetSessionID(), len(retained))
-	return revision, nil
+		parentSessionID, revision.GetSessionID(), len(retained))
+	return manager, nil
 }
 
 func limitRealtimeTaskField(value string, maxRunes int) string {

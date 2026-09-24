@@ -1168,21 +1168,25 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// Configuration changes rotate at the next task boundary, preserving the
 	// complete old transcript and provider-specific continuation metadata.
-	if r.configContextRotate.Load() {
-		manager, resetErr := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), profile.SystemPrompt)
-		if resetErr != nil {
-			return RunResult{}, resetErr
-		}
-		manager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
-		r.contextManager = manager
-		r.configContextRotate.Store(false)
-	}
 	// setup context manager if not initialized
+	hadContextManager := r.contextManager != nil
 	if r.contextManager == nil {
 		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(cfg.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
 		if err != nil {
 			return RunResult{}, err
 		}
+	}
+	if r.configContextRotate.Load() && hadContextManager {
+		candidate, resetErr := contextmanager.NewContextManagerCandidate(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), profile.SystemPrompt)
+		if resetErr != nil {
+			return RunResult{}, resetErr
+		}
+		if resetErr = r.contextManager.Activate(candidate); resetErr != nil {
+			return RunResult{}, resetErr
+		}
+	}
+	if r.configContextRotate.Load() {
+		r.configContextRotate.Store(false)
 	}
 	// append runtime context as assistant message if present (e.g., voice interruption notification)
 	if runtimeContext := strings.TrimSpace(req.RuntimeContext); runtimeContext != "" {
@@ -1248,11 +1252,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return RunResult{}, pruneErr
 		}
 		if pruned {
-			newManager.AddAppendMessageHook(r.getStateHook())
-			if err = contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID()); err != nil {
+			if err = r.contextManager.Activate(newManager); err != nil {
 				return RunResult{}, err
 			}
-			r.contextManager = newManager
 			messageTokenUsage = tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 			tokenUsage = estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
 		}
@@ -1275,14 +1277,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return RunResult{}, err
 		}
 		if compacted {
-			// setup hooks
-			newManager.AddAppendMessageHook(r.getStateHook())
-			// switch to new session
-			err = contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID())
-			if err != nil {
+			if err = r.contextManager.Activate(newManager); err != nil {
 				return RunResult{}, err
 			}
-			r.contextManager = newManager
 		}
 	}
 
@@ -1390,11 +1387,9 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		// Only activate a revision after all preparation and budget checks pass.
 		if changed {
-			activeManager.AddAppendMessageHook(r.getStateHook())
-			if switchErr := contextmanager.SwitchSession(activeManager.GetSessionFolder(), activeManager.GetSessionID()); switchErr != nil {
+			if switchErr := currentManager.Activate(activeManager); switchErr != nil {
 				return nil, false, switchErr
 			}
-			r.contextManager = activeManager
 			// Rejected candidates must not become searchable history. Once the
 			// revision is active, a chunk write failure must not roll back the
 			// loop's manager; the parent transcript still retains the full span.
@@ -1404,7 +1399,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				}
 			}
 		}
-		return activeManager, changed, nil
+		return currentManager, changed, nil
 	}
 	compactAgentContext := func(recoveryCtx context.Context, currentManager *contextmanager.ContextManager, triggerReason string) (*contextmanager.ContextManager, bool, error) {
 		// Compaction summarises the conversation with the same model as the run;
@@ -1418,15 +1413,16 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				triggerReason,
 			))
 		}
-		if compactErr != nil || !compacted {
-			return newManager, compacted, compactErr
+		if compactErr != nil {
+			return nil, false, compactErr
 		}
-		newManager.AddAppendMessageHook(r.getStateHook())
-		if switchErr := contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID()); switchErr != nil {
+		if !compacted {
+			return currentManager, false, nil
+		}
+		if switchErr := currentManager.Activate(newManager); switchErr != nil {
 			return nil, false, switchErr
 		}
-		r.contextManager = newManager
-		return newManager, true, nil
+		return currentManager, true, nil
 	}
 	if !cfg.Model.ResponsesProviderCompactionEnabled() && compactionEnabled {
 		agentLoop.ContextCompactionTrigger = compactionTrigger
@@ -1903,13 +1899,19 @@ func (r *Runtime) ReadContextAttachment(role, attachmentID string) ([]byte, stri
 }
 
 func (r *Runtime) rotateContext() error {
-	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir), r.getSystemPrompt())
+	var err error
+	if r.contextManager == nil {
+		r.contextManager, err = InitializeContextManager(r.getSystemPrompt(), agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	candidate, err := contextmanager.NewContextManagerCandidate(agentpath.ContextManagerSessionFolder(r.ConfigSnapshot().ConfigDir), r.getSystemPrompt())
 	if err != nil {
 		return err
 	}
-	newContextManager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
-	r.contextManager = newContextManager
-	return nil
+	return r.contextManager.Activate(candidate)
 }
 
 func (r *Runtime) availableTools() []langtools.Tool {
