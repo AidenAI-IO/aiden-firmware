@@ -78,6 +78,79 @@ If the matching `rk628-csi` or `tc358743` node was not selected, set
 `FRAME_SERVICE_SUBDEV=/dev/v4l-subdevX` in
 `/etc/aiden_frame_service.conf` to that node and restart `aiden-frame.service`.
 
+## RK628 or I2C times out while Frame Service stays active
+
+Every native service log line includes `monotonic_ms`, `pid`, and the native
+`tid`. The monotonic value can be compared with the timestamp at the start of a
+`dmesg` line, and the TID identifies the corresponding
+`/proc/<pid>/task/<tid>` entry.
+
+Frame Service records the complete request-to-driver boundary:
+
+- `capture_request_received` / `capture_request_resolved`: request sequence,
+  Unix-socket peer PID, UID, GID, process name, final status, and duration;
+- `request_queued`, `cycle_started`, `warmup_started`,
+  `frame_read_started`, and `cycle_completed`: which capture generation is
+  active, whether work reached warm-up or a frame wait, and each stage's
+  elapsed time;
+- `camera_source open_started`, `bridge_selected`, and `policy_resolved`: the
+  selected bridge and effective EDID/force-trigger policy;
+- `v4l2 ioctl_started` / `ioctl_completed`: the exact ioctl operation,
+  device, fd, return value, errno, and elapsed time. Operations include
+  `subdev_query_dv_timings`, `subdev_set_dv_timings`, `subdev_set_edid`,
+  `video_set_format`, `video_stream_on`, and `video_stream_off`;
+- `recovery_started` / `recovery_backoff_completed`: recovery reason and the
+  effective retry delay.
+
+An `ioctl_started` line without its matching `ioctl_completed` line identifies
+the userspace thread currently blocked in the kernel. A completion with
+`errno=110` and an elapsed time near the I2C controller timeout identifies the
+specific V4L2 operation that reached the failing bus. If kernel I2C errors occur
+while the most recent Frame Service event is `worker_idle` with
+`stream_active=0`, and there is no nearby `capture_request_received` or
+`ioctl_started`, the access is not coming from Frame Service's request loop.
+If the error has no matching userspace boundary at all, the remaining caller is
+inside the kernel (for example an RK628 workqueue or another V4L2 consumer);
+userspace logs cannot identify that call site. The next diagnostic layer is a
+kernel tracepoint or a temporary `rk628`/`rk3x-i2c` log containing the
+workqueue name and call-site operation.
+
+Preserve both clocks and the effective runtime configuration when collecting an
+incident:
+
+```bash
+mkdir -p /tmp/rk628-incident
+pid=$(pidof frame_service | awk '{print $1}')
+dmesg > /tmp/rk628-incident/dmesg.txt
+cp /var/log/frame_service/frame_service.log /tmp/rk628-incident/
+frame_service_cli --socket /run/frame_service/frame_service.sock health \
+  > /tmp/rk628-incident/frame-health.txt 2>&1
+tr '\0' ' ' < "/proc/$pid/cmdline" \
+  > /tmp/rk628-incident/frame-cmdline.txt
+ps -eLo pid,tid,ppid,stat,wchan:32,comm \
+  > /tmp/rk628-incident/tasks.txt
+for task in "/proc/$pid"/task/*; do
+  {
+    echo "=== $task ==="
+    cat "$task/status"
+    cat "$task/wchan"
+    cat "$task/stack"
+  } >> /tmp/rk628-incident/frame-thread-stacks.txt 2>&1
+done
+cp /etc/aiden_frame_service.conf /tmp/rk628-incident/
+awk '
+  /^\[advanced_settings\.hardware\.frame_service\]$/ { copy = 1 }
+  copy && /^\[/ && $0 !~ /^\[advanced_settings\.hardware\.frame_service\]$/ { exit }
+  copy { print }
+' /userdata/agent/agent.toml \
+  > /tmp/rk628-incident/frame-agent-config.txt 2>/dev/null || true
+```
+
+Do not run `i2cdetect`, `i2cget`, or `i2cdump` against a bus that is already
+timing out. Those commands add transactions and can obscure which production
+operation first encountered the fault. The `UU` marker from `i2cdetect` only
+means a kernel driver owns the address; it is not an ACK test.
+
 ## Agent Web UI won't open
 
 Check:

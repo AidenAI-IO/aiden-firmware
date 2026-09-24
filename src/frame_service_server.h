@@ -66,6 +66,7 @@ private:
     uint32_t consecutive_failures_;
     std::string last_error_;
     uint64_t last_recovery_ts_;
+    uint64_t capture_request_count_;
     uint32_t active_payload_sends_;
     uint32_t max_payload_sends_;
 };
