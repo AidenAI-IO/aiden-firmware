@@ -139,3 +139,27 @@ def test_write_summary_includes_task_error_details(tmp_path: Path):
         "- **open_settings** (judge_error) — Error: setup failed; "
         "Agent Error: request reset; Judge Error: malformed JSON"
     ) in text
+
+
+def test_write_summary_includes_environment_and_artifact_errors(tmp_path: Path):
+    result = TaskResult(
+        suite="phone",
+        run_id="run-1",
+        task_id="open_settings",
+        category="single_step",
+        attempt=1,
+        status="passed",
+        rubric=[],
+        metrics={
+            "environment_state_error": "bridge unavailable",
+            "pre_screenshot_error": "provider unavailable",
+            "episode_error": "episode unavailable",
+        },
+    )
+
+    write_summary(tmp_path / "summary.md", "phone", {"run_id": "run-1"}, [result])
+
+    text = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "Environment State Error: bridge unavailable" in text
+    assert "Pre Screenshot Error: provider unavailable" in text
+    assert "Episode Error: episode unavailable" in text

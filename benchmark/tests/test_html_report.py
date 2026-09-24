@@ -493,6 +493,36 @@ def test_generate_report_includes_llm_analysis_section(tmp_path: Path):
     assert "Root cause summary" in html
 
 
+def test_generate_report_includes_all_task_error_fields(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run", "totals": {"tasks": 1, "passed": 1}}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "status": "passed",
+                "metrics": {
+                    "environment_state_error": "bridge unavailable",
+                    "pre_screenshot_error": "provider unavailable",
+                    "episode_error": "episode unavailable",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "Environment State Error" in html
+    assert "Pre Screenshot Error" in html
+    assert "Episode Error" in html
+
+
 def test_upload_report_uploads_analysis_artifacts(tmp_path: Path):
     run_dir = tmp_path / "run-1"
     run_dir.mkdir()

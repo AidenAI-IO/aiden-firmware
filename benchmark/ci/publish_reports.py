@@ -4,8 +4,39 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import time
 import urllib.parse
 from pathlib import Path
+
+
+DEFAULT_RETENTION_DAYS = 14
+
+
+def _prune_expired_reports(
+    publish_dir: Path,
+    *,
+    current_run_id_prefix: str,
+    retention_days: int,
+) -> None:
+    if retention_days < 1:
+        raise ValueError("retention_days must be positive")
+    if not publish_dir.is_dir():
+        return
+    cutoff = time.time() - retention_days * 24 * 60 * 60
+    for candidate in publish_dir.iterdir():
+        if (
+            candidate.name == current_run_id_prefix
+            or not candidate.name.startswith("ci-")
+            or candidate.is_symlink()
+            or not candidate.is_dir()
+        ):
+            continue
+        try:
+            expired = candidate.stat().st_mtime < cutoff
+        except OSError:
+            continue
+        if expired:
+            shutil.rmtree(candidate)
 
 
 def publish_reports(
@@ -16,6 +47,7 @@ def publish_reports(
     artifact_url: str = "",
     publish_dir: Path | None = None,
     base_url: str = "",
+    retention_days: int = DEFAULT_RETENTION_DAYS,
 ) -> int:
     """Copy existing report HTML unchanged and append its links to a summary."""
     if (publish_dir is None) != (not base_url.strip()):
@@ -36,12 +68,23 @@ def publish_reports(
                 for part in (run_id_prefix, case_id, "report.html")
             )
             links.append((case_id, f"{base_url.rstrip('/')}/{encoded_path}"))
+        _prune_expired_reports(
+            publish_dir,
+            current_run_id_prefix=run_id_prefix,
+            retention_days=retention_days,
+        )
 
     if summary_path is not None:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         with summary_path.open("a", encoding="utf-8") as summary:
             summary.write("\n## Benchmark reports\n\n")
-            if links:
+            if not reports:
+                summary.write(
+                    f"No benchmark reports were generated for `{run_id_prefix}`.\n"
+                )
+                if artifact_url:
+                    summary.write(f"\n[Download run artifacts]({artifact_url})\n")
+            elif links:
                 for label, url in links:
                     summary.write(f"- [{label}]({url})\n")
                 if artifact_url:
@@ -63,6 +106,9 @@ def cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default="")
     parser.add_argument("--artifact-url", default="")
     parser.add_argument("--summary-path", type=Path)
+    parser.add_argument(
+        "--retention-days", type=int, default=DEFAULT_RETENTION_DAYS
+    )
     args = parser.parse_args(argv)
     try:
         count = publish_reports(
@@ -72,6 +118,7 @@ def cli(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             artifact_url=args.artifact_url,
             summary_path=args.summary_path,
+            retention_days=args.retention_days,
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))

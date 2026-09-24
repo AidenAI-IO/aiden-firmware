@@ -342,14 +342,14 @@ def _result_totals(results: list[object], total_tasks: int | None = None) -> dic
 
 
 def _run_exit_code(totals: dict[str, int]) -> int:
-    completed = (
+    if totals.get("judge_error", 0) or totals.get("timeout", 0):
+        return 1
+    accounted = (
         totals.get("passed", 0)
         + totals.get("failed", 0)
         + totals.get("skipped", 0)
-        + totals.get("judge_error", 0)
-        + totals.get("timeout", 0)
     )
-    return 0 if completed == totals.get("tasks", 0) else 1
+    return 0 if accounted == totals.get("tasks", 0) else 1
 
 
 def _selected_task_ids(args: argparse.Namespace) -> list[str]:
@@ -507,6 +507,13 @@ def _planned_metrics_k(units: list[TaskRunUnit]) -> int:
     """
     repeats = [unit.repeats for unit in units if unit.repeats > 0]
     return min(repeats, default=1)
+
+
+def _planned_task_attempts(units: list[TaskRunUnit]) -> list[dict[str, object]]:
+    return [
+        {"task_id": unit.task.id, "attempt": unit.attempt}
+        for unit in units
+    ]
 
 
 def _write_suite_snapshot(run_dir: Path, suite: Suite) -> str:
@@ -881,6 +888,7 @@ def _cmd_run_auto_agent_setup_inner(
         "totals": totals,
         "metrics_schema_version": "p0-v1",
         "metrics_k": _planned_metrics_k(units),
+        "planned_task_attempts": _planned_task_attempts(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
@@ -1167,6 +1175,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "totals": totals,
         "metrics_schema_version": "p0-v1",
         "metrics_k": _planned_metrics_k(units),
+        "planned_task_attempts": _planned_task_attempts(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)

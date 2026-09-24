@@ -396,6 +396,7 @@ jobs:
             --run-id-prefix "$RUN_ID_PREFIX"
             --summary-path "$GITHUB_STEP_SUMMARY"
             --artifact-url "$artifact_url"
+            --retention-days 14
           )
           if [[ -n "$BENCHMARK_REPORT_PUBLISH_DIR" && -n "$BENCHMARK_REPORT_BASE_URL" ]]; then
             args+=(

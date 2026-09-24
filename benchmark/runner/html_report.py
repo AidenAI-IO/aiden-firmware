@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from runner.agent_client import AgentClient
+from runner.report import task_error_details
 
 
 def _esc(s: str) -> str:
@@ -618,12 +619,9 @@ def generate_report_html(run_dir: Path) -> str:
         # Extract errors
         errors = []
         metrics = r.get("metrics") or {}
-        if "error" in metrics:
-            errors.append(["Error", metrics["error"]])
-        if "agent_error" in metrics:
-            errors.append(["Agent Error", metrics["agent_error"]])
-        if "judge_error" in metrics:
-            errors.append(["Judge Error", metrics["judge_error"]])
+        errors.extend(
+            [label, value] for label, value in task_error_details(metrics)
+        )
         artifacts_detail = _task_artifact_refs(run_dir, tid, task_dir)
         error_log_detail = _task_error_log(run_dir, tid, str(status), errors, hard_assertion_failures, task_dir)
         try:

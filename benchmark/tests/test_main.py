@@ -96,7 +96,7 @@ def test_run_exit_code_allows_any_complete_task_result(error_status):
     }
 
     assert main._run_exit_code(benchmark_failure) == 0
-    assert main._run_exit_code(execution_error) == 0
+    assert main._run_exit_code(execution_error) == 1
 
 
 @pytest.mark.parametrize("target_platform", ["windows", "linux"])

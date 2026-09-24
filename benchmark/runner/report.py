@@ -8,6 +8,42 @@ from typing import Any
 from runner.models import TaskResult
 from runner.metrics import aggregate
 
+
+_ERROR_METRIC_LABELS = {
+    "error": "Error",
+    "agent_error": "Agent Error",
+    "judge_error": "Judge Error",
+    "environment_state_error": "Environment State Error",
+    "pre_screenshot_error": "Pre Screenshot Error",
+    "post_screenshot_error": "Post Screenshot Error",
+    "episode_error": "Episode Error",
+    "rejudge_error": "Rejudge Error",
+}
+
+
+def task_error_details(metrics: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Return every concrete task error in a stable, human-readable order."""
+    keys = list(_ERROR_METRIC_LABELS)
+    keys.extend(
+        sorted(
+            key
+            for key in metrics
+            if key.endswith("_error") and key not in _ERROR_METRIC_LABELS
+        )
+    )
+    return [
+        (
+            _ERROR_METRIC_LABELS.get(
+                key,
+                key.removesuffix("_error").replace("_", " ").title() + " Error",
+            ),
+            metrics[key],
+        )
+        for key in keys
+        if metrics.get(key)
+    ]
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -182,11 +218,11 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         lines += [""]
 
     lines += [
-        "## Failures",
+        "## Task Errors and Failures",
         "",
     ]
     for r in results:
-        if r.status == "passed":
+        if r.status == "passed" and not task_error_details(r.metrics):
             continue
         reasons = _failure_details(r)
         lines.append(f"- **{r.task_id}** ({r.status}) — {reasons}")
@@ -195,15 +231,10 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
 
 
 def _failure_details(result: TaskResult) -> str:
-    details = []
-    for label, key in (
-        ("Error", "error"),
-        ("Agent Error", "agent_error"),
-        ("Judge Error", "judge_error"),
-    ):
-        value = result.metrics.get(key)
-        if value:
-            details.append(f"{label}: {' '.join(str(value).split())}")
+    details = [
+        f"{label}: {' '.join(str(value).split())}"
+        for label, value in task_error_details(result.metrics)
+    ]
     details.extend(
         f"{verdict.id}: {verdict.reason}"
         for verdict in result.rubric

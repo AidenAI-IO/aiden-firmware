@@ -191,12 +191,16 @@ def test_ci_allows_a_complete_run_where_every_task_was_skipped(tmp_path: Path) -
         encoding="utf-8",
     )
     (tmp_path / "results.jsonl").write_text(
-        '{"status":"skipped","metrics":{"error":"setup failed"}}\n' * 3,
+        "".join(
+            '{"task_id":"task-%s","attempt":1,"status":"skipped","metrics":{"error":"setup failed"}}\n'
+            % i
+            for i in range(3)
+        ),
         encoding="utf-8",
     )
     _write_generated_reports(tmp_path)
 
-    assert _effective_exit_code(1, manifest) == 0
+    assert _effective_exit_code(0, manifest) == 0
 
 
 def test_ci_allows_a_complete_run_with_an_infrastructure_skip(tmp_path: Path) -> None:
@@ -207,13 +211,13 @@ def test_ci_allows_a_complete_run_with_an_infrastructure_skip(tmp_path: Path) ->
         encoding="utf-8",
     )
     (tmp_path / "results.jsonl").write_text(
-        '{"status":"passed","metrics":{}}\n'
-        '{"status":"skipped","metrics":{"error":"agent not ready"}}\n',
+        '{"task_id":"passed","attempt":1,"status":"passed","metrics":{}}\n'
+        '{"task_id":"skipped","attempt":1,"status":"skipped","metrics":{"error":"agent not ready"}}\n',
         encoding="utf-8",
     )
     _write_generated_reports(tmp_path)
 
-    assert _effective_exit_code(1, manifest) == 0
+    assert _effective_exit_code(0, manifest) == 0
 
 
 def test_ci_allows_platform_ineligible_skips(tmp_path: Path) -> None:
@@ -224,8 +228,8 @@ def test_ci_allows_platform_ineligible_skips(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (tmp_path / "results.jsonl").write_text(
-        '{"status":"passed","metrics":{}}\n'
-        '{"status":"skipped","metrics":{"error":"task platforms ios do not include target platform android"}}\n',
+        '{"task_id":"passed","attempt":1,"status":"passed","metrics":{}}\n'
+        '{"task_id":"skipped","attempt":1,"status":"skipped","metrics":{"error":"task platforms ios do not include target platform android"}}\n',
         encoding="utf-8",
     )
     _write_generated_reports(tmp_path)
@@ -241,8 +245,8 @@ def test_ci_allows_completed_run_with_benchmark_failures(tmp_path: Path) -> None
         encoding="utf-8",
     )
     (tmp_path / "results.jsonl").write_text(
-        '{"status":"passed","metrics":{}}\n'
-        '{"status":"failed","metrics":{}}\n',
+        '{"task_id":"passed","attempt":1,"status":"passed","metrics":{}}\n'
+        '{"task_id":"failed","attempt":1,"status":"failed","metrics":{}}\n',
         encoding="utf-8",
     )
     _write_generated_reports(tmp_path)
@@ -268,13 +272,21 @@ def test_ci_allows_complete_run_with_task_execution_error(
         encoding="utf-8",
     )
     (tmp_path / "results.jsonl").write_text(
-        json.dumps({"status": "failed", "metrics": metrics}) + "\n",
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "attempt": 1,
+                "status": "failed",
+                "metrics": metrics,
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     _write_generated_reports(tmp_path)
 
-    assert _effective_exit_code(1, manifest) == 0
-    assert _incomplete_run_reasons(1, manifest) == []
+    assert _effective_exit_code(0, manifest) == 0
+    assert _incomplete_run_reasons(0, manifest) == []
 
 
 def test_ci_rejects_results_that_do_not_match_manifest_totals(tmp_path: Path) -> None:
@@ -285,7 +297,7 @@ def test_ci_rejects_results_that_do_not_match_manifest_totals(tmp_path: Path) ->
         encoding="utf-8",
     )
     (tmp_path / "results.jsonl").write_text(
-        '{"status":"passed","metrics":{}}\n',
+        '{"task_id":"task-1","attempt":1,"status":"passed","metrics":{}}\n',
         encoding="utf-8",
     )
     _write_generated_reports(tmp_path)
@@ -305,12 +317,12 @@ def test_ci_rejects_a_run_without_generated_reports(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (tmp_path / "results.jsonl").write_text(
-        '{"status":"passed","metrics":{}}\n',
+        '{"task_id":"task-1","attempt":1,"status":"passed","metrics":{}}\n',
         encoding="utf-8",
     )
 
-    assert _effective_exit_code(1, manifest) == 1
-    assert _incomplete_run_reasons(1, manifest) == [
+    assert _effective_exit_code(0, manifest) == 1
+    assert _incomplete_run_reasons(0, manifest) == [
         "metrics_missing",
         "summary_missing",
         "report_missing",
@@ -333,8 +345,15 @@ def test_ci_allows_complete_run_with_judge_error_or_timeout(
     }
     manifest.write_text(json.dumps({"totals": totals}), encoding="utf-8")
     (tmp_path / "results.jsonl").write_text(
-        '{"status":"passed","metrics":{}}\n'
-        + json.dumps({"status": error_status, "metrics": {"error": "boom"}})
+        '{"task_id":"passed","attempt":1,"status":"passed","metrics":{}}\n'
+        + json.dumps(
+            {
+                "task_id": "error",
+                "attempt": 1,
+                "status": error_status,
+                "metrics": {"error": "boom"},
+            }
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -342,6 +361,40 @@ def test_ci_allows_complete_run_with_judge_error_or_timeout(
 
     assert _effective_exit_code(1, manifest) == 0
     assert _incomplete_run_reasons(1, manifest) == []
+
+
+def test_ci_rejects_anomalous_exit_after_complete_artifacts(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"totals":{"tasks":1,"passed":1,"failed":0,"skipped":0,'
+        '"judge_error":0,"timeout":0}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "results.jsonl").write_text(
+        '{"task_id":"task-1","attempt":1,"status":"passed","metrics":{}}\n',
+        encoding="utf-8",
+    )
+    _write_generated_reports(tmp_path)
+
+    assert _effective_exit_code(1, manifest) == 1
+    assert "runner_exit=1,expected=0" in _incomplete_run_reasons(1, manifest)
+
+
+def test_ci_rejects_duplicate_result_identities(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"totals":{"tasks":2,"passed":1,"failed":1,"skipped":0,'
+        '"judge_error":0,"timeout":0}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "results.jsonl").write_text(
+        '{"task_id":"task-1","attempt":1,"status":"passed","metrics":{}}\n'
+        '{"task_id":"task-1","attempt":1,"status":"failed","metrics":{}}\n',
+        encoding="utf-8",
+    )
+    _write_generated_reports(tmp_path)
+
+    assert "duplicate_result_identity" in _incomplete_run_reasons(0, manifest)
 
 
 def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None:

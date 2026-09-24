@@ -249,6 +249,8 @@ def _incomplete_run_reasons(returncode: int, manifest_path: Path) -> list[str]:
         results_path = manifest_path.with_name("results.jsonl")
         result_rows = 0
         unknown_statuses = 0
+        result_identities: list[tuple[str, int]] = []
+        invalid_identities = 0
         result_counts = {
             "passed": 0,
             "failed": 0,
@@ -263,6 +265,15 @@ def _incomplete_run_reasons(returncode: int, manifest_path: Path) -> list[str]:
             if not isinstance(row, dict):
                 raise TypeError("result row must be an object")
             result_rows += 1
+            task_id = str(row.get("task_id") or "").strip()
+            try:
+                attempt = int(row.get("attempt"))
+            except (TypeError, ValueError):
+                attempt = 0
+            if task_id and attempt > 0:
+                result_identities.append((task_id, attempt))
+            else:
+                invalid_identities += 1
             status = str(row.get("status") or "")
             if status in result_counts:
                 result_counts[status] += 1
@@ -294,6 +305,32 @@ def _incomplete_run_reasons(returncode: int, manifest_path: Path) -> list[str]:
             reasons.append("results_totals_mismatch")
         if unknown_statuses:
             reasons.append(f"unknown_status={unknown_statuses}")
+        if invalid_identities:
+            reasons.append(f"invalid_result_identity={invalid_identities}")
+        if len(set(result_identities)) != len(result_identities):
+            reasons.append("duplicate_result_identity")
+        planned = manifest.get("planned_task_attempts")
+        if planned is not None:
+            try:
+                planned_identities = {
+                    (str(item["task_id"]).strip(), int(item["attempt"]))
+                    for item in planned
+                }
+                planned_valid = (
+                    isinstance(planned, list)
+                    and len(planned_identities) == len(planned)
+                    and all(
+                        task_id and attempt > 0
+                        for task_id, attempt in planned_identities
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                planned_valid = False
+                planned_identities = set()
+            if not planned_valid:
+                reasons.append("planned_task_attempts_invalid")
+            elif set(result_identities) != planned_identities:
+                reasons.append("planned_results_mismatch")
     for filename, label in (
         ("metrics.json", "metrics"),
         ("summary.md", "summary"),
@@ -306,6 +343,13 @@ def _incomplete_run_reasons(returncode: int, manifest_path: Path) -> list[str]:
             available = False
         if not available:
             reasons.append(f"{label}_missing")
+    expected_returncode = (
+        1
+        if judge_errors or timeouts or passed + failed + skipped != tasks
+        else 0
+    )
+    if returncode != expected_returncode:
+        reasons.append(f"runner_exit={returncode},expected={expected_returncode}")
     return reasons
 
 
