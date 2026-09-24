@@ -2,6 +2,7 @@ package contextmanager
 
 import (
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/session"
 	"aiden-agent/internal/logging"
 	"fmt"
 	"os"
@@ -27,14 +28,9 @@ type AppendMessageHookResult struct {
 // ParentSessionID records the session this one was derived from, for example the
 // pre-compaction session of a compaction revision. It is empty for root sessions.
 type ContextManager struct {
-	sessionID       string
-	parentSessionID string
-	messageList     []messages.Message
-	appendHooks     []AppendMessageHook
-	attachmentStore *attachmentStore
-	artifactStore   *artifactStore
-	mu              sync.RWMutex
-	sessionFolder   string
+	currentSession *session.Session
+	appendHooks    []AppendMessageHook
+	sessionFolder  string
 }
 
 // LoadContextManagerFromSessionID loads a context manager from the session folder
