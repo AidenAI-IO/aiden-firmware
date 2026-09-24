@@ -342,14 +342,14 @@ def _result_totals(results: list[object], total_tasks: int | None = None) -> dic
 
 
 def _run_exit_code(totals: dict[str, int]) -> int:
-    if totals.get("judge_error", 0) or totals.get("timeout", 0):
-        return 1
-    accounted = (
+    completed = (
         totals.get("passed", 0)
         + totals.get("failed", 0)
         + totals.get("skipped", 0)
+        + totals.get("judge_error", 0)
+        + totals.get("timeout", 0)
     )
-    return 0 if accounted == totals.get("tasks", 0) else 1
+    return 0 if completed == totals.get("tasks", 0) else 1
 
 
 def _selected_task_ids(args: argparse.Namespace) -> list[str]:

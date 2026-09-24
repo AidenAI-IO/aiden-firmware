@@ -30,7 +30,7 @@ from ci.plan import (
     CatalogError,
     SuiteCase,
 )
-from ci.run_case import _execution_error_reasons, run_case
+from ci.run_case import _incomplete_run_reasons, run_case
 
 DEFAULT_MAX_PARALLEL = 2
 LOG_TAIL_LINES = 40
@@ -146,7 +146,7 @@ def run_cases(
         duration = time.monotonic() - case_started
         error_summary = ""
         if returncode:
-            reasons = _execution_error_reasons(
+            reasons = _incomplete_run_reasons(
                 returncode,
                 BENCHMARK_ROOT / "runs" / run_id / "manifest.json",
             )
@@ -268,10 +268,10 @@ def cli(argv: list[str] | None = None) -> int:
         print("::endgroup::", flush=True)
     if failed:
         names = ", ".join(outcome.case_id for outcome in failed)
-        print(f"\n{len(failed)} of {len(outcomes)} case(s) had errors: {names}", flush=True)
+        print(f"\n{len(failed)} of {len(outcomes)} case(s) did not complete: {names}", flush=True)
         return 1
     print(
-        f"\nall {len(outcomes)} case(s) completed without execution errors",
+        f"\nall {len(outcomes)} case(s) produced complete result artifacts",
         flush=True,
     )
     return 0

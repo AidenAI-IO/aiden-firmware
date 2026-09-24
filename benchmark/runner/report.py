@@ -188,11 +188,28 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
     for r in results:
         if r.status == "passed":
             continue
-        bad = [v for v in r.rubric if v.verdict == "no"]
-        reasons = "; ".join(f"{v.id}: {v.reason}" for v in bad) or r.status
+        reasons = _failure_details(r)
         lines.append(f"- **{r.task_id}** ({r.status}) — {reasons}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _failure_details(result: TaskResult) -> str:
+    details = []
+    for label, key in (
+        ("Error", "error"),
+        ("Agent Error", "agent_error"),
+        ("Judge Error", "judge_error"),
+    ):
+        value = result.metrics.get(key)
+        if value:
+            details.append(f"{label}: {' '.join(str(value).split())}")
+    details.extend(
+        f"{verdict.id}: {verdict.reason}"
+        for verdict in result.rubric
+        if verdict.verdict == "no"
+    )
+    return "; ".join(details) or result.status
 
 
 def _format_number(value: Any) -> str:

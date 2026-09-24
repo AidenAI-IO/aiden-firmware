@@ -212,8 +212,8 @@ def _stop_daemon_projects_by_run_id(run_id: str) -> None:
             pass
 
 
-def _execution_error_reasons(returncode: int, manifest_path: Path) -> list[str]:
-    """Describe execution errors without treating quality failures as errors."""
+def _incomplete_run_reasons(returncode: int, manifest_path: Path) -> list[str]:
+    """Describe incomplete run artifacts that should fail benchmark CI."""
     if not manifest_path.is_file():
         return ["manifest_missing", f"runner_exit={returncode}"] if returncode else [
             "manifest_missing"
@@ -245,17 +245,8 @@ def _execution_error_reasons(returncode: int, manifest_path: Path) -> list[str]:
         reasons.append(f"tasks={tasks}")
     if completed != tasks:
         reasons.append(f"completed={completed}/{tasks}")
-    if judge_errors:
-        reasons.append(f"judge_error={judge_errors}")
-    if timeouts:
-        reasons.append(f"timeout={timeouts}")
-    if skipped == tasks:
-        reasons.append("all_tasks_skipped")
-
     try:
         results_path = manifest_path.with_name("results.jsonl")
-        unexpected_skips = 0
-        execution_errors = 0
         result_rows = 0
         unknown_statuses = 0
         result_counts = {
@@ -280,21 +271,6 @@ def _execution_error_reasons(returncode: int, manifest_path: Path) -> list[str]:
             metrics = row.get("metrics") or {}
             if not isinstance(metrics, dict):
                 raise TypeError("result metrics must be an object")
-            if status == "failed" and (
-                metrics.get("agent_error")
-                or metrics.get("error")
-                or metrics.get("failure_class")
-                in {"environment", "evaluation", "unknown"}
-            ):
-                execution_errors += 1
-            if status != "skipped":
-                continue
-            reason = str(metrics.get("error") or "")
-            if not (
-                reason.startswith("task platforms ")
-                or "target platform constraint does not match source" in reason
-            ):
-                unexpected_skips += 1
     except (
         AttributeError,
         OSError,
@@ -318,19 +294,24 @@ def _execution_error_reasons(returncode: int, manifest_path: Path) -> list[str]:
             reasons.append("results_totals_mismatch")
         if unknown_statuses:
             reasons.append(f"unknown_status={unknown_statuses}")
-        if execution_errors:
-            reasons.append(f"execution_error={execution_errors}")
-        if unexpected_skips:
-            reasons.append(f"unexpected_skip={unexpected_skips}")
-
-    if returncode and not reasons:
-        reasons.append(f"runner_exit={returncode}")
+    for filename, label in (
+        ("metrics.json", "metrics"),
+        ("summary.md", "summary"),
+        ("report.html", "report"),
+    ):
+        path = manifest_path.with_name(filename)
+        try:
+            available = path.is_file() and path.stat().st_size > 0
+        except OSError:
+            available = False
+        if not available:
+            reasons.append(f"{label}_missing")
     return reasons
 
 
 def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
-    """Fail CI on execution errors, not on benchmark quality failures."""
-    return 1 if _execution_error_reasons(returncode, manifest_path) else 0
+    """Fail CI only when the benchmark did not produce a complete result set."""
+    return 1 if _incomplete_run_reasons(returncode, manifest_path) else 0
 
 
 def run_case(

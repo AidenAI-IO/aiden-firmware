@@ -8,11 +8,17 @@ from ci import run_case as run_case_module
 from ci.plan import CatalogError, load_catalog, select_cases
 from ci.run_case import (
     _effective_exit_code,
-    _execution_error_reasons,
+    _incomplete_run_reasons,
     _environment_url,
     _images_prepared,
     _runtime_environment,
 )
+
+
+def _write_generated_reports(run_dir: Path) -> None:
+    (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
+    (run_dir / "summary.md").write_text("# Summary\n", encoding="utf-8")
+    (run_dir / "report.html").write_text("<html></html>", encoding="utf-8")
 
 
 def test_catalog_rejects_an_unclassified_suite(tmp_path: Path) -> None:
@@ -177,18 +183,23 @@ def test_benchmark_case_reuses_prepared_daemon_image(monkeypatch, tmp_path: Path
     assert "--no-build-daemon-image" in captured["command"]
 
 
-def test_ci_rejects_a_run_where_every_task_was_skipped(tmp_path: Path) -> None:
+def test_ci_allows_a_complete_run_where_every_task_was_skipped(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         '{"totals":{"tasks":3,"passed":0,"failed":0,"skipped":3,'
         '"judge_error":0,"timeout":0}}',
         encoding="utf-8",
     )
+    (tmp_path / "results.jsonl").write_text(
+        '{"status":"skipped","metrics":{"error":"setup failed"}}\n' * 3,
+        encoding="utf-8",
+    )
+    _write_generated_reports(tmp_path)
 
-    assert _effective_exit_code(0, manifest) == 1
+    assert _effective_exit_code(1, manifest) == 0
 
 
-def test_ci_rejects_a_partial_run_with_an_infrastructure_skip(tmp_path: Path) -> None:
+def test_ci_allows_a_complete_run_with_an_infrastructure_skip(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         '{"totals":{"tasks":2,"passed":1,"failed":0,"skipped":1,'
@@ -200,8 +211,9 @@ def test_ci_rejects_a_partial_run_with_an_infrastructure_skip(tmp_path: Path) ->
         '{"status":"skipped","metrics":{"error":"agent not ready"}}\n',
         encoding="utf-8",
     )
+    _write_generated_reports(tmp_path)
 
-    assert _effective_exit_code(0, manifest) == 1
+    assert _effective_exit_code(1, manifest) == 0
 
 
 def test_ci_allows_platform_ineligible_skips(tmp_path: Path) -> None:
@@ -216,6 +228,7 @@ def test_ci_allows_platform_ineligible_skips(tmp_path: Path) -> None:
         '{"status":"skipped","metrics":{"error":"task platforms ios do not include target platform android"}}\n',
         encoding="utf-8",
     )
+    _write_generated_reports(tmp_path)
 
     assert _effective_exit_code(0, manifest) == 0
 
@@ -232,6 +245,7 @@ def test_ci_allows_completed_run_with_benchmark_failures(tmp_path: Path) -> None
         '{"status":"failed","metrics":{}}\n',
         encoding="utf-8",
     )
+    _write_generated_reports(tmp_path)
 
     assert _effective_exit_code(0, manifest) == 0
 
@@ -243,7 +257,7 @@ def test_ci_allows_completed_run_with_benchmark_failures(tmp_path: Path) -> None
         {"error": "setup failed", "failure_class": "environment"},
     ],
 )
-def test_ci_rejects_failed_result_with_execution_error(
+def test_ci_allows_complete_run_with_task_execution_error(
     tmp_path: Path,
     metrics: dict[str, str],
 ) -> None:
@@ -257,9 +271,10 @@ def test_ci_rejects_failed_result_with_execution_error(
         json.dumps({"status": "failed", "metrics": metrics}) + "\n",
         encoding="utf-8",
     )
+    _write_generated_reports(tmp_path)
 
-    assert _effective_exit_code(0, manifest) == 1
-    assert _execution_error_reasons(0, manifest) == ["execution_error=1"]
+    assert _effective_exit_code(1, manifest) == 0
+    assert _incomplete_run_reasons(1, manifest) == []
 
 
 def test_ci_rejects_results_that_do_not_match_manifest_totals(tmp_path: Path) -> None:
@@ -273,16 +288,37 @@ def test_ci_rejects_results_that_do_not_match_manifest_totals(tmp_path: Path) ->
         '{"status":"passed","metrics":{}}\n',
         encoding="utf-8",
     )
+    _write_generated_reports(tmp_path)
 
     assert _effective_exit_code(0, manifest) == 1
-    assert _execution_error_reasons(0, manifest) == [
+    assert _incomplete_run_reasons(0, manifest) == [
         "results=1/2",
         "results_totals_mismatch",
     ]
 
 
+def test_ci_rejects_a_run_without_generated_reports(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"totals":{"tasks":1,"passed":1,"failed":0,"skipped":0,'
+        '"judge_error":0,"timeout":0}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "results.jsonl").write_text(
+        '{"status":"passed","metrics":{}}\n',
+        encoding="utf-8",
+    )
+
+    assert _effective_exit_code(1, manifest) == 1
+    assert _incomplete_run_reasons(1, manifest) == [
+        "metrics_missing",
+        "summary_missing",
+        "report_missing",
+    ]
+
+
 @pytest.mark.parametrize("error_status", ["judge_error", "timeout"])
-def test_ci_rejects_completed_run_with_execution_error(
+def test_ci_allows_complete_run_with_judge_error_or_timeout(
     tmp_path: Path,
     error_status: str,
 ) -> None:
@@ -302,11 +338,10 @@ def test_ci_rejects_completed_run_with_execution_error(
         + "\n",
         encoding="utf-8",
     )
+    _write_generated_reports(tmp_path)
 
-    assert _effective_exit_code(0, manifest) == 1
-    assert _execution_error_reasons(0, manifest) == [
-        f"{error_status}=1",
-    ]
+    assert _effective_exit_code(1, manifest) == 0
+    assert _incomplete_run_reasons(1, manifest) == []
 
 
 def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None:
@@ -325,6 +360,18 @@ def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None
     assert "id: upload_benchmark_artifacts" in workflow
     assert "steps.upload_benchmark_artifacts.outcome == 'failure'" in workflow
     assert "overwrite: true" in workflow
+
+
+def test_workflow_links_exact_interactive_reports_from_static_host_or_artifact() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "benchmark.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "BENCHMARK_REPORT_PUBLISH_DIR: ${{ vars.BENCHMARK_REPORT_PUBLISH_DIR }}" in workflow
+    assert "BENCHMARK_REPORT_BASE_URL: ${{ vars.BENCHMARK_REPORT_BASE_URL }}" in workflow
+    assert "steps.upload_benchmark_artifacts.outputs.artifact-url" in workflow
+    assert "steps.retry_benchmark_artifacts.outputs.artifact-url" in workflow
+    assert "python -m ci.publish_reports" in workflow
 
 
 def test_workflow_checks_docker_and_surfaces_setup_failures() -> None:

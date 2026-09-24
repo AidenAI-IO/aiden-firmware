@@ -65,24 +65,12 @@ def test_run_cases_starts_mobilegym_together_without_prepopulating_run_dirs(
         )
 
 
-def test_run_cases_emits_an_annotation_for_an_execution_error(
+def test_run_cases_emits_an_annotation_for_an_interrupted_run(
     monkeypatch,
     tmp_path: Path,
     capsys,
 ) -> None:
-    case = _case("judge-broken", "isolated")
-    run_id = "ci-test-judge-broken"
-    run_dir = tmp_path / "runs" / run_id
-    run_dir.mkdir(parents=True)
-    (run_dir / "manifest.json").write_text(
-        '{"totals":{"tasks":1,"passed":0,"failed":0,"skipped":0,'
-        '"judge_error":1,"timeout":0}}',
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        '{"status":"judge_error","metrics":{"error":"judge unavailable"}}\n',
-        encoding="utf-8",
-    )
+    case = _case("interrupted", "isolated")
 
     monkeypatch.setattr(run_cases_module, "BENCHMARK_ROOT", tmp_path)
     monkeypatch.setattr(run_cases_module, "run_case", lambda *args, **kwargs: 1)
@@ -94,9 +82,9 @@ def test_run_cases_emits_an_annotation_for_an_execution_error(
         max_parallel=1,
     )
 
-    assert outcomes[0].error_summary == "judge_error=1"
+    assert outcomes[0].error_summary == "manifest_missing, runner_exit=1"
     assert (
-        "::error title=Benchmark case judge-broken::judge_error=1"
+        "::error title=Benchmark case interrupted::manifest_missing, runner_exit=1"
         in capsys.readouterr().out
     )
 

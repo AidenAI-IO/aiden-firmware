@@ -358,6 +358,7 @@ jobs:
           retention-days: 14
           compression-level: 9
       - name: Retry benchmark artifact upload
+        id: retry_benchmark_artifacts
         if: ${{ always() && steps.upload_benchmark_artifacts.outcome == 'failure' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -377,3 +378,31 @@ jobs:
           retention-days: 14
           compression-level: 9
           overwrite: true
+      - name: Link benchmark reports
+        if: ${{ always() }}
+        continue-on-error: true
+        working-directory: benchmark
+        env:
+          RUN_ID_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          BENCHMARK_REPORT_PUBLISH_DIR: ${{ vars.BENCHMARK_REPORT_PUBLISH_DIR }}
+          BENCHMARK_REPORT_BASE_URL: ${{ vars.BENCHMARK_REPORT_BASE_URL }}
+          PRIMARY_ARTIFACT_URL: ${{ steps.upload_benchmark_artifacts.outputs.artifact-url }}
+          RETRY_ARTIFACT_URL: ${{ steps.retry_benchmark_artifacts.outputs.artifact-url }}
+        run: |
+          set -uo pipefail
+          artifact_url="${PRIMARY_ARTIFACT_URL:-$RETRY_ARTIFACT_URL}"
+          args=(
+            --runs-dir runs
+            --run-id-prefix "$RUN_ID_PREFIX"
+            --summary-path "$GITHUB_STEP_SUMMARY"
+            --artifact-url "$artifact_url"
+          )
+          if [[ -n "$BENCHMARK_REPORT_PUBLISH_DIR" && -n "$BENCHMARK_REPORT_BASE_URL" ]]; then
+            args+=(
+              --publish-dir "$BENCHMARK_REPORT_PUBLISH_DIR"
+              --base-url "$BENCHMARK_REPORT_BASE_URL"
+            )
+          elif [[ -n "$BENCHMARK_REPORT_PUBLISH_DIR" || -n "$BENCHMARK_REPORT_BASE_URL" ]]; then
+            echo "::warning::Both BENCHMARK_REPORT_PUBLISH_DIR and BENCHMARK_REPORT_BASE_URL are required for direct report links"
+          fi
+          uv run python -m ci.publish_reports "${args[@]}"

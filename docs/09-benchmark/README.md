@@ -172,6 +172,27 @@ Reports include:
 Judge uses only the pre/post screenshots plus trace/final response. It does not
 consume every intermediate screenshot.
 
+CI treats a benchmark as complete when every planned task has a result row and
+the manifest totals match those rows. Task-level `failed`, `skipped`,
+`judge_error`, `timeout`, setup, environment, and agent errors remain visible in
+`summary.md` and `report.html`, but do not fail the workflow. A missing or
+invalid manifest, missing result rows, inconsistent totals, or a killed runner
+still fails the workflow because no complete report exists.
+
+When artifact upload succeeds, the Actions job summary links the report bundle.
+To expose the same self-contained, interactive `report.html` directly from CI, configure
+both repository variables below. The publish step copies the generated HTML
+unchanged, so its layout and drawer interactions are identical to the WebUI
+report.
+
+- `BENCHMARK_REPORT_PUBLISH_DIR`: persistent directory served by a static HTTP
+  server on the self-hosted runner.
+- `BENCHMARK_REPORT_BASE_URL`: public or internal URL mapped to that directory.
+
+Direct report publishing is optional and does not affect the benchmark result.
+The repository GitHub Pages site is reserved for the APT repository and must
+not be used as this directory without a coordinated combined deployment.
+
 ## Directory Structure
 
 ```text

@@ -109,3 +109,33 @@ def test_write_summary_includes_oracle_best_score(tmp_path: Path):
     )
 
     assert "oracle best score@k=1" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
+
+def test_write_summary_includes_task_error_details(tmp_path: Path):
+    result = TaskResult(
+        suite="phone",
+        run_id="run-1",
+        task_id="open_settings",
+        category="single_step",
+        attempt=1,
+        status="judge_error",
+        rubric=[],
+        metrics={
+            "error": "setup failed",
+            "agent_error": "request reset",
+            "judge_error": "malformed JSON",
+        },
+    )
+
+    write_summary(
+        tmp_path / "summary.md",
+        "phone",
+        {"run_id": "run-1"},
+        [result],
+    )
+
+    text = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert (
+        "- **open_settings** (judge_error) — Error: setup failed; "
+        "Agent Error: request reset; Judge Error: malformed JSON"
+    ) in text

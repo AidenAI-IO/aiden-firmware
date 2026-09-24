@@ -80,7 +80,7 @@ def test_runner_module_propagates_cli_exit_code(tmp_path):
 
 
 @pytest.mark.parametrize("error_status", ["judge_error", "timeout"])
-def test_run_exit_code_distinguishes_benchmark_failures_from_errors(error_status):
+def test_run_exit_code_allows_any_complete_task_result(error_status):
     benchmark_failure = {
         "tasks": 2,
         "passed": 1,
@@ -96,7 +96,7 @@ def test_run_exit_code_distinguishes_benchmark_failures_from_errors(error_status
     }
 
     assert main._run_exit_code(benchmark_failure) == 0
-    assert main._run_exit_code(execution_error) == 1
+    assert main._run_exit_code(execution_error) == 0
 
 
 @pytest.mark.parametrize("target_platform", ["windows", "linux"])
