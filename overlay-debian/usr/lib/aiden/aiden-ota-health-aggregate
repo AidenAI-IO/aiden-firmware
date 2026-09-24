@@ -103,9 +103,9 @@ if feature_enabled ENABLE_BLE_SERVICE; then
     wait_for "BLE service is not active" service_active aiden-ble.service
     wait_for "BLE service socket is missing" path_exists /run/ble_service/ble_service.sock
 fi
-if feature_enabled ENABLE_CONFIG_WEB; then
-    wait_for "configuration portal is not active" service_active aiden-config-web.service
-    wait_for "configuration portal is not responding" http_responds http://127.0.0.1/
-fi
+# Every pending OTA needs the recovery portal when Agent startup fails.
+# A disabled or missing ENABLE_CONFIG_WEB must not bypass this requirement.
+wait_for "configuration portal is not active" service_active aiden-config-web.service
+wait_for "configuration portal is not responding" http_responds http://127.0.0.1/
 
 exec "${OTA_BIN}" --config "${OTA_CONFIG}" mark-health

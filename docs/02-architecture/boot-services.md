@@ -224,6 +224,10 @@ or mark the OTA slot unhealthy. `aiden-ota-health.service` then executes:
 /usr/lib/aiden/ota --config /userdata/debian/ota/config.json health
 ```
 
+Pending OTA validation always checks that Config Web is active and responds over
+HTTP. An unset or disabled `ENABLE_CONFIG_WEB` does not skip these checks; without
+the recovery portal, the slot cannot be marked healthy.
+
 The persistent OTA partition is mounted at `/userdata/ota/` and contains state,
 downloads, pending-boot data, and health markers. The immutable factory
 repository and partition baseline live separately at
