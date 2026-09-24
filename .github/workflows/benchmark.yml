@@ -173,12 +173,16 @@ jobs:
       - prepare-images
     if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     runs-on: aiden-hosted-01
-    timeout-minutes: ${{ matrix.timeout_minutes }}
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    # One runner serves this label, so a job matrix could never start a second job:
+    # every case ran back to back and repaid the checkout/uv/docker setup 13 times.
+    # A single job fans the cases out in-process instead, where the isolation that
+    # already exists (per-RUN_ID container names, dynamically allocated ports) is
+    # what makes them safe to overlap. Per-case timeouts live in the driver; this
+    # ceiling only has to outlast the whole batch.
+    timeout-minutes: 360
     env:
+      MATRIX: ${{ needs.plan.outputs.matrix }}
+      BENCHMARK_CI_MAX_PARALLEL: '2'
       BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
       DOCKER_BUILDKIT: 1
       BENCHMARK_AGENT_MODEL: ${{ vars.BENCHMARK_AGENT_MODEL }}
@@ -232,11 +236,11 @@ jobs:
       - name: Reap orphaned benchmark containers and run directories
         # Every other cleanup is keyed to this job's RUN_ID, so a cancelled job or a
         # SIGKILLed runner leaks containers and run directories that nothing collects.
-        # Sweep by prefix and age instead. The threshold is well past the longest suite
-        # timeout (240 min), so concurrent jobs from this same run are never touched.
+        # Sweep by prefix and age instead. The threshold is past the longest suite
+        # timeout (360 min), so another active benchmark is never touched.
         continue-on-error: true
         env:
-          REAP_AGE_HOURS: '6'
+          REAP_AGE_HOURS: '8'
         run: |
           set -uo pipefail
           cutoff=$(( $(date +%s) - REAP_AGE_HOURS * 3600 ))
@@ -322,66 +326,57 @@ jobs:
           docker version
           docker compose version
           docker info
-      - name: Run benchmark case
+      - name: Run benchmark cases
         working-directory: benchmark
         env:
-          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
-        run: uv run python -m ci.run_case --case-id "${{ matrix.id }}" --run-id "$RUN_ID"
-      - name: Show benchmark setup log
-        if: ${{ failure() }}
-        working-directory: benchmark
-        env:
-          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
-        run: |
-          log="runs/$RUN_ID/auto-agent-setup.log"
-          if [[ -f "$log" ]]; then
-            echo "::group::auto-agent-setup.log"
-            tail -n 400 "$log"
-            echo "::endgroup::"
-          else
-            echo "::warning::No auto-agent setup log found for $RUN_ID"
-          fi
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+          RUN_ID_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          uv run python -m ci.run_cases
+          --matrix-json "$MATRIX"
+          --run-id-prefix "$RUN_ID_PREFIX"
+          --max-parallel "$BENCHMARK_CI_MAX_PARALLEL"
       - name: Clean up benchmark services
         if: ${{ always() }}
         env:
-          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+          RUN_ID_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          set -euo pipefail
-          for container in \
-            "aiden-mobilegym-env-mobilegym-${RUN_ID}" \
-            "aiden-benchmark-agent-${RUN_ID}"; do
-            docker rm -f "$container" >/dev/null 2>&1 || true
+          set -uo pipefail
+          # Every run id in this job starts with the prefix, so one prefix sweep
+          # covers all the cases the fan-out started.
+          for prefix in \
+            "aiden-mobilegym-env-mobilegym-${RUN_ID_PREFIX}" \
+            "aiden-benchmark-agent-${RUN_ID_PREFIX}"; do
+            for id in $(docker ps -aq --filter "name=$prefix"); do
+              docker rm -f "$id" >/dev/null 2>&1 || true
+            done
           done
-          while read -r container; do
-            [[ -z "$container" ]] || docker rm -f "$container" >/dev/null 2>&1 || true
-          done < <(docker ps -aq --filter "name=aiden-benchmark-agent-${RUN_ID}-")
-          pid_file="benchmark/runs/cli-services/adb-android-${RUN_ID}/adb-android.pid"
-          if [[ -s "$pid_file" ]]; then
+          for pid_file in benchmark/runs/cli-services/adb-android-"${RUN_ID_PREFIX}"*/adb-android.pid; do
+            [[ -s "$pid_file" ]] || continue
             kill -TERM "$(cat "$pid_file")" >/dev/null 2>&1 || true
-          fi
-      - name: Publish completed run to Langfuse
+          done
+      - name: Publish completed runs to Langfuse
         if: ${{ always() }}
         # Observability is a side channel: a publish failure must not mask the
         # benchmark verdict this job exists to report.
         continue-on-error: true
         working-directory: benchmark
         env:
-          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+          RUN_ID_PREFIX: ci-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          set -euo pipefail
-          if [[ ! -f "runs/$RUN_ID/manifest.json" ]]; then
-            echo "::warning::No completed manifest for $RUN_ID; skipping Langfuse publication"
-            exit 0
-          fi
-          uv run python -m runner publish-langfuse --run-dir "runs/$RUN_ID"
-      - name: Add benchmark summary
-        if: ${{ always() }}
-        working-directory: benchmark
-        env:
-          RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
-        run: |
-          if [[ -f "runs/$RUN_ID/summary.md" ]]; then
-            cat "runs/$RUN_ID/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          set -uo pipefail
+          published=0
+          for manifest in runs/"${RUN_ID_PREFIX}"-*/manifest.json; do
+            [[ -f "$manifest" ]] || continue
+            run_dir="$(dirname "$manifest")"
+            echo "::group::publish $(basename "$run_dir")"
+            uv run python -m runner publish-langfuse --run-dir "$run_dir" || \
+              echo "::warning::Langfuse publication failed for $(basename "$run_dir")"
+            echo "::endgroup::"
+            published=$((published + 1))
+          done
+          if (( published == 0 )); then
+            echo "::warning::No completed manifest under ${RUN_ID_PREFIX}-*; skipping Langfuse publication"
           fi
       - name: Upload benchmark artifacts
         if: ${{ always() }}
@@ -390,15 +385,16 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: benchmark-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/manifest.json
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/metrics.json
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/results.jsonl
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/summary.md
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/report.html
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/suite.json
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/auto-agent-setup.log
-            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}/tasks/**
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/manifest.json
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/metrics.json
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/results.jsonl
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/summary.md
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/report.html
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/suite.json
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/auto-agent-setup.log
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/ci-case.log
+            benchmark/runs/ci-${{ github.run_id }}-${{ github.run_attempt }}-*/tasks/**
           if-no-files-found: warn
           retention-days: 14

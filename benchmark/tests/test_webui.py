@@ -2279,7 +2279,7 @@ def test_daemon_compose_command_and_env_use_environment_bridge_providers(tmp_pat
     assert '--device-type "$AIDEN_DEVICE_TYPE"' in entrypoint_text
 
 
-def test_start_daemon_compose_reserves_port_for_auto_host_port(tmp_path: Path, monkeypatch):
+def test_start_daemon_compose_leaves_auto_host_port_for_docker(tmp_path: Path, monkeypatch):
     captured = {}
     job = webui.Job(
         id="auto-port-job",
@@ -2288,7 +2288,11 @@ def test_start_daemon_compose_reserves_port_for_auto_host_port(tmp_path: Path, m
         suites=[],
     )
 
-    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18181)
+    monkeypatch.setattr(
+        webui,
+        "reserve_free_port",
+        lambda: pytest.fail("Docker should allocate an ephemeral host port"),
+    )
 
     def fake_run_logged_command(command, log_path, **kwargs):
         captured["command"] = command
@@ -2307,7 +2311,7 @@ def test_start_daemon_compose_reserves_port_for_auto_host_port(tmp_path: Path, m
     )
 
     assert container_id == "container-id"
-    assert captured["env"]["AIDEN_DAEMON_HOST_PORT"] == "18181"
+    assert captured["env"]["AIDEN_DAEMON_HOST_PORT"] == "0"
     assert captured["command"][-1] == "daemon"
 
 

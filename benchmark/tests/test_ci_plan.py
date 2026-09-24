@@ -139,7 +139,7 @@ def test_mobilegym_case_reuses_prepared_image(monkeypatch) -> None:
     )
     captured = {}
 
-    def fake_run_json(command, *, environment):
+    def fake_run_json(command, *, environment, log_file=None, timeout_seconds=None):
         captured["command"] = command
         captured["environment"] = environment
         return {"environment_url": "http://127.0.0.1:19090"}
@@ -240,7 +240,16 @@ def test_workflow_checks_docker_and_surfaces_setup_failures() -> None:
     assert "docker version" in workflow
     assert "docker compose version" in workflow
     assert "docker info" in workflow
-    assert "tail -n 400 \"$log\"" in workflow
+    # The fan-out driver replaced the per-case setup-log step: it tails each
+    # failing case's log into the job output so a failure is triageable without
+    # downloading the artifact.
+    assert "ci.run_cases" in workflow
+    assert '--max-parallel "$BENCHMARK_CI_MAX_PARALLEL"' in workflow
+    driver = (
+        Path(__file__).resolve().parents[1] / "ci" / "run_cases.py"
+    ).read_text(encoding="utf-8")
+    assert "log tail" in driver
+    assert "auto-agent-setup.log" in workflow
 
 
 def test_workflow_schedules_all_runnable_cases_on_monday_wednesday_friday() -> None:

@@ -30,7 +30,7 @@ jobs:
         working-directory: benchmark
         run: |
           uv sync --frozen --only-group dev
-          uv run pytest tests/test_ci_plan.py tests/test_ci_prepare_images.py -q
+          uv run pytest tests/test_ci_plan.py tests/test_ci_prepare_images.py tests/test_ci_run_cases.py -q
 
   github-actions-safety:
     runs-on: ubuntu-latest

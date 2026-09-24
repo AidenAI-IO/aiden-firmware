@@ -6,10 +6,12 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
 from ci.plan import BENCHMARK_ROOT, CatalogError, SuiteCase, load_catalog
+from runner.process import terminate_process_tree
 
 
 ACTION_ENVIRONMENT_ALIASES = {
@@ -52,18 +54,35 @@ def _images_prepared(environment: Mapping[str, str]) -> bool:
 
 
 def _run_json(
-    command: list[str], *, environment: Mapping[str, str]
+    command: list[str],
+    *,
+    environment: Mapping[str, str],
+    log_file: Any | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    completed = subprocess.run(
-        command,
-        cwd=BENCHMARK_ROOT,
-        check=True,
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
+    popen_kwargs: dict[str, Any] = {
+        "cwd": BENCHMARK_ROOT,
+        "env": environment,
+        "text": True,
+        "stdout": subprocess.PIPE,
+        "stderr": log_file,
+    }
+    if timeout_seconds is not None:
+        popen_kwargs["start_new_session"] = os.name == "posix"
+    proc = subprocess.Popen(command, **popen_kwargs)
     try:
-        payload = json.loads(completed.stdout)
+        stdout, _ = proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        terminate_process_tree(proc)
+        raise
+    if proc.returncode:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            command,
+            output=stdout,
+        )
+    try:
+        payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             f"service command returned invalid JSON: {' '.join(command)}"
@@ -78,6 +97,8 @@ def _environment_url(
     *,
     run_id: str,
     environment: Mapping[str, str],
+    log_file: Any | None = None,
+    timeout_seconds: float | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     python = sys.executable
     if case.environment == "isolated":
@@ -96,7 +117,12 @@ def _environment_url(
         ]
         if _images_prepared(environment):
             command.append("--no-build-mobilegym-image")
-        payload = _run_json(command, environment=environment)
+        payload = _run_json(
+            command,
+            environment=environment,
+            log_file=log_file,
+            timeout_seconds=timeout_seconds,
+        )
         return str(payload["environment_url"]), payload
     if case.environment == "adb":
         serial = environment.get("ANDROID_SERIAL", "").strip()
@@ -115,6 +141,8 @@ def _environment_url(
                 "--json",
             ],
             environment=environment,
+            log_file=log_file,
+            timeout_seconds=timeout_seconds,
         )
         return str(payload["environment_url"]), payload
     variable = case.environment_variable
@@ -140,6 +168,16 @@ def _stop_service(payload: dict[str, Any] | None) -> None:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+
+
+def _stop_mobilegym_by_run_id(run_id: str) -> None:
+    subprocess.run(
+        ["docker", "rm", "-f", f"aiden-mobilegym-env-mobilegym-{run_id}"],
+        cwd=BENCHMARK_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
 
 
 def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
@@ -174,16 +212,50 @@ def _effective_exit_code(returncode: int, manifest_path: Path) -> int:
     return returncode
 
 
-def run_case(case: SuiteCase, *, run_id: str, environment: Mapping[str, str]) -> int:
+def run_case(
+    case: SuiteCase,
+    *,
+    run_id: str,
+    environment: Mapping[str, str],
+    log_path: Path | None = None,
+    timeout_seconds: float | None = None,
+) -> int:
     runtime_environment = _runtime_environment(environment)
     environment_url = ""
     service: dict[str, Any] | None = None
+    deadline = (
+        time.monotonic() + timeout_seconds
+        if timeout_seconds is not None
+        else None
+    )
+
+    def remaining_timeout() -> float | None:
+        if deadline is None:
+            return None
+        return max(0.001, deadline - time.monotonic())
+
+    # Concurrent cases interleave unreadably on a shared stdout, so each one can
+    # capture into its own file instead. Without log_path the output stays inherited,
+    # which is what the single-case CLI wants.
+    log_file = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = log_path.open("w", encoding="utf-8")
     try:
-        environment_url, service = _environment_url(
-            case,
-            run_id=run_id,
-            environment=runtime_environment,
-        )
+        try:
+            environment_url, service = _environment_url(
+                case,
+                run_id=run_id,
+                environment=runtime_environment,
+                log_file=log_file,
+                timeout_seconds=remaining_timeout(),
+            )
+        except subprocess.TimeoutExpired:
+            message = f"case {case.id} exceeded {timeout_seconds:.0f}s during environment startup"
+            if log_file is not None:
+                log_file.write(f"\n{message}\n")
+            print(f"Error: {message}", file=sys.stderr, flush=True)
+            return 1
         command = [
             sys.executable,
             "-m",
@@ -204,15 +276,42 @@ def run_case(case: SuiteCase, *, run_id: str, environment: Mapping[str, str]) ->
             command.extend(["--target-platform", case.target_platform])
         if _images_prepared(runtime_environment):
             command.append("--no-build-daemon-image")
-        returncode = subprocess.run(
-            command,
-            cwd=BENCHMARK_ROOT,
-            env=runtime_environment,
-            check=False,
-        ).returncode
+        if timeout_seconds is None:
+            returncode = subprocess.run(
+                command,
+                cwd=BENCHMARK_ROOT,
+                env=runtime_environment,
+                check=False,
+                stdout=log_file,
+                stderr=subprocess.STDOUT if log_file is not None else None,
+            ).returncode
+        else:
+            popen_kwargs: dict[str, Any] = {
+                "cwd": BENCHMARK_ROOT,
+                "env": runtime_environment,
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+                "start_new_session": os.name == "posix",
+            }
+            proc = subprocess.Popen(command, **popen_kwargs)
+            try:
+                returncode = proc.wait(timeout=remaining_timeout())
+            except subprocess.TimeoutExpired:
+                # One overrunning case must not consume the whole job's budget;
+                # terminate the runner and every daemon it spawned.
+                terminate_process_tree(proc)
+                message = f"case {case.id} exceeded {timeout_seconds:.0f}s and was killed"
+                if log_file is not None:
+                    log_file.write(f"\n{message}\n")
+                print(f"Error: {message}", file=sys.stderr, flush=True)
+                return 1
         return _effective_exit_code(returncode, BENCHMARK_ROOT / "runs" / run_id / "manifest.json")
     finally:
         _stop_service(service)
+        if case.environment == "mobilegym" and service is None:
+            _stop_mobilegym_by_run_id(run_id)
+        if log_file is not None:
+            log_file.close()
 
 
 def cli(argv: list[str] | None = None) -> int:

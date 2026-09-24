@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import signal
 import shutil
 import socket
 import subprocess
@@ -34,6 +33,7 @@ from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
 )
+from runner.process import terminate_process_tree
 from runner.preflight import (
     MOBILEGYM_PREFLIGHT_COMPLETE_ENV,
     preflight_mobilegym_environment,
@@ -2284,11 +2284,9 @@ def start_daemon_compose(
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
     project = daemon_compose_project(job)
-    # Compose versions differ in how they handle a published port of 0. Keep
-    # the historical benchmark behavior by reserving a concrete host port
-    # before invoking Compose, then discover it from Docker after startup.
-    if host_port == 0:
-        host_port = reserve_free_port()
+    # Port 0 is passed through to Docker so the bind and allocation are atomic.
+    # Reserving a port with a short-lived socket leaves a race before Compose
+    # starts the container, especially when benchmark workers start together.
     env = daemon_compose_env(
         image=image,
         host_port=host_port,
@@ -2778,46 +2776,6 @@ def update_state_status(path: Path, status: str, *, run_id: str = "") -> None:
     if run_id and not payload.get("run_id"):
         payload["run_id"] = run_id
     write_state(path, payload)
-
-
-def terminate_process_tree(proc: subprocess.Popen | None, timeout_sec: float = 3.0) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:
-            proc.terminate()
-    except ProcessLookupError:
-        return
-    except Exception:
-        try:
-            proc.terminate()
-        except Exception:
-            return
-    try:
-        proc.wait(timeout=timeout_sec)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    except Exception:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-    except ProcessLookupError:
-        return
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            return
-    try:
-        proc.wait(timeout=1)
-    except Exception:
-        return
 
 
 def tail_text(path: Path, max_bytes: int) -> str:

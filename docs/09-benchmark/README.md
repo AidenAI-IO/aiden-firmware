@@ -323,7 +323,8 @@ The execution policy is based only on whether CI can prepare the environment:
 
 | Trigger | Profile | Purpose |
 | --- | --- | --- |
-| Monday, Wednesday, Friday schedule | `runnable` | Every case CI can run without external hardware (14 cases) |
+| Push to `feat/benchmark-ci` | `runnable` | Temporary validation while the workflow is being tested |
+| Monday, Wednesday, Friday schedule | `runnable` | Every automatic case CI can run without external hardware (13 cases) |
 | Manual dispatch | `runnable` | Rerun all isolated, mock, and MobileGym cases |
 | Manual dispatch | `hardware` | ADB, VPhone, desktop, and real-phone bridge cases (12 cases) |
 | Manual dispatch | `all` | Every catalog case; requires all configured environments |
@@ -336,16 +337,17 @@ VPhone is currently excluded because it requires a separately hosted macOS
 Apple Silicon bridge; it remains available through manual `hardware`/`all`
 dispatch once `BENCHMARK_VPHONE_ENVIRONMENT_URL` points to a reachable bridge.
 
-The scheduled sweep includes the 100-task MobileGym calibration suite because
-the `runnable` profile deliberately includes every locally runnable case. A
-manual single-suite run must use the matching `runnable` or `hardware` profile;
-use `all` when intentionally overriding that boundary.
+The 100-task MobileGym calibration suite is excluded from the automatic sweep;
+it remains explicitly selectable for a manual calibration run. A manual
+single-suite run must use the matching `runnable` or `hardware` profile; use
+`all` when intentionally overriding that boundary.
 
 Pull requests run the catalog and planner tests in the normal `CI` workflow, but
 do not receive Agent/Judge/Langfuse secrets and therefore do not operate a
 device. Real benchmark execution comes from the Monday/Wednesday/Friday schedule
-on the default branch or a manual dispatch on any repository branch. Manual
-dispatch remains unavailable to pull request and fork refs.
+on the default branch, the temporary `feat/benchmark-ci` push trigger during
+validation, or a manual dispatch on any repository branch. Manual dispatch
+remains unavailable to pull request and fork refs.
 
 Treat the first two weeks as a baseline period. Review each scheduled case's run
 duration, Langfuse cost, and failure class before deciding whether the policy of
@@ -369,13 +371,15 @@ below.
   `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`.
 
 The benchmark job uses the dedicated `aiden-hosted-01` runner because the
-MobileGym and agent-daemon paths require Docker. It runs matrix cases one at a
-time to avoid device/bridge contention. Every completed run's report, results,
-suite snapshot, and task artifacts are uploaded and published with
-`runner publish-langfuse`; generated worker configs are intentionally excluded
-from artifacts because they contain materialized Agent credentials. A failed
-Langfuse upload can be retried from the safe artifact without re-running the
-device task.
+MobileGym and agent-daemon paths require Docker. One job performs setup once and
+fans the selected cases out with a configurable concurrency limit. MobileGym
+cases are scheduled first so multiple container-backed benchmarks can overlap;
+hardware-backed cases share an exclusive lock to avoid device/bridge contention.
+Every completed run's report, results, suite snapshot, and task artifacts are
+uploaded and published with `runner publish-langfuse`; generated worker configs
+are intentionally excluded from artifacts because they contain materialized
+Agent credentials. A failed Langfuse upload can be retried from the safe
+artifact without re-running the device task.
 
 ## Runner and Local CLI Environment Variables
 
