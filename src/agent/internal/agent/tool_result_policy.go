@@ -232,9 +232,26 @@ func estimateActivePromptTokens(manager *contextmanager.ContextManager, options 
 			option(&callOptions)
 		}
 	}
-	tokens := tokencounter.EstimateToolSchemaTokens(callOptions)
-	if manager != nil {
-		tokens += tokencounter.EstimateMessagesTokens(manager.CloneMessageList())
+	return activePromptTokens(manager, callOptions)
+}
+
+// activeMessageTokens excludes schema overhead from message-only prune budgets.
+// Usage includes schemas, so remove their estimate without re-estimating messages.
+func activeMessageTokens(manager *contextmanager.ContextManager, options llms.CallOptions) int {
+	return max(0, activePromptTokens(manager, options)-tokencounter.EstimateToolSchemaTokens(options))
+}
+
+func activePromptTokens(manager *contextmanager.ContextManager, options llms.CallOptions) int {
+	if manager == nil {
+		return tokencounter.EstimateToolSchemaTokens(options)
+	}
+	// Provider input usage already includes tool schemas and prompt overhead.
+	// Only add the schema estimate before the first measured response (including
+	// after a context rewrite, which invalidates the old usage baseline).
+	state := manager.TokenSnapshot()
+	tokens := state.TokenCount
+	if !state.HasTokenUsage {
+		tokens += tokencounter.EstimateToolSchemaTokens(options)
 	}
 	return tokens
 }

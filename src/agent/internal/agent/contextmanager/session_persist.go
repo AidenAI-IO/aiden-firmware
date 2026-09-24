@@ -2,6 +2,7 @@ package contextmanager
 
 import (
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/session"
 	"aiden-agent/internal/logging"
 	"bytes"
 	"encoding/json"
@@ -26,6 +27,21 @@ type sessionMetadata struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	// CreatedAt is when the session was created, in UTC.
 	CreatedAt time.Time `json:"created_at,omitempty"`
+	// UsageStartIndex excludes retained messages from an older context shape.
+	// It is immutable for a session, so a stale token snapshot can be rebuilt.
+	UsageStartIndex int                 `json:"usage_start_index"`
+	Tokens          *session.TokenState `json:"tokens,omitempty"`
+}
+
+func tokenMetadataWriter(sessionFolder, sessionID string, metadata sessionMetadata) func(session.TokenState) {
+	return func(state session.TokenState) {
+		metadata.Tokens = &state
+		if err := saveSessionMetadata(sessionFolder, sessionID, metadata); err != nil {
+			// The transcript has already committed. Returning an append error would
+			// invite duplicate messages on retry. Rebuild this cache on next load.
+			logging.Warnf("agent", "cm", "Failed to save token metadata for %s: %v", sessionID, err)
+		}
+	}
 }
 
 // CurrentSessionID returns the session ID recorded as current for the given

@@ -2,6 +2,7 @@ package session
 
 import (
 	"aiden-agent/internal/agent/messages"
+	"aiden-agent/internal/agent/tokencounter"
 	"errors"
 	"sync"
 )
@@ -19,7 +20,18 @@ type Session struct {
 	artifactStore   ArtifactStore
 	persist         func([]messages.Message) error
 	version         uint64
+	tokenCount      int
+	hasTokenUsage   bool
+	persistTokens   func(TokenState)
 	mu              sync.RWMutex
+}
+
+// TokenState is a reconstructable snapshot of context occupancy, not cumulative
+// billed usage. MessageCount identifies the transcript prefix it describes.
+type TokenState struct {
+	TokenCount    int  `json:"token_count"`
+	HasTokenUsage bool `json:"has_token_usage"`
+	MessageCount  int  `json:"message_count"`
 }
 
 // New creates an in-memory session. The message list is deep-cloned so the
@@ -39,7 +51,14 @@ func NewWithStores(sessionID, parentSessionID string, messageList []messages.Mes
 // and an append callback. The callback is invoked before the in-memory message
 // list changes, preserving the durable-session write ordering.
 func NewWithStoresAndPersistence(sessionID, parentSessionID string, messageList []messages.Message, attachmentStore AttachmentStore, artifactStore ArtifactStore, persist func([]messages.Message) error) *Session {
-	return &Session{
+	return NewWithTokenPersistence(sessionID, parentSessionID, messageList, attachmentStore, artifactStore, persist, 0, nil)
+}
+
+// NewWithTokenPersistence ignores usage on the first usageStart messages, which
+// were retained from a rewritten context. persistTokens runs under the session
+// lock after transcript commit and must not call back into the session.
+func NewWithTokenPersistence(sessionID, parentSessionID string, messageList []messages.Message, attachmentStore AttachmentStore, artifactStore ArtifactStore, persist func([]messages.Message) error, usageStart int, persistTokens func(TokenState)) *Session {
+	s := &Session{
 		sessionID:       sessionID,
 		parentSessionID: parentSessionID,
 		messageList:     cloneMessages(messageList),
@@ -47,7 +66,63 @@ func NewWithStoresAndPersistence(sessionID, parentSessionID string, messageList 
 		artifactStore:   artifactStore,
 		persist:         persist,
 		version:         uint64(len(messageList)),
+		persistTokens:   persistTokens,
 	}
+	for i, message := range s.messageList {
+		s.addMessageTokens(message, i >= usageStart)
+	}
+	return s
+}
+
+// TokenCount reports current context occupancy. Provider usage is the baseline
+// when available; later messages are estimated.
+func (s *Session) TokenCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tokenCount
+}
+
+// HasTokenUsage reports whether the occupancy baseline came from provider usage.
+func (s *Session) HasTokenUsage() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hasTokenUsage
+}
+
+// TokenSnapshot returns occupancy and its transcript generation atomically.
+func (s *Session) TokenSnapshot() TokenState {
+	if s == nil {
+		return TokenState{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tokenSnapshot()
+}
+
+func (s *Session) tokenSnapshot() TokenState {
+	return TokenState{TokenCount: s.tokenCount, HasTokenUsage: s.hasTokenUsage, MessageCount: len(s.messageList)}
+}
+
+func (s *Session) addMessageTokens(message messages.Message, allowUsage bool) {
+	isResponse := message.Role == messages.MessageRoleAssistant || message.Role == messages.MessageRoleToolCall
+	if allowUsage && isResponse && message.Usage != nil {
+		usage := message.Usage
+		count := usage.TotalTokens
+		if count == 0 {
+			count = usage.InputTokens + usage.OutputTokens
+		}
+		if count > 0 && usage.TotalTokens >= 0 && usage.InputTokens >= 0 && usage.OutputTokens >= 0 {
+			s.tokenCount, s.hasTokenUsage = count, true
+			return
+		}
+	}
+	s.tokenCount += tokencounter.EstimateMessageTokens(message)
 }
 
 // ID returns the immutable identifier of the session.
@@ -154,6 +229,12 @@ func (s *Session) AppendMessages(messageList []messages.Message) error {
 	}
 	s.messageList = append(s.messageList, messageList...)
 	s.version += uint64(len(messageList))
+	for _, message := range messageList {
+		s.addMessageTokens(message, true)
+	}
+	if s.persistTokens != nil {
+		s.persistTokens(s.tokenSnapshot())
+	}
 	return nil
 }
 
