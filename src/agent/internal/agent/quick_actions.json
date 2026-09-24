@@ -690,14 +690,12 @@
           "status": "active",
           "tool": "touch_gesture",
           "input": {
-            "actions": [
-              { "action": "touch_down", "point": { "x": 500, "y": 780 } },
-              { "action": "wait", "ms": 80 },
-              { "action": "move_to", "point": { "x": 500, "y": 50 }, "duration_ms": 180 },
-              { "action": "touch_up" }
-            ]
+            "type": "swipe",
+            "start": { "x": 500, "y": 780 },
+            "end": { "x": 500, "y": 50 },
+            "duration_ms": 180
           },
-          "note": "open recents first; drag the centered card from its lower area toward the top of the screen, then verify it disappeared"
+          "note": "requires the intended iOS recents card centered; swipe from its lower area toward the top without an initial hold, then verify that card disappeared"
         },
         "android": {
           "status": "reserved",

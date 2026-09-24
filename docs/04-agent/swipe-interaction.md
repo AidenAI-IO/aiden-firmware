@@ -134,9 +134,12 @@ Stable-screen observation and HID overhead are additional.
 
 The iOS `close_app_from_recents` shortcut starts near the bottom of the centered
 card at `(500,780)` and moves to `(500,50)` over a 180ms main segment, keeping
-the shared low-speed release profile. Including the initial 80ms wait and 100ms
-moving release tail, programmed contact time is 360ms. The longer path provides
-more travel for dismissal with a slow release. The previous `(500,500)` to
+the shared low-speed release profile through a standard `type:"swipe"` binding.
+Movement starts immediately after pressing, removing the previous 80ms initial
+wait. Including the 100ms moving release tail, programmed contact time is 280ms
+(previously 360ms); cursor settling, HID overhead, and screenshot waiting are
+additional. The longer path provides more travel for dismissal with a slow
+release. The previous `(500,500)` to
 `(500,120)` path left the card in place in the local iPhone check; verify the
 card disappears in the returned screenshot rather than relying on tool `ok`.
 
