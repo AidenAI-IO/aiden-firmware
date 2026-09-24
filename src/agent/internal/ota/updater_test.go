@@ -121,12 +121,49 @@ func TestUpdaterDownloadsTarGzAssetsAndWritesExtractedImages(t *testing.T) {
 	}
 }
 
-func TestUpdaterRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
+func TestUpdaterRejectsTarGzImageSHA256MismatchDuringWrite(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	bootImage := []byte("boot-b-v2")
 	bootArchive := testTarGzImage(t, "boot_b.img", bootImage)
 	manifest := env.signedManifest(map[string][]byte{
-		"boot_a.img": []byte("boot-a-v2"),
+		"boot_a.img": bootImage,
+		"boot_b.img": bootImage,
+		"rootfs.img": []byte("rootfs-v2"),
+	}, func(m *Manifest) {
+		m.Parts[0].AssetB = testCompressedManifestAsset("boot_b.img.tar.gz", bootArchive, bootImage)
+		m.Parts[0].AssetB.ImageSHA256 = strings.Repeat("d", 64)
+	})
+	server := env.releaseServer(t, manifest, map[string][]byte{
+		"boot_b.img.tar.gz": bootArchive,
+		"rootfs.img":        []byte("rootfs-v2"),
+	})
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
+
+	_, err := env.updater().CheckOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "image_sha256") {
+		t.Fatalf("CheckOnce() error = %v, want image_sha256 mismatch", err)
+	}
+	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), string(bootImage))
+	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "old-rootfs-b")
+	ab, readErr := readMiscFile(env.miscPath)
+	if readErr != nil {
+		t.Fatalf("readMiscFile() error = %v", readErr)
+	}
+	if ab.Bootable(SlotB) {
+		t.Fatalf("target slot is bootable after image hash mismatch: %+v", ab.Slots[SlotB])
+	}
+	if env.reboots != 0 {
+		t.Fatalf("reboots = %d, want 0", env.reboots)
+	}
+}
+
+func TestUpdaterDryRunRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
+	env := newUpdaterTestEnv(t)
+	env.config.DryRun = true
+	bootImage := []byte("boot-b-v2")
+	bootArchive := testTarGzImage(t, "boot_b.img", bootImage)
+	manifest := env.signedManifest(map[string][]byte{
+		"boot_a.img": bootImage,
 		"boot_b.img": bootImage,
 		"rootfs.img": []byte("rootfs-v2"),
 	}, func(m *Manifest) {
@@ -144,12 +181,15 @@ func TestUpdaterRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
 		t.Fatalf("CheckOnce() error = %v, want image_sha256 mismatch", err)
 	}
 	assertFileContent(t, filepath.Join(env.blockDir, "boot_b"), "old-boot-b")
-	assertFileContent(t, filepath.Join(env.blockDir, "rootfs_b"), "old-rootfs-b")
+	ab, readErr := readMiscFile(env.miscPath)
+	if readErr != nil {
+		t.Fatalf("readMiscFile() error = %v", readErr)
+	}
+	if !ab.Bootable(SlotA) || ab.Bootable(SlotB) {
+		t.Fatalf("misc changed during dry-run: slot_a=%+v slot_b=%+v", ab.Slots[SlotA], ab.Slots[SlotB])
+	}
 	if env.reboots != 0 {
 		t.Fatalf("reboots = %d, want 0", env.reboots)
-	}
-	if _, statErr := os.Stat(filepath.Join(env.downloadDir, "boot_b.img.tar.gz")); !os.IsNotExist(statErr) {
-		t.Fatalf("invalid downloaded archive was retained: %v", statErr)
 	}
 }
 

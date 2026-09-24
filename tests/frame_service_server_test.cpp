@@ -1,4 +1,5 @@
 #include "doctest.h"
+#include "aiden_log.h"
 #include "frame_ipc.h"
 #include "frame_service_client.h"
 #include "frame_service_server.h"
@@ -183,6 +184,52 @@ TEST_CASE("FrameServiceServer captures fresh frames on demand without filling th
     CHECK(frames.frames.empty());
 
     server.stop();
+}
+
+TEST_CASE("FrameServiceServer logs the caller and resolution of capture requests") {
+    FILE* output = tmpfile();
+    REQUIRE(output != NULL);
+    aiden::set_log_service("frame_service");
+    aiden::set_log_output(output);
+
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    server.set_capture_handler(
+        [](uint32_t, FrameMetadata* meta, std::vector<uint8_t>* data) {
+            *meta = metadata(1, 1, "uyvy", 10);
+            *data = payload({1, 2});
+            return FrameServiceStatus::OK;
+        });
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    FrameServiceClient client(socket_path.path.c_str());
+    FrameResult frame;
+    REQUIRE(client.latest_frame(0, 0, &frame) == FrameServiceStatus::OK);
+    server.stop();
+
+    fflush(output);
+    REQUIRE(fseek(output, 0, SEEK_SET) == 0);
+    std::string log;
+    char buffer[4096];
+    size_t bytes = 0;
+    while ((bytes = fread(buffer, 1, sizeof(buffer), output)) > 0) {
+        log.append(buffer, bytes);
+    }
+
+    CHECK(log.find("[frame_service][server] capture_request_received ") != std::string::npos);
+    CHECK(log.find("request_id=1") != std::string::npos);
+    CHECK(log.find("peer_pid=") != std::string::npos);
+#if defined(__linux__)
+    CHECK(log.find("peer_pid=" + std::to_string(static_cast<long>(getpid()))) !=
+          std::string::npos);
+#endif
+    CHECK(log.find("capture_mode=on_demand") != std::string::npos);
+    CHECK(log.find("[frame_service][server] capture_request_resolved ") != std::string::npos);
+    CHECK(log.find("status=OK") != std::string::npos);
+
+    aiden::set_log_output(NULL);
+    aiden::set_log_service("unknown");
+    fclose(output);
 }
 
 TEST_CASE("FrameServiceServer health reports frame age and serve latency") {

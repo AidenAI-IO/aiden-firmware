@@ -31,6 +31,7 @@ private:
     bool auto_force_trigger_pending_;
     bool periodic_force_enabled_;
     unsigned int tc_open_attempts_;
+    uint64_t open_attempts_;
     bool force_trigger_pending_;
     int lock_fd_;
     CameraCapture camera_;
