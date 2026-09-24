@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # OTA Key Management
 
-Production OTA manifests use Ed25519 signatures. Devices verify `manifest.json` through `/usr/share/keyrings/aiden-ota.pem`, and only write to the inactive slot when both signature and image hash verification pass.
+Production OTA manifests use Ed25519 signatures. Devices verify `manifest.json` through `/usr/share/keyrings/aiden-ota.pem`, verify the downloaded archive before writing, and only activate the inactive slot after the streamed image hash and eMMC readback checks pass.
 
 ## Key Generation
 

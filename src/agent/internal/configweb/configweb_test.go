@@ -1660,7 +1660,7 @@ func TestDecodeWiFiSSIDPreservesInvalidEscapes(t *testing.T) {
 	}
 }
 
-func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
+func TestWiFiProxyRequestValidationAndPasswordProtection(t *testing.T) {
 	customURL := "http://alice:secret@proxy.example:7890"
 	noProxy := "localhost,.example.com"
 	request := wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &customURL, NoProxy: &noProxy}
@@ -1673,7 +1673,7 @@ func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
 	}
 	public := (wiFiConfig{Networks: []wiFiNetwork{{SSID: "Office"}}}).publicValue(config)
 	network := public["networks"].([]map[string]any)[0]
-	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "http://alice:xxxxx@proxy.example:7890" || network["no_proxy"] != noProxy {
+	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "" || network["no_proxy"] != noProxy {
 		t.Fatalf("public proxy=%#v", network)
 	}
 

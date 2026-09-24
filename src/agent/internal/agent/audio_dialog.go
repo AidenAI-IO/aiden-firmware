@@ -239,6 +239,52 @@ func (d *AudioDialog) PrepareInput() error {
 	return d.vad.Reset()
 }
 
+// PrepareInputReplacement stages input after the previous voice loop has
+// drained. Unchanged VAD belongs to the previous dialog until commit, so a
+// provider switch neither opens the NPU again nor destroys rollback state.
+// The caller must serialize commit with preemption and close the old dialog
+// only after calling the returned function. On rollback, close only d.
+func (d *AudioDialog) PrepareInputReplacement(previous *AudioDialog) (func(), error) {
+	if d != nil && previous != nil && d != previous && d.vad != nil && previous.vad != nil &&
+		d.vadConfig() == previous.vadConfig() {
+		return func() {
+			_ = d.vad.Close() // The staged helper has not been started.
+			d.vad, previous.vad = previous.vad, nil
+		}, nil
+	}
+	return nil, d.PrepareInput()
+}
+
+func (d *AudioDialog) vadConfig() AudioVADConfig {
+	backend := d.config.VADBackendOrDefault()
+	modelPath := strings.TrimSpace(d.config.VADModelPath)
+	if modelPath == "" {
+		modelPath = defaultVADModelPath
+	}
+	helperPath := ResolveVADHelperPath(backend, d.config.VADHelperPath)
+	silenceMs := d.config.SilenceMs
+	if silenceMs <= 0 {
+		silenceMs = defaultSilenceMs
+	}
+	minSpeechMs := d.config.MinSpeechMs
+	if minSpeechMs <= 0 {
+		minSpeechMs = defaultMinSpeechMs
+	}
+	threshold := d.config.VADSpeechThreshold
+	if threshold <= 0 {
+		threshold = defaultVADSpeechThreshold
+	}
+	return AudioVADConfig{
+		SampleRate:      d.config.Audio.SampleRateOrDefault(),
+		SilenceMs:       silenceMs,
+		MinSpeechMs:     minSpeechMs,
+		Backend:         backend,
+		ModelPath:       modelPath,
+		HelperPath:      helperPath,
+		SpeechThreshold: threshold,
+	}
+}
+
 // Close releases resources owned by the dialog. The TTS provider manager is
 // borrowed from Runtime and must remain available until Runtime.Close.
 func (d *AudioDialog) Close() error {
