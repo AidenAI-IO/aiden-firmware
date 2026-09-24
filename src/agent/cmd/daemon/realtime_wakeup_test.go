@@ -380,7 +380,9 @@ func TestRealtimeTurnStateKeepsTranscriptFromInterruptedTurn(t *testing.T) {
 func TestRealtimeTurnStateIgnoresLateTranscriptForActiveResponse(t *testing.T) {
 	state := realtimeTurnState{}
 	state.responseStarted("response-1")
-	state.userTranscriptObserved()
+	if state.userTranscriptObserved() {
+		t.Fatal("late transcript refinement was classified as a new user turn")
+	}
 	if state.inputTurnPending || state.inputTurnSequence != 0 {
 		t.Fatalf("late transcript opened a new input turn: %+v", state)
 	}
@@ -489,22 +491,22 @@ func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
 		t.Fatal("test endpoint did not detect its loud frame")
 	}
 	endpoint.Reset()
-	if shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, realtimevoice.Capabilities{}) {
 		endpoint.Observe(loudPCMFrame(), time.Now())
 	}
 	if endpoint.speechActive {
 		t.Fatal("test endpoint should not be consulted while a text response is pending")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, true, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, true, realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate tracked microphone audio while a chat command was queued")
 	}
-	if !shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, false, false) {
+	if !shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, false, realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate did not track audio for an idle realtime session")
 	}
 
 	state = realtimeTurnState{}
 	state.responseRequested()
-	if shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate tracked microphone audio after startChat requested a response")
 	}
 	if !state.responseStarted("") {
@@ -512,18 +514,81 @@ func TestRealtimeAdmissionSpeechWaitsForPendingTextResponse(t *testing.T) {
 	}
 }
 
+func TestRealtimeChatAdmissionQueuesDuringServerAuthoritativeLocalSpeech(t *testing.T) {
+	state := realtimeTurnState{}
+	endpoint := newRealtimeClientTurnEndpoint(800)
+	capabilities := realtimevoice.Capabilities{ServerAuthoritativeTurnDetection: true}
+	if !shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
+		t.Fatal("server-authoritative turn detection disabled the transient admission guard")
+	}
+	now := time.Now()
+	started, stopped := observeRealtimeAdmissionSpeech(endpoint, &state, capabilities, loudPCMFrame(), now, true)
+	if !started || stopped || !endpoint.speechActive {
+		t.Fatalf("loud frame did not start transient speech: started=%t stopped=%t endpoint=%+v", started, stopped, endpoint)
+	}
+	if state.inputSpeechActive || state.inputTurnPending || !state.canInjectResponse() {
+		t.Fatalf("transient speech claimed a provider-owned turn: %+v", state)
+	}
+	admission := (realtimeChatAdmissionState{turnBlocked: !state.canInjectResponse(), localSpeechActive: endpoint.speechActive}).admission()
+	if admission != realtimeChatQueueAfterResponse {
+		t.Fatalf("speech-time admission=%v, want queue without busy", admission)
+	}
+
+	started, stopped = observeRealtimeAdmissionSpeech(endpoint, &state, capabilities, nil, now.Add(endpoint.silenceDuration), true)
+	if started || !stopped || endpoint.speechActive {
+		t.Fatalf("silence did not clear transient speech: started=%t stopped=%t endpoint=%+v", started, stopped, endpoint)
+	}
+	if state.inputSpeechActive || state.inputTurnPending || !state.canInjectResponse() {
+		t.Fatalf("cleared transient speech left a pending turn: %+v", state)
+	}
+
+	admission = (realtimeChatAdmissionState{turnBlocked: !state.canInjectResponse(), localSpeechActive: endpoint.speechActive}).admission()
+	if admission != realtimeChatStart {
+		t.Fatalf("cleared transient speech blocked WebUI text: state=%+v admission=%v", state, admission)
+	}
+}
+
+func TestRealtimeAdmissionSpeechPreservesLegacyPendingTurn(t *testing.T) {
+	state := realtimeTurnState{}
+	endpoint := newRealtimeClientTurnEndpoint(800)
+	now := time.Now()
+	started, stopped := observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, loudPCMFrame(), now, true)
+	if !started || stopped || !state.inputSpeechActive || !state.inputTurnPending {
+		t.Fatalf("legacy speech start was not promoted: started=%t stopped=%t state=%+v", started, stopped, state)
+	}
+	_, stopped = observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, nil, now.Add(endpoint.silenceDuration), true)
+	if !stopped || state.inputSpeechActive || !state.inputTurnPending {
+		t.Fatalf("legacy speech stop changed pending-turn behavior: stopped=%t state=%+v", stopped, state)
+	}
+}
+
+func TestRealtimeAdmissionSpeechLeavesClientEndpointForCommitTimer(t *testing.T) {
+	state := realtimeTurnState{}
+	endpoint := newRealtimeClientTurnEndpoint(800)
+	now := time.Now()
+	observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, loudPCMFrame(), now, false)
+	_, stopped := observeRealtimeAdmissionSpeech(endpoint, &state, realtimevoice.Capabilities{}, nil, now.Add(endpoint.silenceDuration), false)
+	if stopped || !endpoint.speechActive || !state.inputSpeechActive || !state.inputTurnPending {
+		t.Fatalf("client endpoint was cleared before its commit timer: stopped=%t endpoint=%+v state=%+v", stopped, endpoint, state)
+	}
+}
+
 func TestRealtimeAdmissionSpeechDefersToAuthoritativeInterruptionDuringResponse(t *testing.T) {
 	state := realtimeTurnState{}
+	capabilities := realtimevoice.Capabilities{ServerAuthoritativeInterruption: true}
+	if !shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
+		t.Fatal("interruption authority disabled the local admission gate while idle")
+	}
 	if !state.responseStarted("") {
 		t.Fatal("anonymous Gemini response did not start")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&state, false, true) {
+	if shouldTrackRealtimeAdmissionSpeech(&state, false, capabilities) {
 		t.Fatal("local admission VAD tracked speaker echo during an authoritative provider response")
 	}
 	if !state.acceptsResponseEvent("") {
 		t.Fatalf("active anonymous response was marked stale: %+v", state)
 	}
-	if !shouldTrackRealtimeAdmissionSpeech(&state, false, false) {
+	if !shouldTrackRealtimeAdmissionSpeech(&state, false, realtimevoice.Capabilities{}) {
 		t.Fatal("legacy provider behavior changed without the authoritative capability")
 	}
 }
@@ -549,7 +614,7 @@ func TestRealtimeChatPendingCoversQueuedCommand(t *testing.T) {
 	if !realtimeChatPending(bridge, &command) {
 		t.Fatal("queued chat command was not reported as pending")
 	}
-	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, realtimeChatPending(bridge, &command), false) {
+	if shouldTrackRealtimeAdmissionSpeech(&realtimeTurnState{}, realtimeChatPending(bridge, &command), realtimevoice.Capabilities{}) {
 		t.Fatal("local admission gate tracked microphone audio while a chat command was parked in queuedChat")
 	}
 }
@@ -811,6 +876,13 @@ func TestRealtimeChatAdmissionQueuesTextWhileFarewellResponseIsActive(t *testing
 	}
 }
 
+func TestRealtimeChatAdmissionRejectsProviderOwnedSpeechInsteadOfQueuing(t *testing.T) {
+	state := realtimeChatAdmissionState{turnBlocked: true, localSpeechActive: true}
+	if got := state.admission(); got != realtimeChatRejectBusy {
+		t.Fatalf("admission() = %v, want busy for a provider-owned pending turn", got)
+	}
+}
+
 func TestRealtimeChatAdmissionStartsTextDuringFarewellDrain(t *testing.T) {
 	state := realtimeChatAdmissionState{standbyPending: true}
 	if got := state.admission(); got != realtimeChatStart {
@@ -892,6 +964,71 @@ func TestRealtimeFarewellDrainYieldsToReadySpeechEvent(t *testing.T) {
 		}
 	default:
 		t.Fatal("speech event was consumed while prioritizing re-engagement")
+	}
+}
+
+func TestRealtimeFarewellDrainYieldsToProviderUserTranscript(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	source := make(chan realtimevoice.Event, 1)
+	events, reengagement := relayRealtimeSessionEvents(ctx, source)
+	source <- realtimevoice.Event{Kind: realtimevoice.EventTranscriptFinal, Role: "user", Text: "hello"}
+
+	deadline := time.Now().Add(time.Second)
+	for len(events) == 0 || len(reengagement) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("provider user transcript was not relayed with its re-engagement marker")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var sleep realtimeSleepState
+	sleep.request()
+	if !abandonSleepForPendingRealtimeReengagement(&sleep, reengagement) {
+		t.Fatal("provider user transcript did not override farewell standby")
+	}
+	if sleep.pending() {
+		t.Fatal("standby remained pending after provider user transcript")
+	}
+	select {
+	case event := <-events:
+		if event.Kind != realtimevoice.EventTranscriptFinal || event.Role != "user" {
+			t.Fatalf("relayed event = %+v, want user transcript", event)
+		}
+	default:
+		t.Fatal("user transcript was consumed while prioritizing re-engagement")
+	}
+}
+
+func TestRealtimeFarewellDrainIgnoresTranscriptRefinement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	source := make(chan realtimevoice.Event, 2)
+	events, reengagement := relayRealtimeSessionEvents(ctx, source)
+	source <- realtimevoice.Event{Kind: realtimevoice.EventResponseStarted, ResponseID: "farewell"}
+	source <- realtimevoice.Event{Kind: realtimevoice.EventTranscriptFinal, Role: "user", Text: "goodbye"}
+
+	deadline := time.Now().Add(time.Second)
+	for len(events) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("farewell response events were not relayed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if consumeRealtimeReengagement(reengagement) {
+		t.Fatal("late farewell transcript was marked as user re-engagement")
+	}
+
+	state := realtimeTurnState{}
+	if !state.responseStarted("farewell") {
+		t.Fatal("farewell response did not start")
+	}
+	<-events
+	transcript := <-events
+	if transcript.Kind != realtimevoice.EventTranscriptFinal || state.userTranscriptObserved() {
+		t.Fatal("late farewell transcript was classified as a new user turn")
 	}
 }
 
