@@ -288,10 +288,17 @@ func TestInterruptJournalFallsBackWhenIntermediateCompactionIsCorrupt(t *testing
 	if err := os.WriteFile(intermediatePath, []byte("not valid json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverPendingBackendRun(current.GetSessionFolder(), current); err != nil {
+	recovered, err := recoverPendingBackendRunManager(current.GetSessionFolder(), current)
+	if err != nil {
 		t.Fatal(err)
 	}
-	requireInterruptNotices(t, root, "agent_restart")
+	if recovered.GetSessionID() != root.GetSessionID() {
+		t.Fatalf("recovered session = %q, want pending session %q", recovered.GetSessionID(), root.GetSessionID())
+	}
+	requireInterruptNotices(t, recovered, "agent_restart")
+	if !runtimeModelCallContains(messages.ConvertMessageList(recovered.CloneMessageList()), "Interrupt [agent_restart]:") {
+		t.Fatal("active recovered context is missing restart notice")
+	}
 	if _, err := os.Stat(filepath.Join(root.GetSessionFolder(), pendingBackendRunFile)); !os.IsNotExist(err) {
 		t.Fatalf("pending journal remains after fallback: %v", err)
 	}

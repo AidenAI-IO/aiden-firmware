@@ -1160,8 +1160,10 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		steerRecorder = tracker
 	}
 
-	if err := recoverPendingBackendRun(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), r.contextManager); err != nil {
+	if recoveredManager, err := recoverPendingBackendRunManager(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), r.contextManager); err != nil {
 		return RunResult{}, err
+	} else if recoveredManager != nil {
+		r.contextManager = recoveredManager
 	}
 
 	// Configuration changes rotate at the next task boundary, preserving the
