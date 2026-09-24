@@ -97,7 +97,7 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	if session == nil {
 		return nil, false, nil
 	}
-	messageList := session.CloneMessageList()
+	messageList, sourceVersion := session.MessageSnapshot()
 	tokensBefore := estimateMessageListTokenUsage(messageList)
 	c.lastCompactionStats = CompactionStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 
@@ -161,7 +161,7 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	})
 	newMessageList = append(newMessageList, tails...)
 	c.lastCompactionStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
-	return newContextRevision(session, newMessageList)
+	return newContextRevision(session, newMessageList, sourceVersion)
 }
 
 // PruneHistorical removes expired state snapshots and bounds old tool results
@@ -189,7 +189,7 @@ func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targe
 	if session == nil {
 		return nil, false, nil
 	}
-	messageList := session.CloneMessageList()
+	messageList, sourceVersion := session.MessageSnapshot()
 	tokensBefore := estimateMessageListTokenUsage(messageList)
 	c.lastPruneStats = HistoricalPruneStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 	if targetTokens <= 0 {
@@ -218,10 +218,10 @@ func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targe
 		c.lastPruneStats.CurrentTurnToolExchangesPruned == 0 {
 		return nil, false, nil
 	}
-	return newContextRevision(session, messageList)
+	return newContextRevision(session, messageList, sourceVersion)
 }
 
-func newContextRevision(session *contextmanager.ContextManager, messageList []messages.Message) (*contextmanager.ContextManager, bool, error) {
+func newContextRevision(session *contextmanager.ContextManager, messageList []messages.Message, sourceVersion uint64) (*contextmanager.ContextManager, bool, error) {
 	// A revision starts a fresh provider conversation. Retaining a Responses
 	// response ID would chain the rewritten local transcript onto stale provider
 	// state. The original session remains on disk for audit and recovery.
@@ -235,7 +235,7 @@ func newContextRevision(session *contextmanager.ContextManager, messageList []me
 	for i := range messageList {
 		messageList[i].ResponsesResponseID = ""
 	}
-	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
+	newManager, err := contextmanager.NewContextManagerRevisionFromMessageListAtVersion(session, messageList, sourceVersion)
 	if err != nil {
 		return nil, false, err
 	}

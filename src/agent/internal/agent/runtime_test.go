@@ -2770,8 +2770,9 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := contextmanager.SwitchSession(sessionFolder, manager.GetSessionID()); err != nil {
-				t.Fatal(err)
+			originalSessionID := manager.GetSessionID()
+			if err := manager.SwitchSession(manager.GetSessionID()); err != nil {
+				t.Fatalf("SwitchSession() error = %v", err)
 			}
 			if tc.chunkWriteFails {
 				// A file where the chunk directory belongs makes persistence fail
@@ -2840,8 +2841,8 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if len(llmModel.tools[0]) != 0 || len(llmModel.tools[1]) == 0 {
 				t.Fatal("expected summary before the tool-enabled model request")
 			}
-			if runtime.contextManager == manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
-				t.Fatal("successful recovery did not activate the prepared revision")
+			if runtime.contextManager != manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() || loaded.GetSessionID() == originalSessionID {
+				t.Fatal("successful recovery did not activate the prepared revision on the existing manager")
 			}
 			if !tc.chunkWriteFails {
 				if len(index.Chunks) != 1 || index.Chunks[0].Summary != tc.summary || index.Chunks[0].EventCount != 1 {
@@ -4479,6 +4480,29 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 	if newBackendSession.ParentSessionID != "" {
 		t.Fatalf("cleared backend context parent session = %q, want root session", newBackendSession.ParentSessionID)
+	}
+}
+
+func TestRuntimeInitialRotateCreatesOneContextSession(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Instruction: "system"},
+		nil,
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	if err := runtime.rotateContext(); err != nil {
+		t.Fatalf("rotateContext() error = %v", err)
+	}
+	files, err := filepath.Glob(filepath.Join(agentpath.ContextManagerSessionFolder(configDir), "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob context sessions: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("initial rotate created %d transcript sessions, want 1: %#v", len(files), files)
 	}
 }
 

@@ -110,7 +110,7 @@ grep -Eq '^[[:space:]]*debootstrap \\' \
     "${SYSTEM_DIR}/container-build-rootfs.sh"
 
 for package in \
-    systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 iputils-arping \
+    systemd-sysv udev dbus kmod libpam-systemd openssh-server sudo adb iproute2 iputils-arping \
     wpasupplicant bluez systemd-resolved systemd-timesyncd dnsmasq-base \
     e2fsprogs v4l-utils libdrm2 python3 python3-pip; do
     grep -qx "${package}" "${SYSTEM_DIR}/packages.list" \
@@ -121,6 +121,41 @@ if grep -Eq '^(net-tools|dhcpcd|dhcpcd-base|isc-dhcp-client|flash-kernel|initram
     fail "banned package is present in production package list"
 fi
 grep -q 'Pin-Priority: -1' "${SYSTEM_DIR}/aiden-production.pref"
+
+# Exercise the image audit against an enabled PAM stack and broken variants.
+# Merely having libpam-systemd in the package manifest is not sufficient.
+source <(sed -n '/^audit_login_sessions() {$/,/^}$/p' \
+    "${SYSTEM_DIR}/container-audit-images.sh")
+ROOTFS_MOUNT=${TEST_ROOT}/login-rootfs
+mkdir -p "${ROOTFS_MOUNT}/etc/ssh/sshd_config.d" \
+    "${ROOTFS_MOUNT}/etc/pam.d" \
+    "${ROOTFS_MOUNT}/usr/lib/aiden" \
+    "${ROOTFS_MOUNT}/usr/lib/arm-linux-gnueabihf/security"
+cp "${REPO_ROOT}/overlay-debian/etc/ssh/sshd_config.d/20-aiden.conf" \
+    "${ROOTFS_MOUNT}/etc/ssh/sshd_config.d/20-aiden.conf"
+cp "${REPO_ROOT}/overlay-debian/etc/ssh/sshrc" "${ROOTFS_MOUNT}/etc/ssh/sshrc"
+cp "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-ssh-session-tty" \
+    "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-ssh-session-tty"
+printf '@include common-session\n' >"${ROOTFS_MOUNT}/etc/pam.d/sshd"
+printf 'session optional pam_systemd.so\n' >"${ROOTFS_MOUNT}/etc/pam.d/common-session"
+printf 'module fixture\n' >"${ROOTFS_MOUNT}/usr/lib/arm-linux-gnueabihf/security/pam_systemd.so"
+audit_login_sessions
+for login_path in \
+    etc/ssh/sshd_config.d/20-aiden.conf etc/pam.d/sshd etc/pam.d/common-session \
+    usr/lib/arm-linux-gnueabihf/security/pam_systemd.so \
+    etc/ssh/sshrc usr/lib/aiden/aiden-ssh-session-tty; do
+    cp -p "${ROOTFS_MOUNT}/${login_path}" "${TEST_ROOT}/login-original"
+    sed 's/^/# /' "${TEST_ROOT}/login-original" >"${ROOTFS_MOUNT}/${login_path}"
+    if [ "${login_path##*/}" = pam_systemd.so ] || \
+        [ "${login_path##*/}" = aiden-ssh-session-tty ]; then
+        rm "${ROOTFS_MOUNT}/${login_path}"
+    fi
+    if (audit_login_sessions) >"${TEST_ROOT}/login-audit.log" 2>&1; then
+        fail "login session audit accepted disabled/missing ${login_path}"
+    fi
+    cp -p "${TEST_ROOT}/login-original" "${ROOTFS_MOUNT}/${login_path}"
+done
+audit_login_sessions
 
 grep -Fq '1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)' \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
@@ -136,6 +171,10 @@ for symbol in CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
 done
 grep -Fq "RK_KERNEL_CMDLINE_EXTRA=net.ifnames\$'\\x3d'0" \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+if grep -Eq '^[[:space:]]*(restart-poweroff|compatible = "restart-poweroff")' \
+    "${REPO_ROOT}/pico-sdk/sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-zero.dts"; then
+    fail "Pico Zero device tree still converts poweroff into a reboot"
+fi
 
 # The pinned submodule must be present: silently skipping the checks below
 # would let an uninitialized or incomplete checkout pass this suite. The only

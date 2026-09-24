@@ -551,5 +551,7 @@ fi
 "${REPO_ROOT}/scripts/test_debian_frame_control.sh"
 "${REPO_ROOT}/scripts/test_debian_python_environment.sh"
 python3 "${REPO_ROOT}/scripts/test_wlan_guard.py"
+sh -n "${OVERLAY}/etc/ssh/sshrc"
+python3 "${REPO_ROOT}/scripts/test_debian_ssh_sessions.py"
 
 echo "Debian systemd overlay tests passed"
