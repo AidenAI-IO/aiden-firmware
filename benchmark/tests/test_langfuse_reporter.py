@@ -151,6 +151,7 @@ def _write_run(
     *,
     metrics_run_id: str = "run-a",
     suite_prompt: str = "Do task A.",
+    attempt_count: int = 1,
 ) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     suite_path = tmp_path / "suite.json"
@@ -182,7 +183,7 @@ def _write_run(
         "git_dirty": False,
         "agent_model": "test-model",
         "metrics_schema_version": "p0-v1",
-        "metrics_k": 1,
+        "metrics_k": attempt_count,
         "selected_task_ids": [],
         "active_skills": [],
     }
@@ -199,9 +200,9 @@ def _write_run(
             }
         },
         "unique_tasks": 1,
-        "attempts": 1,
-        "metrics_k": 1,
-        "agent_eligible_attempts": 1,
+        "attempts": attempt_count,
+        "metrics_k": attempt_count,
+        "agent_eligible_attempts": attempt_count,
         "invalid_attempts": 0,
         "pass_at_1": {
             "value": 1.0, "coverage": 1.0, "successes": 1,
@@ -315,12 +316,30 @@ def _write_run(
             "suite": "smoke_suite",
             "run_id": metrics_run_id,
             "suite_sha256": suite_sha,
-            "metrics_k": 1,
+            "metrics_k": attempt_count,
             "aggregate": aggregate,
         }),
         encoding="utf-8",
     )
-    (run_dir / "results.jsonl").write_text(json.dumps(result) + "\n", encoding="utf-8")
+    results = [
+        {
+            **result,
+            "attempt": attempt,
+            "metrics": {
+                **result["metrics"],
+                "episode_id": (
+                    "episode-a"
+                    if attempt_count == 1
+                    else f"episode-a-{attempt}"
+                ),
+            },
+        }
+        for attempt in range(1, attempt_count + 1)
+    ]
+    (run_dir / "results.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in results),
+        encoding="utf-8",
+    )
     return run_dir
 
 
@@ -400,6 +419,29 @@ def test_publish_run_uses_stable_dataset_and_item_ids(tmp_path: Path):
         first.experiment["metadata"]["suite_sha256"]
         != second.experiment["metadata"]["suite_sha256"]
     )
+
+
+def test_publish_run_serializes_dataset_run_item_creation(tmp_path: Path):
+    run_dir = _write_run(tmp_path, attempt_count=3)
+    client = FakeLangfuse()
+
+    published = publish_run(run_dir, client=client)
+
+    assert published.item_count == 3
+    assert client.experiment["max_concurrency"] == 1
+
+
+def test_publish_run_reports_publication_progress(tmp_path: Path):
+    progress = []
+
+    publish_run(_write_run(tmp_path), client=FakeLangfuse(), progress=progress.append)
+
+    assert any(
+        "dataset=aiden-benchmark:smoke_suite run=run-a items=1" in message
+        for message in progress
+    )
+    assert any("experiment replay start" in message for message in progress)
+    assert any("verification complete" in message for message in progress)
 
 
 def test_publish_run_uses_suite_snapshot_when_source_changes(tmp_path: Path):

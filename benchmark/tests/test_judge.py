@@ -27,6 +27,7 @@ def test_judge_uses_configured_api_key_env(monkeypatch):
 
     def fake_urlopen(req, timeout):
         seen["authorization"] = req.headers.get("Authorization")
+        seen["user_agent"] = req.headers.get("User-agent")
         seen["url"] = req.full_url
         seen["timeout"] = timeout
         return FakeResponse()
@@ -47,6 +48,7 @@ def test_judge_uses_configured_api_key_env(monkeypatch):
     assert result.verdicts[0].verdict == "yes"
     assert seen == {
         "authorization": "Bearer sk-judge",
+        "user_agent": "aiden-benchmark/1.0",
         "url": "https://judge.example.com/v1/chat/completions",
         "timeout": 120,
     }

@@ -7,6 +7,7 @@ import math
 import os
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -108,21 +109,34 @@ def publish_run(
     *,
     client: Any | None = None,
     dataset_prefix: str = "aiden-benchmark",
+    progress: Callable[[str], None] | None = None,
 ) -> PublishResult:
     """Publish one completed benchmark run as a Langfuse dataset experiment."""
     owned_client = client is None
+    phase = "load-artifacts"
+    dataset_name: str | None = None
+    run_name: str | None = None
     try:
         artifacts = _load_run_artifacts(Path(run_dir))
+        phase = "client-init"
         if client is None:
             client = _new_client(artifacts.manifest)
 
+        phase = "auth-check"
         auth_check = getattr(client, "auth_check", None)
         if callable(auth_check) and not auth_check():
             raise LangfusePublishError("Langfuse authentication failed")
 
         dataset_name = _dataset_name(artifacts, dataset_prefix)
         run_name = str(artifacts.manifest["run_id"])
+        _emit_progress(
+            progress,
+            f"target: dataset={dataset_name} run={run_name} "
+            f"items={len(artifacts.results)}",
+        )
+        phase = "ensure-dataset"
         _ensure_dataset(client, dataset_name, artifacts)
+        _emit_progress(progress, "dataset ready")
 
         tasks = {task.id: task for task in artifacts.suite.tasks}
         results_by_key = {_result_key(row): row for row in artifacts.results}
@@ -132,6 +146,7 @@ def publish_run(
         }
         aggregate = artifacts.metrics["aggregate"]
         experiment_metadata = _experiment_metadata(artifacts)
+        phase = "lookup-existing-run"
         existing = _get_existing_run(client, dataset_name, run_name)
         existing_run_id: str | None = None
         if existing is not None:
@@ -142,6 +157,11 @@ def publish_run(
                     f"Langfuse run {run_name} is missing its dataset run ID"
                 )
             existing_item_ids = set(_dataset_run_item_traces(existing))
+            _emit_progress(
+                progress,
+                f"existing run found: dataset_run_id={existing_run_id} "
+                f"linked_items={len(existing_item_ids)}/{len(item_ids)}",
+            )
             unexpected_item_ids = existing_item_ids - set(item_ids.values())
             if unexpected_item_ids:
                 raise LangfusePublishError(
@@ -150,13 +170,17 @@ def publish_run(
                 )
             missing_item_ids = set(item_ids.values()) - existing_item_ids
             if not missing_item_ids:
+                phase = "verify-existing-run"
                 verified_run, verified_item_traces = _verify_published_run(
                     client,
                     dataset_name=dataset_name,
                     run_name=run_name,
                     expected_metadata=experiment_metadata,
                     expected_item_ids=set(item_ids.values()),
+                    progress=progress,
                 )
+                phase = "publish-scores"
+                _emit_progress(progress, "publishing benchmark scores")
                 _publish_scores(
                     client,
                     dataset_name=dataset_name,
@@ -167,6 +191,7 @@ def publish_run(
                     dataset_run_id=_string_attr(verified_run, "id"),
                     aggregate=aggregate,
                 )
+                _emit_progress(progress, "benchmark scores published")
                 return PublishResult(
                     dataset_name=dataset_name,
                     run_name=run_name,
@@ -176,8 +201,10 @@ def publish_run(
                     already_exists=True,
                 )
         else:
+            _emit_progress(progress, "no existing run found")
             missing_item_ids = set(item_ids.values())
 
+        phase = "create-dataset-items"
         dataset_items = []
         for key in sorted(results_by_key):
             item_id = item_ids[key]
@@ -197,6 +224,11 @@ def publish_run(
                 expected_output=_expected_output(task),
                 metadata=_dataset_item_metadata(artifacts, row, key),
             ))
+        _emit_progress(
+            progress,
+            f"dataset items ready: created={len(dataset_items)} "
+            f"reused={len(item_ids) - len(dataset_items)}",
+        )
 
         def replay_saved_result(*, item: Any, **_: Any) -> dict[str, Any]:
             item_input = _item_input(item)
@@ -221,6 +253,11 @@ def publish_run(
                 )
             return output
 
+        phase = "run-experiment"
+        _emit_progress(
+            progress,
+            f"experiment replay start: items={len(dataset_items)} concurrency=1",
+        )
         experiment = client.run_experiment(
             name=f"Aiden benchmark: {artifacts.suite.name}",
             run_name=run_name,
@@ -229,7 +266,11 @@ def publish_run(
             task=replay_saved_result,
             evaluators=[],
             run_evaluators=[],
-            max_concurrency=min(20, max(1, len(dataset_items))),
+            # The dataset-run-items endpoint creates or finds a run by name for
+            # every item. Self-hosted Langfuse can create duplicate same-name
+            # runs when those first requests race, so replay these local results
+            # serially. The task itself performs no model or device work.
+            max_concurrency=1,
             metadata=experiment_metadata,
         )
         _validate_experiment_result(experiment, len(dataset_items))
@@ -237,22 +278,31 @@ def publish_run(
         if callable(flush):
             flush()
         experiment_run_id = _string_attr(experiment, "dataset_run_id")
+        _emit_progress(
+            progress,
+            f"experiment replay complete: dataset_run_id={experiment_run_id or 'missing'} "
+            f"linked_items={len(getattr(experiment, 'item_results', []) or [])}",
+        )
         if existing_run_id and experiment_run_id != existing_run_id:
             raise LangfusePublishError(
                 "Langfuse repaired items were linked to a different dataset run"
             )
+        phase = "verify-run"
         verified_run, item_traces = _verify_published_run(
             client,
             dataset_name=dataset_name,
             run_name=run_name,
             expected_metadata=experiment_metadata,
             expected_item_ids=set(item_ids.values()),
+            progress=progress,
         )
         verified_run_id = _string_attr(verified_run, "id")
         if experiment_run_id != verified_run_id:
             raise LangfusePublishError(
                 "Langfuse experiment result references a different dataset run"
             )
+        phase = "publish-scores"
+        _emit_progress(progress, "publishing benchmark scores")
         _publish_scores(
             client,
             dataset_name=dataset_name,
@@ -263,6 +313,7 @@ def publish_run(
             dataset_run_id=verified_run_id,
             aggregate=aggregate,
         )
+        _emit_progress(progress, "benchmark scores published")
         return PublishResult(
             dataset_name=dataset_name,
             run_name=run_name,
@@ -270,10 +321,18 @@ def publish_run(
             dataset_run_url=_string_attr(experiment, "dataset_run_url"),
             item_count=len(artifacts.results),
         )
-    except LangfusePublishError:
-        raise
     except Exception as exc:
-        raise LangfusePublishError(f"Langfuse publish failed: {exc}") from exc
+        message = (
+            str(exc)
+            if isinstance(exc, LangfusePublishError)
+            else f"Langfuse publish failed: {exc}"
+        )
+        context = f"phase={phase}"
+        if dataset_name is not None:
+            context += f" dataset={dataset_name}"
+        if run_name is not None:
+            context += f" run={run_name}"
+        raise LangfusePublishError(f"{message} [{context}]") from exc
     finally:
         if owned_client and client is not None:
             shutdown = getattr(client, "shutdown", None)
@@ -348,12 +407,16 @@ def _verify_published_run(
     run_name: str,
     expected_metadata: Mapping[str, str],
     expected_item_ids: set[str],
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[Any, dict[str, str]]:
     """Read back the run and traces so a swallowed OTEL export error cannot pass."""
     last_incomplete_message = "Langfuse run was not readable after publishing"
-    deadline = time.monotonic() + _publication_verify_timeout_seconds()
+    timeout_seconds = _publication_verify_timeout_seconds()
+    deadline = time.monotonic() + timeout_seconds
     delay_seconds = PUBLICATION_VERIFY_INITIAL_DELAY_SECONDS
+    attempt = 0
     while True:
+        attempt += 1
         dataset_run = _get_existing_run(client, dataset_name, run_name)
         if dataset_run is not None:
             _validate_existing_run_metadata(dataset_run, expected_metadata, run_name)
@@ -368,6 +431,12 @@ def _verify_published_run(
             missing_item_ids = expected_item_ids - actual_item_ids
             if not missing_item_ids:
                 if _traces_are_readable(client, item_traces.values()):
+                    _emit_progress(
+                        progress,
+                        f"verification complete: attempt={attempt} "
+                        f"dataset_run_id={_string_attr(dataset_run, 'id') or 'missing'} "
+                        f"items={len(item_traces)}",
+                    )
                     return dataset_run, item_traces
                 last_incomplete_message = (
                     "Langfuse traces were not readable after publishing"
@@ -379,12 +448,30 @@ def _verify_published_run(
         remaining_seconds = deadline - time.monotonic()
         if remaining_seconds <= 0:
             break
-        time.sleep(min(delay_seconds, remaining_seconds))
+        sleep_seconds = min(delay_seconds, remaining_seconds)
+        _emit_progress(
+            progress,
+            f"verification pending: attempt={attempt} "
+            f"status={last_incomplete_message}; retry_in={sleep_seconds:g}s "
+            f"remaining={remaining_seconds:.1f}s",
+        )
+        time.sleep(sleep_seconds)
         delay_seconds = min(
             delay_seconds * 2,
             PUBLICATION_VERIFY_MAX_DELAY_SECONDS,
         )
-    raise LangfusePublishError(last_incomplete_message)
+    raise LangfusePublishError(
+        f"{last_incomplete_message}; attempts={attempt} "
+        f"timeout={timeout_seconds:g}s"
+    )
+
+
+def _emit_progress(
+    progress: Callable[[str], None] | None,
+    message: str,
+) -> None:
+    if progress is not None:
+        progress(message)
 
 
 def _publication_verify_timeout_seconds() -> float:

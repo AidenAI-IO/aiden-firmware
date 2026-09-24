@@ -36,11 +36,16 @@ def test_publish_langfuse_cli_reports_experiment_url(monkeypatch, capsys):
         dataset_run_url="http://langfuse.local/run-1",
         item_count=15,
     )
-    monkeypatch.setattr(langfuse_reporter, "publish_run", lambda *args, **kwargs: published)
+    def publish(*args, **kwargs):
+        kwargs["progress"]("verification complete: dataset_run_id=run-1 items=15")
+        return published
+
+    monkeypatch.setattr(langfuse_reporter, "publish_run", publish)
 
     assert main.cli(["publish-langfuse", "--run-dir", "runs/ci-123"]) == 0
 
     output = capsys.readouterr().out
+    assert "Langfuse publish: verification complete" in output
     assert "dataset=aiden-benchmark:memory_v1" in output
     assert "View experiment: http://langfuse.local/run-1" in output
 

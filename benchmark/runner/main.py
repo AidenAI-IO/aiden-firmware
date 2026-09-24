@@ -211,6 +211,10 @@ def cli(argv: list[str] | None = None) -> int:
             published = publish_run(
                 Path(args.run_dir),
                 dataset_prefix=args.dataset_prefix,
+                progress=lambda message: print(
+                    f"Langfuse publish: {message}",
+                    flush=True,
+                ),
             )
         except LangfusePublishError as exc:
             print(f"Error: {exc}", file=sys.stderr)

@@ -283,6 +283,13 @@ columns describe the artifact replay used to construct the Experiment Run; use
 the `benchmark.*`, `efficiency.*`, `reliability.*`, and
 `cost_to_first_success.*` scores for real benchmark measurements.
 
+Artifact replay is intentionally serialized. Langfuse creates or finds the
+Dataset Run while linking each Dataset Item, and concurrent first-item requests
+can create duplicate same-name runs on self-hosted deployments. The publish CLI
+logs dataset/run identity, item preparation, replay, read-back retries, score
+publication, and the final CI publication totals so a partial ingestion is not
+mistaken for a successful publish.
+
 The separate publish command is the CI integration point. A GitHub Actions job
 can run a suite with a unique run ID and publish the completed artifacts in a
 second step:

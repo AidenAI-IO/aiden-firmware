@@ -332,7 +332,9 @@ jobs:
           if (( attempted == 0 )); then
             echo "::warning::No completed manifest under ${RUN_ID_PREFIX}-*; skipping Langfuse publication"
           fi
-          echo "Langfuse publication: $succeeded succeeded, $failed failed" >> "$GITHUB_STEP_SUMMARY"
+          publication_summary="Langfuse publication: $attempted attempted, $succeeded succeeded, $failed failed"
+          echo "::notice::$publication_summary"
+          echo "$publication_summary" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark artifacts
         id: upload_benchmark_artifacts
         if: ${{ always() }}
