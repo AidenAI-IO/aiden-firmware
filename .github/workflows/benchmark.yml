@@ -22,6 +22,11 @@ on:
         description: Optional suite path, for example suites/memory_v1.json
         required: false
         type: string
+      network_diagnostic:
+        description: Probe Langfuse through proxy and direct routes without running benchmarks
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -31,7 +36,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  langfuse-network:
+    if: ${{ inputs.network_diagnostic == true }}
+    runs-on: aiden-hosted-01
+    timeout-minutes: 10
+    env:
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      https_proxy: ${{ secrets.BENCHMARK_HTTPS_PROXY }}
+      no_proxy: localhost,127.0.0.1,::1,host.docker.internal
+    steps:
+      - name: Probe Langfuse through proxy and direct routes
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [[ -z "${LANGFUSE_BASE_URL:-}" || -z "${LANGFUSE_PUBLIC_KEY:-}" || -z "${LANGFUSE_SECRET_KEY:-}" ]]; then
+            echo "Langfuse base URL or credentials are not configured" >&2
+            exit 1
+          fi
+
+          endpoint="${LANGFUSE_BASE_URL%/}/api/public/projects"
+          auth="$(printf '%s' "${LANGFUSE_PUBLIC_KEY}:${LANGFUSE_SECRET_KEY}" | base64 | tr -d '\n')"
+          host="$(printf '%s' "$LANGFUSE_BASE_URL" | sed -E 's#^[a-zA-Z]+://([^/]+).*#\1#')"
+          echo "Langfuse endpoint: ${LANGFUSE_BASE_URL%/}"
+          echo "DNS records:"
+          getent ahostsv4 "$host" | awk '{print $1}' | sort -u || true
+
+          probe() {
+            local label="$1"
+            shift
+            local response exit_code
+            response="$(curl --silent --show-error --output /dev/null \
+              --write-out 'http=%{http_code} connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s' \
+              --connect-timeout 10 --max-time 20 \
+              -H "Authorization: Basic ${auth}" "$@" "$endpoint" 2>&1)"
+            exit_code=$?
+            echo "${label}: curl_exit=${exit_code} ${response}"
+          }
+
+          probe "proxy-environment"
+          probe "forced-direct" --noproxy '*' --proxy ''
+          probe "langfuse-no-proxy" --noproxy 'langfuse.aidenai.io,.aidenai.io'
+
   plan:
+    if: ${{ inputs.network_diagnostic != true }}
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -92,7 +141,7 @@ jobs:
 
   run:
     needs: plan
-    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    if: ${{ inputs.network_diagnostic != true && startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     runs-on: aiden-hosted-01
     # One runner serves this label, so a job matrix could never start a second job:
     # every case ran back to back and repaid the checkout/uv/docker setup 13 times.
