@@ -375,23 +375,11 @@ jobs:
             [[ -f "$manifest" ]] || continue
             run_dir="$(dirname "$manifest")"
             echo "::group::publish $(basename "$run_dir")"
-            published=0
-            for publish_attempt in 1 2 3; do
-              if uv run python -m runner publish-langfuse --run-dir "$run_dir"; then
-                published=1
-                break
-              fi
-              if (( publish_attempt < 3 )); then
-                delay=$((publish_attempt * 5))
-                echo "::warning::Langfuse publication attempt ${publish_attempt}/3 failed for $(basename "$run_dir"); retrying in ${delay}s"
-                sleep "$delay"
-              fi
-            done
-            if (( published )); then
+            if uv run python -m runner publish-langfuse --run-dir "$run_dir"; then
               succeeded=$((succeeded + 1))
             else
               failed=$((failed + 1))
-              echo "::warning::Langfuse publication failed after 3 attempts for $(basename "$run_dir")"
+              echo "::warning::Langfuse publication failed for $(basename "$run_dir")"
             fi
             echo "::endgroup::"
             attempted=$((attempted + 1))

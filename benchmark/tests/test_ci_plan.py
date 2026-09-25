@@ -447,7 +447,6 @@ def test_workflow_checks_docker_and_surfaces_setup_failures() -> None:
     assert '--max-parallel "$BENCHMARK_CI_MAX_PARALLEL"' in workflow
     assert "no_proxy: langfuse.aidenai.io,.aidenai.io" in workflow
     assert "LANGFUSE_TIMEOUT: '30'" in workflow
-    assert "for publish_attempt in 1 2 3" in workflow
     driver = (
         Path(__file__).resolve().parents[1] / "ci" / "run_cases.py"
     ).read_text(encoding="utf-8")
