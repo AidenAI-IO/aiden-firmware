@@ -351,7 +351,6 @@ The execution policy is based only on whether CI can prepare the environment:
 
 | Trigger | Profile | Purpose |
 | --- | --- | --- |
-| Push to `feat/benchmark-ci` | `runnable` | Temporary validation while the workflow is being tested |
 | Monday, Wednesday, Friday schedule | `runnable` | Every automatic case CI can run without external hardware (13 cases) |
 | Manual dispatch | `runnable` | Rerun all isolated, mock, and MobileGym cases |
 | Manual dispatch | `hardware` | ADB, VPhone, desktop, and real-phone bridge cases (12 cases) |
@@ -373,9 +372,8 @@ single-suite run must use the matching `runnable` or `hardware` profile; use
 Pull requests run the catalog and planner tests in the normal `CI` workflow, but
 do not receive Agent/Judge/Langfuse secrets and therefore do not operate a
 device. Real benchmark execution comes from the Monday/Wednesday/Friday schedule
-on the default branch, the temporary `feat/benchmark-ci` push trigger during
-validation, or a manual dispatch on any repository branch. Manual dispatch
-remains unavailable to pull request and fork refs.
+on the default branch or a manual dispatch on any repository branch. Manual
+dispatch remains unavailable to pull request and fork refs.
 
 Treat the first two weeks as a baseline period. Review each scheduled case's run
 duration, Langfuse cost, and failure class before deciding whether the policy of

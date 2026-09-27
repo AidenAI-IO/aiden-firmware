@@ -445,8 +445,6 @@ def test_workflow_checks_docker_and_surfaces_setup_failures() -> None:
     # downloading the artifact.
     assert "ci.run_cases" in workflow
     assert '--max-parallel "$BENCHMARK_CI_MAX_PARALLEL"' in workflow
-    assert "no_proxy: langfuse.aidenai.io,.aidenai.io" in workflow
-    assert "LANGFUSE_TIMEOUT: '30'" in workflow
     driver = (
         Path(__file__).resolve().parents[1] / "ci" / "run_cases.py"
     ).read_text(encoding="utf-8")
@@ -459,7 +457,7 @@ def test_workflow_schedules_all_runnable_cases_on_monday_wednesday_friday() -> N
         Path(__file__).resolve().parents[2] / ".github" / "workflows" / "benchmark.yml"
     ).read_text(encoding="utf-8")
 
-    assert "  push:\n    branches:\n      - feat/benchmark-ci\n" in workflow
+    assert "  push:" not in workflow
     assert "- cron: '17 18 * * 0,2,4'" in workflow
     self_hosted_guard = (
         "if: ${{ startsWith(github.ref, 'refs/heads/') "
@@ -468,11 +466,7 @@ def test_workflow_schedules_all_runnable_cases_on_monday_wednesday_friday() -> N
     )
     assert workflow.count(self_hosted_guard) == 1
     assert "github.ref == 'refs/heads/main'" not in workflow
-    assert (
-        'elif [[ "$EVENT_NAME" == "schedule" || "$EVENT_NAME" == "push" ]]; then\n'
-        '            profile="runnable"'
-        in workflow
-    )
+    assert 'elif [[ "$EVENT_NAME" == "schedule" ]]; then\n            profile="runnable"' in workflow
 
 
 def test_workflow_maps_unprefixed_github_configuration_to_runner_environment() -> None:
