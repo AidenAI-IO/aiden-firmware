@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/generate_ota_device_config.sh --manifest manifest.json --repo OWNER/REPO --channel CHANNEL --output config.json
 
-Generate the device-side OTA config seeded into ota.img during factory image builds.
+Generate the device-side OTA config seeded into userdata.img during factory image builds.
 USAGE
 }
 
@@ -96,7 +96,9 @@ jq -e -S \
     else
       error("missing asset hash for " + $name + " slot " + $slot)
     end;
-  if (.version | type) != "string" or (.build_time | type) != "string" then
+  if .schema_version != 2 or ([.parts[].name] | sort) != ["boot", "rootfs"] then
+    error("factory manifest must use schema 2 and contain exactly boot and rootfs")
+  elif (.version | type) != "string" or (.build_time | type) != "string" then
     error("manifest version and build_time are required")
   else
   {
@@ -108,12 +110,10 @@ jq -e -S \
     factory_partition_hashes: {
       a: {
         boot: hash_for("boot"; "a"),
-        oem: hash_for("oem"; "a"),
         rootfs: hash_for("rootfs"; "a")
       },
       b: {
         boot: hash_for("boot"; "b"),
-        oem: hash_for("oem"; "b"),
         rootfs: hash_for("rootfs"; "b")
       }
     }

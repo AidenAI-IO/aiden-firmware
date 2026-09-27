@@ -1660,7 +1660,7 @@ func TestDecodeWiFiSSIDPreservesInvalidEscapes(t *testing.T) {
 	}
 }
 
-func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
+func TestWiFiProxyRequestValidationAndPasswordProtection(t *testing.T) {
 	customURL := "http://alice:secret@proxy.example:7890"
 	noProxy := "localhost,.example.com"
 	request := wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &customURL, NoProxy: &noProxy}
@@ -1673,7 +1673,7 @@ func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
 	}
 	public := (wiFiConfig{Networks: []wiFiNetwork{{SSID: "Office"}}}).publicValue(config)
 	network := public["networks"].([]map[string]any)[0]
-	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "http://alice:xxxxx@proxy.example:7890" || network["no_proxy"] != noProxy {
+	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "" || network["no_proxy"] != noProxy {
 		t.Fatalf("public proxy=%#v", network)
 	}
 
@@ -1779,7 +1779,7 @@ func TestEmptyFirmwareInfoMatchesSuccessShape(t *testing.T) {
 		}
 	}
 	components, ok := info["components"].(map[string]string)
-	if !ok || components["boot"] != "" || components["oem"] != "" || components["rootfs"] != "" {
+	if !ok || components["boot"] != "" || components["rootfs"] != "" {
 		t.Fatalf("components=%#v", info["components"])
 	}
 }
@@ -1790,14 +1790,13 @@ func TestFirmwareComponentVersionsUsesSelectedSlot(t *testing.T) {
 			"b": map[string]any{
 				"partitions": map[string]any{
 					"boot":   map[string]any{"version": "boot-v2"},
-					"oem":    map[string]any{"version": "oem-v2"},
 					"rootfs": map[string]any{"version": "rootfs-v2"},
 				},
 			},
 		},
 	}
 	got := firmwareComponentVersions(state, "b")
-	if got["boot"] != "boot-v2" || got["oem"] != "oem-v2" || got["rootfs"] != "rootfs-v2" {
+	if got["boot"] != "boot-v2" || got["rootfs"] != "rootfs-v2" {
 		t.Fatalf("components=%#v", got)
 	}
 }

@@ -761,17 +761,6 @@ func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecu
 	result.InterruptedBySteer = errors.Is(context.Cause(toolCtx), errSteerInterruptToolCancel)
 	close(done)
 	cancel(nil)
-
-	// If tool was canceled due to interrupt, check for pending steer before returning error
-	// This prevents losing user's new instruction when tool is cancelable
-	if result.Error != nil && result.InterruptedBySteer {
-		if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
-			// Tool was interrupted but we have a new steer to process
-			// Return the error but the steer is preserved for next iteration
-			logging.Infof("agent", "steer", "tool canceled but pending steer exists (length=%d), will be processed", len(steer.Content))
-		}
-	}
-
 	return result
 }
 

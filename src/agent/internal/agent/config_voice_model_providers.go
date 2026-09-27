@@ -3,6 +3,7 @@ package agent
 import (
 	"aiden-agent/internal/agent/realtimevoice"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -13,21 +14,24 @@ import (
 // [voice_model] section keeps the selected record name and session-wide
 // behavior; credentials and provider-specific routing stay on the record.
 type VoiceModelProvider struct {
-	Type             string `toml:"type"`
-	UpstreamProvider string `toml:"upstream_provider,omitempty"`
-	AgentID          string `toml:"agent_id,omitempty"`
-	APIKey           string `toml:"api_key,omitempty"`
-	Model            string `toml:"model,omitempty"`
-	WorkspaceID      string `toml:"workspace_id,omitempty"`
-	Region           string `toml:"region,omitempty"`
-	AuthMode         string `toml:"auth_mode,omitempty"`
-	ProjectID        string `toml:"project_id,omitempty"`
-	Location         string `toml:"location,omitempty"`
-	Endpoint         string `toml:"endpoint,omitempty"`
-	BaseURL          string `toml:"base_url,omitempty"`
-	RealtimeProtocol string `toml:"realtime_protocol,omitempty"`
-	ThinkingLevel    string `toml:"thinking_level,omitempty"`
-	Voice            string `toml:"voice,omitempty"`
+	Type                   string   `toml:"type"`
+	UpstreamProvider       string   `toml:"upstream_provider,omitempty"`
+	AgentID                string   `toml:"agent_id,omitempty"`
+	APIKey                 string   `toml:"api_key,omitempty"`
+	Model                  string   `toml:"model,omitempty"`
+	WorkspaceID            string   `toml:"workspace_id,omitempty"`
+	Region                 string   `toml:"region,omitempty"`
+	AuthMode               string   `toml:"auth_mode,omitempty"`
+	ProjectID              string   `toml:"project_id,omitempty"`
+	Location               string   `toml:"location,omitempty"`
+	Endpoint               string   `toml:"endpoint,omitempty"`
+	BaseURL                string   `toml:"base_url,omitempty"`
+	RealtimeProtocol       string   `toml:"realtime_protocol,omitempty"`
+	ThinkingLevel          string   `toml:"thinking_level,omitempty"`
+	Voice                  string   `toml:"voice,omitempty"`
+	TurnDetection          string   `toml:"turn_detection,omitempty"`
+	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
+	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
 }
 
 func normalizeVoiceModelProviderType(providerType string) string {
@@ -44,6 +48,7 @@ func defaultVoiceModelProviderRecord(providerType string) VoiceModelProvider {
 	if providerType == defaultVoiceModelProvider {
 		record.Model = defaultVoiceModelModel
 		record.Voice = defaultVoiceModelVoice
+		record.TurnDetection = defaultVoiceModelTurnDetection
 	}
 	return record
 }
@@ -116,6 +121,18 @@ func copyDefinedLegacyVoiceModelFields(record *VoiceModelProvider, legacy VoiceM
 	if metadata.IsDefined("voice_model", "voice") {
 		record.Voice = legacy.Voice
 	}
+	if normalizeVoiceModelProviderType(record.Type) != realtimevoice.ProviderQwen {
+		return
+	}
+	if metadata.IsDefined("voice_model", "turn_detection") {
+		record.TurnDetection = legacy.TurnDetection
+	}
+	if metadata.IsDefined("voice_model", "turn_detection_threshold") {
+		record.TurnDetectionThreshold = legacy.TurnDetectionThreshold
+	}
+	if metadata.IsDefined("voice_model", "turn_detection_silence_ms") {
+		record.TurnDetectionSilenceMs = legacy.TurnDetectionSilenceMs
+	}
 }
 
 func clearVoiceModelProviderFields(config *VoiceModelConfig) {
@@ -132,6 +149,9 @@ func clearVoiceModelProviderFields(config *VoiceModelConfig) {
 	config.BaseURL = ""
 	config.RealtimeProtocol = ""
 	config.Voice = ""
+	config.TurnDetection = ""
+	config.TurnDetectionThreshold = nil
+	config.TurnDetectionSilenceMs = 0
 }
 
 // resolveVoiceModelProvider expands the selected record into the legacy flat
@@ -199,6 +219,21 @@ func fillVoiceModelProviderFields(config *VoiceModelConfig, record VoiceModelPro
 	if config.Voice == "" {
 		config.Voice = record.Voice
 	}
+	if normalizeVoiceModelProviderType(record.Type) != realtimevoice.ProviderQwen {
+		config.TurnDetection = ""
+		config.TurnDetectionThreshold = nil
+		config.TurnDetectionSilenceMs = 0
+		return
+	}
+	if config.TurnDetection == "" {
+		config.TurnDetection = record.TurnDetection
+	}
+	if config.TurnDetectionThreshold == nil {
+		config.TurnDetectionThreshold = record.TurnDetectionThreshold
+	}
+	if config.TurnDetectionSilenceMs == 0 {
+		config.TurnDetectionSilenceMs = record.TurnDetectionSilenceMs
+	}
 }
 
 func applyVoiceModelTypeDefaults(config *VoiceModelConfig) {
@@ -243,10 +278,37 @@ func validateVoiceModelProviderRecords(cfg Config) error {
 		if err := validateVoiceModelRealtimeProtocol(record.RealtimeProtocol, providerType, fmt.Sprintf("voice_model_providers.%s.realtime_protocol", ref)); err != nil {
 			return err
 		}
+		providerFieldPrefix := fmt.Sprintf("voice_model_providers.%s", ref)
+		if providerType == realtimevoice.ProviderQwen {
+			if err := validateQwenTurnDetection(record.TurnDetection, record.TurnDetectionThreshold, record.TurnDetectionSilenceMs, providerFieldPrefix); err != nil {
+				return err
+			}
+		} else if record.TurnDetection != "" || record.TurnDetectionThreshold != nil || record.TurnDetectionSilenceMs != 0 {
+			return fmt.Errorf("%s.turn_detection settings are only supported for provider=qwen", providerFieldPrefix)
+		}
 		return nil
 	}
 	if !isKnownVoiceModelProviderType(ref) {
 		return fmt.Errorf("voice_model.provider %q is neither a [voice_model_providers] record nor a known realtime provider type", ref)
+	}
+	return nil
+}
+
+func validateQwenTurnDetection(turnType string, threshold *float64, silenceMs int, fieldPrefix string) error {
+	if turnType != "" && turnType != "server_vad" && turnType != "smart_turn" {
+		return fmt.Errorf("%s.turn_detection: unsupported type %q", fieldPrefix, turnType)
+	}
+	if silenceMs < 0 {
+		return fmt.Errorf("%s.turn_detection_silence_ms must be >= 0", fieldPrefix)
+	}
+	if turnType == "smart_turn" {
+		return nil
+	}
+	if threshold != nil && (math.IsNaN(*threshold) || math.IsInf(*threshold, 0) || *threshold < -1 || *threshold > 1) {
+		return fmt.Errorf("%s.turn_detection_threshold must be a finite value between -1 and 1", fieldPrefix)
+	}
+	if silenceMs != 0 && (silenceMs < 200 || silenceMs > 6000) {
+		return fmt.Errorf("%s.turn_detection_silence_ms must be 0 or between 200 and 6000", fieldPrefix)
 	}
 	return nil
 }

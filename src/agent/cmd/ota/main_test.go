@@ -239,7 +239,7 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	if err := os.WriteFile(storageDevicePath, nil, 0o644); err != nil {
 		t.Fatalf("WriteFile(storage device) error = %v", err)
 	}
-	mountInfo := fmt.Sprintf("36 25 179:12 / %s rw,relatime - ext4 %s rw\n", stateDir, storageDevicePath)
+	mountInfo := fmt.Sprintf("36 25 179:10 / %s rw,relatime - ext4 %s rw\n", stateDir, storageDevicePath)
 	if err := os.WriteFile(mountInfoPath, []byte(mountInfo), 0o644); err != nil {
 		t.Fatalf("WriteFile(mountinfo) error = %v", err)
 	}
@@ -252,7 +252,7 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	}
 
 	manifest := ota.Manifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Channel:       "stable",
 		Version:       version,
 		BuildTime:     buildTime,
@@ -322,7 +322,7 @@ func TestVerifyManifestSupportsRemoteURL(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	manifest := ota.Manifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Channel:       "stable",
 		Version:       "20260521-120000-abcdef0",
 		BuildTime:     "2026-05-21T12:00:00Z",

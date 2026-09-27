@@ -87,8 +87,8 @@ Streaming replies that have already emitted speech are not modified. Their pendi
 Official firmware bundles prerecorded Chinese and English messages under:
 
 ```text
-/oem/usr/share/aiden/audio/voice-notifications/tts-unavailable.zh-CN.wav
-/oem/usr/share/aiden/audio/voice-notifications/tts-unavailable.en-US.wav
+/usr/share/aiden/audio/voice-notifications/tts-unavailable.zh-CN.wav
+/usr/share/aiden/audio/voice-notifications/tts-unavailable.en-US.wav
 ```
 
 When a final reply cannot use the configured TTS provider, the Agent bypasses TTS and plays the matching WAV directly through `audio_service`. This also covers startup-time TTS initialization failure and providers that complete without producing audio.

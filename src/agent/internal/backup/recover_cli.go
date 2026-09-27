@@ -31,7 +31,7 @@ func RunRecover(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&roots.SD, "sd-root", roots.SD, "SD-card root")
 	statusPath := fs.String("status", "/run/aiden/backup/recovery.json", "status document path")
 	failedMarker := fs.String("failed-marker", "/run/aiden/backup/recovery.failed", "marker created when formal data may be inconsistent")
-	otaBinary := fs.String("ota-binary", "/oem/usr/bin/ota", "OTA binary used for identity provisioning")
+	otaBinary := fs.String("ota-binary", "/usr/lib/aiden/ota", "OTA binary used for identity provisioning")
 	otaConfig := fs.String("ota-config", "/userdata/debian/ota/config.json", "OTA configuration path")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

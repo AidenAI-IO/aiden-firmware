@@ -201,7 +201,7 @@ assert.equal(t('config.save_failed', {section: 'agent'}), 'Save [agent] failed.'
 initI18n();
 assert.equal(document.documentElement.lang, 'en-US');
 assert.equal(document.title, 'Aiden Setup');
-assert.equal(title.textContent, 'Configuration');
+assert.equal(title.textContent, 'Device Settings');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
 
 applyLocale('zh-CN', false);
@@ -237,7 +237,7 @@ assert.equal(t('missing.translation.key'), 'missing.translation.key');
 
 applyLocale('en-US', true);
 assert.equal(document.documentElement.lang, 'en-US');
-assert.equal(title.textContent, 'Configuration');
+assert.equal(title.textContent, 'Device Settings');
 assert.equal(password.getAttribute('placeholder'), 'Open network can leave empty');
 assert.equal(t('config.fields.model.responses_compact_threshold.label'), 'Compaction threshold (tokens)');
 assert.equal(t('wifi.proxy_url_help'), 'Supported URLs: socks5://, socks5h://, http://, https://');
@@ -287,7 +287,8 @@ assert.match(wifi, /proxy_mode:proxyMode/);
 assert.match(wifi, /if\(proxyMode==='proxy'\)/);
 assert.match(wifi, /if\(proxyUrl\)requestBody\.proxy_url=proxyUrl/);
 assert.match(wifi, /saved\.proxy_mode==='proxy'/);
-assert.match(wifi, /proxyUrl\.value=saved&&saved\.proxy_mode==='proxy'\?saved\.proxy_url:''/);
+assert.match(wifi, /proxyUrl\.value=''/);
+assert.match(wifi, /proxyUrl\.placeholder=t\(saved&&saved\.proxy_mode==='proxy'\?'wifi\.proxy_saved_placeholder':'wifi\.proxy_url_placeholder'\)/);
 assert.match(wifi, /enteredProxyUrl===saved\.proxy_url\?'':enteredProxyUrl/);
 assert.match(wifi, /no_proxy:network\.no_proxy\|\|''/);
 assert.match(wifi, /saved&&saved\.proxy_mode==='proxy'\?saved\.no_proxy:''/);

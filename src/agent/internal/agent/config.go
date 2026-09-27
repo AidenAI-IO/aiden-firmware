@@ -308,8 +308,8 @@ type Config struct {
 	LiveActivity               LiveActivityConfig            `toml:"live_activity,omitempty"`
 	Locale                     string                        `toml:"locale,omitempty"`
 	Timezone                   string                        `toml:"timezone,omitempty"`
-	Instruction                string                        `toml:"custom_instruction,omitempty"`
-	AdditionalPrompt           string                        `toml:"additional_prompt,omitempty"`
+	Instruction                string                        `toml:"-"` // Built-in runtime instruction; the legacy custom_instruction key is read but ignored (see applyRuntimeInstructionDefault).
+	Prompt                     string                        `toml:"prompt,omitempty"`
 	InputMode                  string                        `toml:"input_mode,omitempty"`  // "stt" or "realtime"
 	VADBackend                 string                        `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                        `toml:"vad_model_path,omitempty"`
@@ -437,7 +437,6 @@ type VoiceModelConfig struct {
 	RealtimeProtocol       string   `toml:"realtime_protocol,omitempty"`
 	ThinkingLevel          string   `toml:"thinking_level,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
-	Instructions           string   `toml:"instructions,omitempty"`
 	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
 	InputAudioFormat       string   `toml:"input_audio_format,omitempty"`
 	OutputAudioFormat      string   `toml:"output_audio_format,omitempty"`
@@ -505,11 +504,10 @@ func (c VoiceModelConfig) Validate() error {
 			return fmt.Errorf("voice_model.base_url: invalid HTTP URL %q", c.BaseURL)
 		}
 	}
-	if provider != "speko" && c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
-		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
-	}
-	if c.TurnDetectionSilenceMs < 0 {
-		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
+	if provider == realtimevoice.ProviderQwen {
+		if err := validateQwenTurnDetection(c.TurnDetection, c.TurnDetectionThreshold, c.TurnDetectionSilenceMs, "voice_model"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -887,10 +885,10 @@ func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction      string
-	AdditionalPrompt string
-	Locale           string
-	Timezone         string
+	Instruction string
+	Prompt      string
+	Locale      string
+	Timezone    string
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -955,7 +953,7 @@ func resolveBundledSkillsDir() string {
 }
 
 func bundledSkillsDirCandidates() []string {
-	return []string{"/oem/usr/share/aiden/skills"}
+	return []string{"/usr/share/aiden/skills"}
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -964,6 +962,7 @@ func LoadConfig(path string) (Config, error) {
 	if _, err := decodeConfigFile(path, &cfg); err != nil {
 		return Config{}, err
 	}
+	applyRuntimeInstructionDefault(&cfg)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -1224,6 +1223,12 @@ func applyVoiceModelProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	if !metadata.IsDefined("voice_model", "turn_detection") {
 		cfg.VoiceModel.TurnDetection = ""
 	}
+	if !metadata.IsDefined("voice_model", "turn_detection_threshold") {
+		cfg.VoiceModel.TurnDetectionThreshold = nil
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection_silence_ms") {
+		cfg.VoiceModel.TurnDetectionSilenceMs = 0
+	}
 }
 
 func clearNonAllowedModelBaseURL(m *ModelConfig) {
@@ -1369,6 +1374,11 @@ func inspectConfigFilePath(path string) (bool, error) {
 	return true, nil
 }
 
+// applyRuntimeInstructionDefault pins Config.Instruction to the built-in runtime
+// instruction. The field is no longer file-configurable (the legacy
+// `custom_instruction` key is read and ignored), so this is the single place
+// that decides the base instruction for every loader, including the ones that
+// do not start from DefaultConfig.
 func applyRuntimeInstructionDefault(cfg *Config) {
 	if cfg == nil {
 		return
@@ -1466,7 +1476,9 @@ func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface
 	mergeRootTable(grouped, result, []string{"voice_settings", "mode"})
 	mergeRootTable(grouped, result, []string{"voice_settings", "classic", "runtime"})
 	if realtime, ok := tableAt(grouped, "voice_settings", "realtime"); ok {
-		copyWithoutKey(realtime, result, "voice_model", "providers")
+		// Realtime session instructions now come from the built-in base plus
+		// conversation_settings.agent.prompt, not this removed voice field.
+		copyWithoutKey(realtime, result, "voice_model", "providers", "instructions")
 	}
 	moveTable([]string{"voice_settings", "classic", "stt"}, "stt")
 	moveTable([]string{"voice_settings", "classic", "stt", "providers"}, "stt_providers")

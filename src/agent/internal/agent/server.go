@@ -3426,7 +3426,7 @@ func httpToolExecutionSurvivesClientDisconnect(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
 	case "keyboard_tap", "quick_action", toolOpenApp, toolSearchLaunchApp, "enter_text",
 		"mouse_move",
-		"mouse_scroll", "touch_gesture", "wheel_nudge":
+		"mouse_scroll", "touch_gesture":
 		return true
 	default:
 		return false

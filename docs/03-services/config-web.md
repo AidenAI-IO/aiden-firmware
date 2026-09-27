@@ -5,7 +5,7 @@ sidebar_position: 2
 # Config Web: Web-based Configuration Interface
 
 Config Web is the bundled browser client served by the `config-web` subcommand
-of the Go Agent binary (`/oem/usr/bin/agent`). Device operations are exposed by
+of the Go Agent binary (`/usr/lib/aiden/agent`). Device operations are exposed by
 the independently mountable [Device Management API](device-management-api.md),
 so the page can be replaced or removed without coupling those operations to the
 static UI. Configuration changes are persisted to
@@ -23,8 +23,8 @@ and USB-ECM access use the same API behavior.
 | --- | --- |
 | Port | `80` |
 | Config | `/userdata/agent/agent.toml` |
-| Binary | `/oem/usr/bin/agent config-web` |
-| Web root | `/oem/usr/share/aiden/config-web` |
+| Binary | `/usr/lib/aiden/agent config-web` |
+| Web root | `/usr/share/aiden/config-web` |
 
 ## Startup
 
@@ -109,6 +109,15 @@ be released before HID component replacement can succeed. Old model requests
 and TTS sessions retain their current provider until completion. Prompt/provider
 changes open a new context session at the next task/session boundary and leave
 existing transcript files intact.
+
+The editor shows the persisted configuration even when runtime application
+fails. Provider records and references remain saved; the application status
+reports the error, and **Retry** reapplies the complete saved configuration.
+An earlier failed voice-mode change can therefore also block a later model
+save until the voice dependency is repaired or that saved change is reverted.
+Saving a section preserves unsaved drafts in other fields. Manual TOML edits
+and configuration imports use the same save queue and application status as
+form and provider edits.
 
 USB restart requirements survive Agent-only restarts: the bound USB descriptor
 and `<config-dir>/cache/usb-boot.json` retain the active settings for the current

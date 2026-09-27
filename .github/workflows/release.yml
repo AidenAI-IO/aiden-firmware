@@ -1,0 +1,196 @@
+name: Aiden Channel Release
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: 'Release channel: dev, staging or prod'
+        type: string
+        required: true
+      source_ref:
+        description: 'Commit, tag or branch to build (resolved once by the planner)'
+        type: string
+        default: main
+      version:
+        description: 'Optional MAJOR.MINOR.PATCH; blank increments the global patch version'
+        type: string
+      force_ota:
+        description: 'Rebuild the system and increment its contract, including external dependency refreshes'
+        type: boolean
+        default: false
+      plan_only:
+        description: 'Preview classification, version, contract and changelog without building'
+        type: boolean
+        default: true
+      publish:
+        description: 'Publish verified build assets to GitHub (requires plan_only=false)'
+        type: boolean
+        default: false
+      runner:
+        description: Firmware build runner
+        type: string
+        default: aiden-hosted-01
+    secrets:
+      OTA_ED25519_PRIVATE_KEY:
+        required: false
+      AGENT_CONFIG_TOML:
+        required: false
+      APT_SIGNING_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+      source_ref:
+        description: 'Commit, tag or branch to build (resolved once by the planner)'
+        type: string
+        default: main
+      version:
+        description: 'Optional MAJOR.MINOR.PATCH; blank increments the global patch version'
+        type: string
+      force_ota:
+        description: 'Rebuild the system and increment its contract, including external dependency refreshes'
+        type: boolean
+        default: false
+      plan_only:
+        description: 'Preview classification, version, contract and changelog without building'
+        type: boolean
+        default: true
+      publish:
+        description: 'Publish verified build assets to GitHub (requires plan_only=false)'
+        type: boolean
+        default: false
+      runner:
+        description: Firmware build runner
+        type: choice
+        options: [aiden-hosted-01, aiden-hosted-02, ubuntu-24.04]
+        default: aiden-hosted-01
+
+permissions:
+  contents: read
+
+# Contracts and versions are allocated globally; serialize every channel.
+concurrency:
+  group: aiden-channel-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      source_commit: ${{ steps.plan.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release decisions
+        run: python3 scripts/test_channel_release.py
+      - name: Plan release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          FORCE_OTA: ${{ inputs.force_ota }}
+        run: |
+          args=(--channel "$RELEASE_CHANNEL" --repo "$RELEASE_REPO")
+          if [ -n "$RELEASE_VERSION" ]; then args+=(--version "$RELEASE_VERSION"); fi
+          if [ "$FORCE_OTA" = true ]; then args+=(--force-ota); fi
+          python3 scripts/release/release.py plan "${args[@]}"
+          cat output/release/plan.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-plan
+          path: output/release/plan.*
+          if-no-files-found: error
+
+  business:
+    needs: plan
+    if: ${{ !inputs.plan_only && needs.plan.outputs.kind == 'business' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.source_commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-plan
+          path: output/release/
+      - run: git submodule update --init --depth=1 pico-sdk
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchains
+            .cache/debian-apps
+          key: business-armhf-${{ runner.os }}-${{ hashFiles('src/agent/go.sum', 'scripts/debian-apps/Dockerfile', 'scripts/debian-apps/*patch') }}
+          restore-keys: business-armhf-${{ runner.os }}-
+      - name: Build and verify business package with runtime configuration
+        env:
+          RK_JOBS: '4'
+        run: |
+          bash scripts/test_system_config_package.sh
+          python3 scripts/release/release.py build --plan output/release/plan.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: channel-release-assets
+          path: output/release/assets/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  ota:
+    needs: plan
+    if: ${{ !inputs.plan_only && needs.plan.outputs.kind == 'ota' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      runner: ${{ inputs.runner }}
+      source_ref: ${{ needs.plan.outputs.source_commit }}
+      release_plan_artifact: release-plan
+      free_disk_space: ${{ inputs.runner == 'ubuntu-24.04' }}
+    secrets: inherit
+
+  publish:
+    needs: [plan, business, ota]
+    if: ${{ !cancelled() && inputs.publish && !inputs.plan_only && needs.plan.result == 'success' && (needs.business.result == 'success' || needs.ota.result == 'success') }}
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.channel }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.source_commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: channel-release-assets
+          path: output/release/assets/
+      - name: Require APT signing configuration before publication
+        env:
+          APT_KEY_CONFIGURED: ${{ secrets.APT_SIGNING_PRIVATE_KEY != '' }}
+        run: test "$APT_KEY_CONFIGURED" = true
+      - name: Verify, upload draft, verify downloads, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/release.py publish output/release/assets
+
+  apt:
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/apt-repository.yml
+    secrets: inherit

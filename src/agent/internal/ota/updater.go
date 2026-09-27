@@ -64,6 +64,8 @@ type UpdaterConfig struct {
 	MiscPath                  string                       `json:"misc_path,omitempty"`
 	BlockDir                  string                       `json:"block_dir,omitempty"`
 	ManifestURL               string                       `json:"manifest_url,omitempty"`
+	Repo                      string                       `json:"repo,omitempty"`
+	Channel                   string                       `json:"channel,omitempty"`
 	ReleaseURL                string                       `json:"-"` // Test override for default release URL
 	PublicKeyPath             string                       `json:"public_key_path,omitempty"`
 	PublicKey                 ed25519.PublicKey            `json:"-"`
@@ -186,7 +188,7 @@ func normalizeUpdaterConfig(config UpdaterConfig) (UpdaterConfig, error) {
 		config.BlockDir = DefaultOTABlockDir
 	}
 	if config.PublicKeyPath == "" {
-		config.PublicKeyPath = "/oem/etc/ota_pubkey.pem"
+		config.PublicKeyPath = "/usr/share/keyrings/aiden-ota.pem"
 	}
 	if config.MachineIDPath == "" {
 		config.MachineIDPath = DefaultPersistentMachineIDPath
@@ -285,6 +287,8 @@ func (u *Updater) CheckOnce(ctx context.Context) (UpdateResult, error) {
 	return u.checkOnceLocked(ctx)
 }
 
+// checkOnceLocked performs one update while the caller holds the update lock.
+// It verifies archives before writing, then verifies streamed images and eMMC readback before activation.
 func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	logging.Infof("ota", "updater", "ota check: start")
 	if err := u.ProcessPendingHealth(ctx); err != nil {
@@ -344,9 +348,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 	} else {
-		releaseURL := u.config.ReleaseURL
-		if releaseURL == "" {
-			releaseURL = DefaultReleaseURL
+		releaseURL, endpointErr := releaseEndpoint(u.config)
+		if endpointErr != nil {
+			u.recordError("release", endpointErr)
+			return UpdateResult{}, endpointErr
 		}
 		logging.Infof("ota", "updater", "ota release: fetching %s", releaseURL)
 		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
@@ -374,6 +379,10 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	}
 	manifest, err := VerifyManifestJSON(manifestBytes, publicKey)
 	if err != nil {
+		u.recordError("manifest", err)
+		return UpdateResult{}, err
+	}
+	if err := requireManifestChannel(u.config.Channel, manifest); err != nil {
 		u.recordError("manifest", err)
 		return UpdateResult{}, err
 	}
@@ -523,13 +532,8 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 		}
 
 		dst := planned.path
-		if planned.cachedVerified {
-			if err := u.verifyCachedDownload(dst, asset); err != nil {
-				err = u.discardInvalidDownload(dst, err)
-				u.recordError("verify", err)
-				return UpdateResult{}, err
-			}
-			logging.Infof("ota", "updater", "ota download: %s skipped; cached file verified dst=%s", asset.Name, dst)
+		if planned.archiveVerified {
+			logging.Infof("ota", "updater", "ota download: %s skipped; cached archive already verified dst=%s", asset.Name, dst)
 		} else {
 			if err := os.MkdirAll(u.config.DownloadDir, 0o755); err != nil {
 				u.recordError("download", err)
@@ -546,14 +550,14 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 				return UpdateResult{}, err
 			}
 			logging.Infof("ota", "updater", "ota verify: %s sha256 ok", asset.Name)
+		}
+
+		if u.config.DryRun {
 			if err := u.verifyDownloadedImage(dst, asset); err != nil {
 				err = u.discardInvalidDownload(dst, err)
 				u.recordError("verify", err)
 				return UpdateResult{}, err
 			}
-		}
-
-		if u.config.DryRun {
 			continue
 		}
 		if err := prepareState(); err != nil {
@@ -579,18 +583,31 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 			return UpdateResult{}, err
 		}
 		logging.Infof("ota", "updater", "ota write: %s -> %s start image=%s", part.Name, blockName, dst)
-		if err := writer.WritePartWithProgress(part.Name, target, dst, u.logWriteProgress); err != nil {
+		expectedImageSHA256 := partitionSHA256ForAsset(asset)
+		imageSize, err := writer.writePartWithProgressAndVerify(part.Name, target, dst, expectedImageSHA256, u.logWriteProgress)
+		if err != nil {
+			if errors.Is(err, errPartitionImageSHA256Mismatch) {
+				field := "sha256"
+				if asset.ImageSHA256 != "" {
+					field = "image_sha256"
+				}
+				err = fmt.Errorf("%s %s: %w", asset.Name, field, err)
+				err = u.discardInvalidDownload(dst, err)
+				u.recordError("verify", err)
+				return UpdateResult{}, err
+			}
 			u.recordError("write", err)
 			return UpdateResult{}, err
 		}
-		if err := writer.VerifyPart(part.Name, target, dst, partitionSHA256ForAsset(asset)); err != nil {
+		logging.Infof("ota", "updater", "ota verify: %s image sha256 ok during write", asset.Name)
+		if err := writer.verifyPartWithSize(part.Name, target, imageSize, expectedImageSHA256); err != nil {
 			u.recordError("readback", err)
 			return UpdateResult{}, err
 		}
-		state.DownloadedHashes[part.Name] = partitionSHA256ForAsset(asset)
+		state.DownloadedHashes[part.Name] = expectedImageSHA256
 		logging.Infof("ota", "updater", "ota readback: %s -> %s sha256 ok", part.Name, blockName)
 		if u.config.DebianMode && part.Name == "rootfs" {
-			record, err := u.personalizeRootFS(writer, target, dst, asset)
+			record, err := u.personalizeRootFS(writer, target, imageSize, asset)
 			if err != nil {
 				u.recordError("personalization", err)
 				return UpdateResult{}, err
@@ -680,11 +697,10 @@ func (u *Updater) acquireUpdateLock() (func(), error) {
 	}, nil
 }
 
-func (u *Updater) verifyCachedDownload(path string, asset ManifestAsset) error {
-	if err := VerifyFile(path, asset.Size, asset.SHA256); err != nil {
-		return err
-	}
-	return u.verifyDownloadedImage(path, asset)
+// verifyCachedArchive checks only the downloaded artifact size and digest.
+// Extracted image validation is deferred to dry-run verification or the streamed write.
+func (u *Updater) verifyCachedArchive(path string, asset ManifestAsset) error {
+	return VerifyFile(path, asset.Size, asset.SHA256)
 }
 
 func (u *Updater) discardInvalidDownload(path string, verifyErr error) error {
@@ -706,14 +722,12 @@ func (u *Updater) deleteDownloadCache(path string) error {
 	return nil
 }
 
-func (u *Updater) personalizeRootFS(writer PartitionWriter, target Slot, imagePath string, asset ManifestAsset) (RootFSPersonalization, error) {
+// personalizeRootFS applies the persistent machine ID to the written rootfs
+// and records its effective digest over imageSize bytes.
+func (u *Updater) personalizeRootFS(writer PartitionWriter, target Slot, imageSize int64, asset ManifestAsset) (RootFSPersonalization, error) {
 	machineID, err := readPersistentMachineID(u.config.MachineIDPath)
 	if err != nil {
 		return RootFSPersonalization{}, fmt.Errorf("load persistent machine-id: %w", err)
-	}
-	hashedBytes, err := partitionImageSize(imagePath)
-	if err != nil {
-		return RootFSPersonalization{}, fmt.Errorf("inspect rootfs image size: %w", err)
 	}
 	blockName, err := writer.ResolveBlockName("rootfs", target)
 	if err != nil {
@@ -723,7 +737,7 @@ func (u *Updater) personalizeRootFS(writer PartitionWriter, target Slot, imagePa
 	effectiveHash, err := personalizeExt4MachineID(
 		blockPath,
 		machineID,
-		hashedBytes,
+		imageSize,
 		u.config.DebugfsPath,
 		u.config.E2fsckPath,
 		u.runCommand,
@@ -735,7 +749,7 @@ func (u *Updater) personalizeRootFS(writer PartitionWriter, target Slot, imagePa
 		ArtifactSHA256:           partitionSHA256ForAsset(asset),
 		PersonalizationSchema:    PersonalizationSchemaVersion,
 		EffectivePartitionSHA256: effectiveHash,
-		HashedBytes:              hashedBytes,
+		HashedBytes:              imageSize,
 	}, nil
 }
 
@@ -1358,6 +1372,10 @@ func (u *Updater) partitionSizes() map[string]int64 {
 func (u *Updater) fetchLatestReleaseAssets(parent context.Context, releaseURL string, token string) (map[string]string, error) {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
+	if managedChannel(u.config.Channel) {
+		assets, err := FetchChannelReleaseAssets(ctx, releaseURL, u.config.Channel, token, u.config.GitHubProxyURL)
+		return assets, describeTimeout(parent, err, "channel release metadata request", u.httpTimeout())
+	}
 	assets, err := FetchLatestReleaseAssetsWithProxy(ctx, releaseURL, token, u.config.GitHubProxyURL)
 	return assets, describeTimeout(parent, err, "release metadata request", u.httpTimeout())
 }
@@ -1413,7 +1431,7 @@ func (u *Updater) recordError(phase string, err error) {
 }
 
 // cleanupOldDownloadCache keeps only verified assets and resumable partials
-// needed for the selected target slot.
+// needed for the selected target slot that are still part of the active plan.
 func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
 	downloadDir := u.config.DownloadDir
 	if downloadDir == "" {
@@ -1422,7 +1440,7 @@ func (u *Updater) cleanupOldDownloadCache(plan downloadPlan) error {
 
 	keepFiles := make(map[string]bool)
 	for _, planned := range plan.assets {
-		if planned.cachedVerified {
+		if planned.archiveVerified {
 			keepFiles[planned.asset.Name] = true
 		}
 		if planned.partialPresent {
@@ -1668,9 +1686,9 @@ func rootSlotFromCmdline(cmdline string) (Slot, bool, error) {
 		}
 		value = strings.Trim(strings.ToLower(value), "\"'")
 		switch {
-		case value == "partlabel=rootfs_a" || value == "rootfs_a" || strings.HasSuffix(value, "/rootfs_a") || value == "/dev/mmcblk0p9":
+		case value == "partlabel=rootfs_a" || value == "rootfs_a" || strings.HasSuffix(value, "/rootfs_a") || value == "/dev/mmcblk0p7":
 			return SlotA, true, nil
-		case value == "partlabel=rootfs_b" || value == "rootfs_b" || strings.HasSuffix(value, "/rootfs_b") || value == "/dev/mmcblk0p10":
+		case value == "partlabel=rootfs_b" || value == "rootfs_b" || strings.HasSuffix(value, "/rootfs_b") || value == "/dev/mmcblk0p8":
 			return SlotB, true, nil
 		default:
 			return SlotA, false, fmt.Errorf("unsupported root device %q", value)

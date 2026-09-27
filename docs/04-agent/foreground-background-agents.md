@@ -76,12 +76,21 @@ The realtime model receives this focused catalog:
 | `audio_volume`          | Read or set the realtime playback volume.                                        |
 | `create_agent_task`     | Queue background work and return immediately with a task ID.                     |
 | `cancel_agent_task`     | Cancel queued work or request cancellation of running work.                      |
+| `update_agent_task`     | Replace the complete goal of queued or running work.                              |
 | `query_agent_task`      | Read one task's state and result, or every outstanding task when no ID is given. |
 | `response_user_action`  | Resume a background task after the user completes the requested device action.   |
 | `end_conversation`      | Return to standby after the farewell finishes playing.                           |
 
 `create_agent_task` only enqueues work. The foreground response never waits for
 the background agent to start or finish.
+
+When the user changes work that is already outstanding, the foreground calls
+`update_agent_task` with the task ID and the complete replacement goal. It does
+not cancel the old task and create a new one. Queued work reads the replacement
+goal when it starts. Running work receives the replacement as an in-context
+steer: the current model or tool call is interrupted, the updated goal is added
+to the backend conversation as a user message, and the agent loop resumes with
+the same task ID and backend context.
 
 Before creating work, the foreground calls `query_agent_task` without a task ID
 and continues the task that already covers the request instead of starting a
@@ -151,6 +160,21 @@ Queued cancellation is immediate. Running cancellation first publishes
 `cancelling`; it becomes `cancelled` after the legacy runtime returns from
 context cancellation.
 
+Task updates follow these state rules:
+
+- `created` or `queued`: replace the stored goal before execution.
+- `running`: replace the stored goal and publish a latest-wins steer to the
+  active backend run.
+- `running` while waiting for user action: invalidate the old action request
+  and resume the task with the replacement goal.
+- `cancelling` or terminal: reject the update.
+
+Every goal has a revision. Persisting a steer in the backend context advances
+the applied revision. If the backend run returns after an update but before
+persisting it, the manager discards that stale result and immediately runs the
+latest complete goal again. This closes the race between a direct final answer
+and an update arriving after the agent loop's last steer check.
+
 ## Result delivery
 
 Completed, failed, and cancelled tasks are delivered to the foreground model as
@@ -168,8 +192,19 @@ user messages. Delivery follows three rules:
    the session owns, and the daemon keeps a watermark of the manager's terminal
    sequence so one batch activates at most one session.
 
-Undelivered updates are returned to the pending queue if the realtime session
-ends. The next session can then deliver them.
+Terminal result delivery has three manager-owned phases: queued, claimed by a
+foreground session, and delivering. Draining claims an update but does not mark
+it delivered. Immediately before text injection, the foreground resolves every
+claimed snapshot against current manager state; after the realtime provider
+accepts the response request, it acknowledges the update. If the session ends
+first, the claim is released to the pending queue for a later session.
+
+Calling `cancel_agent_task` for a completed, failed, or cancelled task preserves
+that historical task status but suppresses its result while the delivery is
+queued or claimed. A claimed result already held in the foreground's pending
+list is therefore removed during the final resolve and is never announced. Once
+delivery has begun, the provider response is the point of no return and is not
+retroactively interrupted by task cancellation.
 
 A terminal task never carries a pending user action: the action is cleared when
 the task reaches a terminal state, so the foreground is never asked to complete
@@ -195,3 +230,8 @@ runtime/session. The `user_message` is appended as the next user message on
 the existing context, so the background agent can verify the new state and
 continue its original task. If the realtime session ends before delivery, the
 pending action is retained for the next foreground session.
+
+Updating a task while it waits for user action is different from responding to
+that action: the old request is no longer authoritative, so the manager clears
+it, invalidates any claimed foreground snapshot, and resumes the backend with
+the complete replacement goal.

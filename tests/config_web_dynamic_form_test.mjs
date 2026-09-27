@@ -529,6 +529,73 @@ assert.equal(document.getElementById('agent_input_mode').disabled, false, 'faile
 assert.equal(document.getElementById('voice_model_provider').value, 'qwen-main', 'failed provider selection remains visible for correction');
 assert.equal(document.getElementById('voice_model_provider').disabled, false, 'failed provider selection remains editable');
 
+// Persisted failures must use the server's resolved config, without replacing
+// another card's draft. Exercise every form save entry point.
+for (const save of [
+  () => configFormModule.namespace.saveSection('model'),
+  () => configFormModule.namespace.saveSections(['model'], 'section-model', 'save-model'),
+  () => configFormModule.namespace.saveFieldGroups([{section: 'model'}], 'section-model', 'save-model'),
+  () => configFormModule.namespace.saveSectionFields('model-provider', 'model', ['provider'], 'section-model', 'save-model'),
+]) {
+  const savedConfig = {
+    agent: {input_mode: 'realtime', new_field: 'persisted'},
+    model: {provider: 'old', model: 'saved-model'},
+    voice_model: {provider: 'qwen-main'},
+  };
+  stateModule.namespace.appState.config = savedConfig;
+  configFormModule.namespace.fillConfigForm(savedConfig);
+  configFormModule.namespace.enterEditSection('agent');
+  document.getElementById('agent_new_field').value = 'unsaved draft';
+  configFormModule.namespace.enterEditSection('model');
+  document.getElementById('model_provider').value = 'new';
+  const authoritative = {...savedConfig, model: {provider: 'new', model: 'normalized-model', has_api_key: true}};
+  stateModule.namespace.runtime.request = async (_url, options) => {
+    const patch = JSON.parse(options.body).config;
+    assert.deepEqual(Object.keys(patch), ['model'], 'saving the model does not include the other draft');
+    assert.equal(stateModule.namespace.appState.config.model.provider, 'old', 'unconfirmed edits stay out of the persisted snapshot');
+    throw Object.assign(new Error('prepare VAD failed'), {persisted: true, applied: false, config: authoritative});
+  };
+  await save();
+  assert.equal(stateModule.namespace.appState.config.model.model, 'normalized-model', 'use the persisted server response on application failure');
+  assert.equal(document.getElementById('agent_new_field').value, 'unsaved draft', 'preserve another section draft');
+  assert.equal(stateModule.namespace.appState.config.agent.new_field, 'persisted');
+  assert.equal(document.getElementById('model_provider').value, 'new');
+  assert.equal(modelSaveButton.disabled, true, 'a completed save stays locked');
+  configFormModule.namespace.cancelEditSection('agent');
+}
+
+// Successful scoped saves preserve a different draft in the same section.
+stateModule.namespace.appState.config = {agent: {input_mode: 'realtime', new_field: 'saved', notes: 'old notes'}};
+configFormModule.namespace.fillConfigForm(stateModule.namespace.appState.config);
+configFormModule.namespace.enterEditSectionFields('notes', 'agent', ['notes']);
+configFormModule.namespace.enterEditSectionFields('new-field', 'agent', ['new_field']);
+document.getElementById('agent_notes').value = 'draft notes';
+document.getElementById('agent_new_field').value = 'new saved';
+stateModule.namespace.runtime.request = async (_url, options) => {
+  assert.equal(JSON.stringify(JSON.parse(options.body).config), JSON.stringify({agent: {new_field: 'new saved'}}));
+  return {config: {agent: {input_mode: 'realtime', new_field: 'new saved', notes: 'old notes'}}, pending: true};
+};
+await configFormModule.namespace.saveSectionFields('new-field', 'agent', ['new_field']);
+assert.equal(document.getElementById('agent_notes').value, 'draft notes');
+assert.equal(document.getElementById('agent_notes').disabled, false);
+assert.equal(stateModule.namespace.appState.config.agent.notes, 'old notes');
+configFormModule.namespace.cancelEditSectionFields('notes');
+
+// A validation rejection must not restore an obsolete whole-section snapshot
+// over another successful save that completed while this request was pending.
+configFormModule.namespace.enterEditSectionFields('notes', 'agent', ['notes']);
+document.getElementById('agent_notes').value = 'invalid notes';
+let rejectNotes;
+stateModule.namespace.runtime.request = () => new Promise((_resolve, reject) => { rejectNotes = reject; });
+const rejectedNotes = configFormModule.namespace.saveSectionFields('notes', 'agent', ['notes']);
+stateModule.namespace.appState.config = {agent: {input_mode: 'realtime', new_field: 'saved meanwhile', notes: 'old notes'}};
+rejectNotes(new Error('invalid notes'));
+await rejectedNotes;
+assert.equal(stateModule.namespace.appState.config.agent.new_field, 'saved meanwhile');
+assert.equal(document.getElementById('agent_notes').value, 'invalid notes');
+assert.equal(document.getElementById('agent_notes').disabled, false);
+configFormModule.namespace.cancelEditSectionFields('notes');
+
 configFormModule.namespace.setSectionLocked('model', true);
 assert.equal(document.getElementById('model_provider').disabled, true, 'locking a section disables its fields');
 assert.equal(modelSaveButton.disabled, true, 'locking a section disables its save button');

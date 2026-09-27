@@ -12,7 +12,7 @@ sidebar_position: 1
 | --- | --- |
 | Config | `/userdata/agent/agent.toml` |
 | Log | `/userdata/agent/log/agent.log` |
-| Binary | `/oem/usr/bin/agent` |
+| Binary | `/usr/lib/aiden/agent` |
 | Session data | `/userdata/agent/` |
 
 ## Startup

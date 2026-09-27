@@ -123,7 +123,7 @@ func combinedAgentInstruction(cfg AgentConfig) string {
 	if text := strings.TrimSpace(cfg.Instruction); text != "" {
 		parts = append(parts, text)
 	}
-	if text := strings.TrimSpace(cfg.AdditionalPrompt); text != "" {
+	if text := strings.TrimSpace(cfg.Prompt); text != "" {
 		parts = append(parts, text)
 	}
 	if len(parts) == 0 {

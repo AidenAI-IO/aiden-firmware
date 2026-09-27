@@ -50,13 +50,13 @@ build/bin/abctl read /tmp/misc.img
 Read real `misc` on device:
 
 ```bash
-/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
+/usr/lib/aiden/abctl read /dev/disk/by-partlabel/misc
 ```
 
 Manually switch slot:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc b --tries 3
+/usr/lib/aiden/abctl set-active /dev/disk/by-partlabel/misc b --tries 3
 sync
 reboot
 ```
@@ -65,14 +65,14 @@ After boot, confirm active slot:
 
 ```bash
 cat /proc/cmdline
-mount | grep ' /oem '
-/oem/usr/bin/abctl read /dev/disk/by-partlabel/misc
+findmnt /
+/usr/lib/aiden/abctl read /dev/disk/by-partlabel/misc
 ```
 
 After confirming device health, commit slot:
 
 ```bash
-/oem/usr/bin/abctl mark-successful /dev/disk/by-partlabel/misc b
+/usr/lib/aiden/abctl mark-successful /dev/disk/by-partlabel/misc b
 sync
 ```
 
@@ -81,17 +81,17 @@ sync
 Set up a trial boot and do not mark successful:
 
 ```bash
-/oem/usr/bin/abctl set-active /dev/disk/by-partlabel/misc b --tries 1
+/usr/lib/aiden/abctl set-active /dev/disk/by-partlabel/misc b --tries 1
 sync
 reboot
 ```
 
-Do not commit B. Continue rebooting until SPL exhausts tries and returns to the previous successful slot. Confirm with `cat /proc/cmdline`, `mount | grep ' /oem '`, and `abctl read`.
+Do not commit B. Continue rebooting until SPL exhausts tries and returns to the previous successful slot. Confirm with `cat /proc/cmdline`, `findmnt /`, and `abctl read`.
 
 ## Expected Diagnostic Signals
 
 - `/proc/cmdline` contains `aiden.slot_suffix=_a` or `_b`.
 - `root=PARTLABEL=rootfs_a|rootfs_b` in `/proc/cmdline` matches slot suffix.
-- `/oem` is mounted from `/dev/disk/by-partlabel/oem_a` or `oem_b`, matching slot suffix.
+- `/` uses `rootfs_a` or `rootfs_b`, matching the slot suffix. `/oem` is absent.
 - `abctl read` can parse AVB A/B metadata without CRC or layout errors.
 - `ota status` can display OTA state, active slot, pending boot, and raw A/B data.

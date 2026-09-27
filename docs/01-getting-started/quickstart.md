@@ -158,10 +158,11 @@ After development, build the firmware and upgrade the device:
 
 ### OTA for a development build
 
-The scheduled and manually dispatched Debian workflows publish signed images as
-GitHub Releases: `main` produces the `debian-stable` release, other branches
-produce `debian-dev-<branch>` pre-releases. For a local build that was not
-published, serve its artifacts from a development HTTP(S) endpoint and point
+The **Aiden Channel Release** workflow manually publishes `dev`, `staging`, or
+`prod`, selecting a business package or full OTA from the changes since that
+channel's previous release. See [Channel Releases](../08-ota/channel-release.md).
+For a local build that was not published, use a test device with a matching
+channel, serve its artifacts from a development HTTP(S) endpoint, and point
 the device at its manifest explicitly:
 
 ```bash
@@ -169,7 +170,7 @@ BASE_URL="http://192.168.1.100:8000"
 
 ota update \
   --manifest-url "$BASE_URL/manifest.json" \
-  --public-key /oem/etc/ota_pubkey.pem \
+  --public-key /usr/share/keyrings/aiden-ota.pem \
   --dry-run
 ```
 

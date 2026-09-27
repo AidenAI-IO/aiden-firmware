@@ -16,7 +16,7 @@ const (
 	defaultWiFiConfigPath            = "/userdata/wpa_supplicant.conf"
 	defaultWiFiConfigEnvironmentPath = "/run/aiden/wpa_supplicant-config.env"
 	defaultSystemEnvPath             = "/userdata/system/env"
-	defaultWebRoot                   = "/oem/usr/share/aiden/config-web"
+	defaultWebRoot                   = "/usr/share/aiden/config-web"
 	defaultMaintenanceLockPath       = "/run/aiden/backup.lock"
 	defaultBackupJobStateDir         = "/run/aiden/backup/jobs"
 	defaultUSBAddress                = "192.168.42.1"
@@ -75,7 +75,7 @@ func DefaultOptions() Options {
 		if executable, err := os.Executable(); err == nil {
 			agentBinary = executable
 		} else {
-			agentBinary = "/oem/usr/bin/agent"
+			agentBinary = "/usr/lib/aiden/agent"
 		}
 	}
 	return Options{
@@ -116,8 +116,8 @@ func DefaultOptions() Options {
 		// address reported by the agent control helper. AIDEN_AGENT_HTTP_BASE_URL
 		// remains an explicit override for development and tests.
 		AgentHTTPBaseURL:  strings.TrimSpace(os.Getenv("AIDEN_AGENT_HTTP_BASE_URL")),
-		OTABinary:         envOrDefault("AIDEN_OTA_BIN", "/oem/usr/bin/ota"),
-		EnvRunBinary:      envOrDefault("AIDEN_ENV_RUN_BIN", "/oem/usr/bin/aiden-env-run"),
+		OTABinary:         envOrDefault("AIDEN_OTA_BIN", "/usr/lib/aiden/ota"),
+		EnvRunBinary:      envOrDefault("AIDEN_ENV_RUN_BIN", "/usr/lib/aiden/aiden-managed-env-run"),
 		OTAUpdateLockPath: envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", "/tmp/config_web_ota_update.lock"),
 		OTAUpdateLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", "/userdata/ota/config_web_ota_update.log"),
 		OTAHealthLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", "/var/log/ota/ota.log"),

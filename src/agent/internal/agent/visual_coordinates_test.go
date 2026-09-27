@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -95,7 +94,7 @@ func TestVisualCoordinatesOutboundImageAndReplay(t *testing.T) {
 // that carries the pixel protocol, next to the transient system message.
 func TestVisualCoordinatesProtocolTravelsInToolDescriptions(t *testing.T) {
 	v := newVisualCoordinates(nil)
-	for _, name := range []string{"touch_gesture", "mouse_move", "enter_text", "wheel_nudge"} {
+	for _, name := range []string{"touch_gesture", "mouse_move", "enter_text"} {
 		tools := v.wrap([]langtools.Tool{&visualRecordingTool{name: name}})
 		if !strings.Contains(tools[0].Description(), visualCoordinateInstruction) {
 			t.Fatalf("%s description lost the pixel protocol: %q", name, tools[0].Description())
@@ -166,13 +165,13 @@ func TestVisualCoordinatesToolBoundary(t *testing.T) {
 
 func TestVisualCoordinatesAllGeometry(t *testing.T) {
 	args := map[string]any{}
-	if err := json.Unmarshal([]byte(`{"focus":{"x":50,"y":100},"actions":[{"point":{"x":100,"y":0},"speed":2500}],"column_x":50,"center_y":100,"row_spacing":20}`), &args); err != nil {
+	if err := json.Unmarshal([]byte(`{"focus":{"x":50,"y":100},"actions":[{"point":{"x":100,"y":0},"speed":2500}]}`), &args); err != nil {
 		t.Fatal(err)
 	}
 	if err := convertVisualArguments(args, visualFrame{width: 101, height: 201}); err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(args["row_spacing"].(float64)-100) > 1e-9 || args["column_x"] != float64(500) || args["focus"].(map[string]any)["y"] != float64(500) {
+	if args["focus"].(map[string]any)["y"] != float64(500) {
 		t.Fatal(args)
 	}
 	point := args["actions"].([]any)[0].(map[string]any)["point"].(map[string]any)

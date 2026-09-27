@@ -15,7 +15,7 @@ func TestSingleAgentProfileDoesNotBuildDelegatedRoles(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["ui"] = &SkillDefinition{Name: "ui", Description: "Inspect first"}
 	profile := buildProfile(
-		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
+		AgentConfig{Instruction: "base", Prompt: "extra"},
 		NewSkillManager(index),
 		[]langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}},
 		agentRoleRules(),

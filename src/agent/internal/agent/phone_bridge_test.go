@@ -90,7 +90,7 @@ func TestPhoneBridgeBLECapabilitiesCachesConcurrentStatusRequests(t *testing.T) 
 	}
 }
 
-func TestPhoneBridgeUpdateStateExpiresBackgroundBridgeModes(t *testing.T) {
+func TestPhoneBridgeUpdateStateKeepsPiPBackgroundModeAcrossAppStateRefreshGaps(t *testing.T) {
 	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
@@ -108,8 +108,8 @@ func TestPhoneBridgeUpdateStateExpiresBackgroundBridgeModes(t *testing.T) {
 	bridge.mu.Lock()
 	bridge.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
 	bridge.mu.Unlock()
-	if got := bridge.UpdateState()["app_pip_enabled"]; got != "false" {
-		t.Fatalf("stale app_pip_enabled = %q, want false", got)
+	if got := bridge.UpdateState()["app_pip_enabled"]; got != "true" {
+		t.Fatalf("stale app_pip_enabled = %q, want true while PiP remains enabled", got)
 	}
 
 	bridge.mu.Lock()

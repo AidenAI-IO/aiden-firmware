@@ -2744,6 +2744,44 @@ func TestRuntimeRunStopsLocallyWhenHardInputBudgetCannotFit(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRejectsHardInputBudgetFromMeasuredUsage(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	manager, err := contextmanager.NewContextManagerFromMessageList(
+		agentpath.ContextManagerSessionFolder(configDir), []messages.Message{
+			{Role: messages.MessageRoleSystem, Content: "system"},
+			{Role: messages.MessageRoleUser, Content: "hello"},
+			{
+				Role: messages.MessageRoleAssistant, Content: "ok",
+				Usage: &messages.Usage{InputTokens: 9_000, OutputTokens: 100, TotalTokens: 9_100},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("must not be called")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir: configDir, ContextPruneThreshold: 0.8, MaxIterations: 1,
+			Model: ModelConfig{
+				Provider: "openai", APIMode: "responses", ResponsesContextManagement: "compaction", MaxResponseTokens: 256,
+			},
+		},
+		&testModelResolver{model: llmModel, spec: model.ModelSpec{ContextWindow: 5_000, MaxOutput: 256}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+	_, err = runtime.Run(context.Background(), RunRequest{Input: "continue"})
+	if err == nil || !strings.Contains(err.Error(), "context remains over usable input budget") {
+		t.Fatalf("Run() error = %v, want measured-usage budget rejection", err)
+	}
+	if llmModel.callCount != 0 {
+		t.Fatalf("model call count = %d, want 0", llmModel.callCount)
+	}
+}
+
 func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -2770,8 +2808,9 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := contextmanager.SwitchSession(sessionFolder, manager.GetSessionID()); err != nil {
-				t.Fatal(err)
+			originalSessionID := manager.GetSessionID()
+			if err := manager.SwitchSession(manager.GetSessionID()); err != nil {
+				t.Fatalf("SwitchSession() error = %v", err)
 			}
 			if tc.chunkWriteFails {
 				// A file where the chunk directory belongs makes persistence fail
@@ -2840,8 +2879,8 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if len(llmModel.tools[0]) != 0 || len(llmModel.tools[1]) == 0 {
 				t.Fatal("expected summary before the tool-enabled model request")
 			}
-			if runtime.contextManager == manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
-				t.Fatal("successful recovery did not activate the prepared revision")
+			if runtime.contextManager != manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() || loaded.GetSessionID() == originalSessionID {
+				t.Fatal("successful recovery did not activate the prepared revision on the existing manager")
 			}
 			if !tc.chunkWriteFails {
 				if len(index.Chunks) != 1 || index.Chunks[0].Summary != tc.summary || index.Chunks[0].EventCount != 1 {
@@ -4479,6 +4518,29 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 	if newBackendSession.ParentSessionID != "" {
 		t.Fatalf("cleared backend context parent session = %q, want root session", newBackendSession.ParentSessionID)
+	}
+}
+
+func TestRuntimeInitialRotateCreatesOneContextSession(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Instruction: "system"},
+		nil,
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	if err := runtime.rotateContext(); err != nil {
+		t.Fatalf("rotateContext() error = %v", err)
+	}
+	files, err := filepath.Glob(filepath.Join(agentpath.ContextManagerSessionFolder(configDir), "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob context sessions: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("initial rotate created %d transcript sessions, want 1: %#v", len(files), files)
 	}
 }
 

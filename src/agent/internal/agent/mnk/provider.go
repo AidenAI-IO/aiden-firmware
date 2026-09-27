@@ -107,6 +107,38 @@ type TouchAction struct {
 	Point      *Point `json:"point,omitempty"`
 	DurationMs int    `json:"ms,omitempty"`
 	Button     string `json:"button,omitempty"`
+	// steps is set internally by ADB SwipeWithOptions; atomic callers use the
+	// provider default. It does not add a field to the public atomic protocol.
+	steps int
+	// releaseTail is internal: this move must remain slow and linear, rather
+	// than starting another acceleration/braking cycle.
+	releaseTail bool
+	// linear preserves travel through intermediate swipe waypoints and swipes
+	// that intentionally omit braking. Atomic moves use the default profile.
+	linear bool
+}
+
+// validateTouchActionLimits bounds both caller programs and their profiled
+// expansion before any input is sent. Count all declared durations so optional
+// backend-specific release holds cannot bypass the program budget.
+func validateTouchActionLimits(actions []TouchAction) error {
+	if len(actions) == 0 {
+		return InvalidArguments("touch actions must contain at least one atomic action")
+	}
+	if len(actions) > 128 {
+		return InvalidArguments("touch actions must contain at most 128 atomic actions")
+	}
+	totalDurationMs := 0
+	for i, action := range actions {
+		if action.DurationMs < 0 || action.DurationMs > 30000 {
+			return InvalidArgumentsf("touch action %d duration must be between 0 and 30000 ms", i)
+		}
+		totalDurationMs += action.DurationMs
+		if totalDurationMs > 60000 {
+			return InvalidArguments("total duration in touch actions must not exceed 60000 ms")
+		}
+	}
+	return nil
 }
 
 // TouchActionProvider executes a validated sequence of atomic touch actions

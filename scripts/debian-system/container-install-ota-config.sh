@@ -20,7 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for image in boot_a.img boot_b.img oem.img rootfs.img userdata.img; do
+for image in boot_a.img boot_b.img rootfs.img userdata.img; do
     test -s "${IMAGE_DIR}/${image}" || {
         echo "Missing system factory image: ${IMAGE_DIR}/${image}" >&2
         exit 1
@@ -35,7 +35,6 @@ test -s "${OTA_CONFIG}" || {
     --config "${OTA_CONFIG}" \
     --boot-a "${IMAGE_DIR}/boot_a.img" \
     --boot-b "${IMAGE_DIR}/boot_b.img" \
-    --oem "${IMAGE_DIR}/oem.img" \
     --rootfs "${IMAGE_DIR}/rootfs.img" \
     >"${AUDIT_REPORT}"
 
@@ -52,7 +51,7 @@ e2fsck -fy "${USERDATA_IMAGE}"
 
 (
     cd "${IMAGE_DIR}"
-    sha256sum boot_a.img boot_b.img oem.img rootfs.img userdata.img ota.img \
+    sha256sum boot_a.img boot_b.img rootfs.img userdata.img ota.img \
         >prepack-images.sha256
 )
 chown "${HOST_UID:-0}:${HOST_GID:-0}" \

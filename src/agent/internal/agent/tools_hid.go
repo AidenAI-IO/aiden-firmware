@@ -47,16 +47,6 @@ const (
 	defaultSwipeDurationMs = 700
 	defaultSwipeSteps      = 24
 
-	wheelNudgeDefaultMs      = 1400
-	wheelNudgeDefaultSteps   = 18
-	wheelNudgeRowTolerance   = 0.20
-	wheelNudgeEndpointHoldMs = 120
-	// wheelNudgeMultiRowCompensation crosses the picker snap threshold that
-	// otherwise makes calibrated drags of three or more rows settle one row
-	// short. It is only applied when the plan leaves at least one full row of
-	// target margin, so an exact-target drag cannot be pushed past its target.
-	wheelNudgeMultiRowCompensation = 0.45
-
 	// defaultCursorSettleMs is the dwell between positioning the HID absolute
 	// cursor and pressing a button at that position. iOS HID cursor mode
 	// smoothly animates the cursor toward the target; if the press lands while
@@ -761,7 +751,7 @@ func (t *KeyboardTextTool) Description() string {
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text for input box entry. ` +
 		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text is unavailable, report the blocker instead. ` +
 		`If a Chinese IME is active but the target text is English, switch to the English/Latin keyboard first, commonly with the globe/input-method key; do not leave English text in Chinese IME preedit/candidate state. ` +
-		`Do not use keyboard_text for picker/wheel values, even if tapping the selected row appears to expose edit mode; use wheel_nudge and verify each returned screenshot instead. ` +
+		`Do not use keyboard_text for picker/wheel values, even if tapping the selected row appears to expose edit mode; use touch_gesture swipes and verify each returned screenshot instead. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }
@@ -893,10 +883,10 @@ func (t *TouchGestureTool) platform() string {
 func (t *TouchGestureTool) Description() string {
 	return `Perform touch/pointer gestures. Provide either type or actions. Use the type form for normal interaction: tap, double_tap, long_press, swipe, drag_start, or drag_release. Atomic actions are a low-frequency advanced option only for an uninterrupted custom contact sequence that cannot be expressed by those standard gestures. Do not use actions for ordinary taps, long presses, swipes, scrolling, or moving draggable UI targets. Atomic actions execute in order and keep the contact pressed until touch_up. Atomic move_to accepts speed in normalized coordinate units per second; duration_ms overrides speed, and omitting both preserves immediate movement. ` +
 		`Base coordinates on the latest screenshot using normalized 0-1000 coordinates where (500,500) is center. For taps and long presses, aim at the visual center of the target. Point, start, and end never accept screenshot pixels: convert a target measured at (pixel_x,pixel_y) in the latest image with x=pixel_x/max(image_width-1,1)*1000 and y=pixel_y/max(image_height-1,1)*1000 before calling. The tool returns a post-action screenshot. Swipe direction names describe finger movement, not content scroll. ` +
-		`For ordinary browsing and searching, identify the visible scrollable region from the latest screenshot and use type:swipe with explicit start and end near its opposite inner edges along the scroll direction. Use most of that region's visible extent, keeping the path inside it with a small margin chosen from the current UI. Choose shorter travel when the task needs a fine adjustment or the target is close. Leave timing at defaults; the tool handles acceleration, braking, and release. ` +
+		`Many scroll controls continue receiving the same gesture after the initial press, even when the pointer moves outside their visible bounds. For browsing, searching, or picker scrolling, use type:swipe with explicit start and end. Start inside the intended scrollable region near the appropriate edge, with a small margin chosen from the latest screenshot. The end may extend beyond that region along the scroll direction while remaining inside the screen with a margin from physical screen edges. Use the available travel for larger movements and shorter travel near the target. Inspect the returned screenshot to confirm that the intended control moved; behavior can vary by control. Leave timing at defaults; the tool handles acceleration, braking, and release. ` +
 		`For swipe, provide start and either end or direction (up/down/left/right). Speed is normalized coordinate units per second and defaults to 2500; duration_ms may be supplied to override the calculated duration. For HID swipes starting outside the outer 1% screen border with hold_after_ms=0, duration_ms controls main motion with a 180ms minimum and excludes an additional 100ms low-speed release tail, in both absolute-mouse and touchscreen modes. hold_before_ms and hold_after_ms optionally dwell after press and before release, and steps controls HID interpolation (provider default 24). A direction-only swipe travels toward the corresponding screen edge when duration_ms is omitted, or travels speed*duration_ms/1000 normalized units when duration_ms is supplied. ` +
 		`Decide whether the requested target is draggable before choosing a gesture form. When moving an app icon, card, widget, list item, or any other draggable UI target, never use actions; always use exactly this sequence: call drag_start with the target's current point. drag_start internally waits for the screen to stabilize before returning its final screenshot; do not call wait_for_stable_screen separately in the normal drag flow. Confirm screen_stable=true, then inspect that returned stable screenshot to identify and confirm the final destination point and call drag_release with it. Never determine or guess the destination from an intermediate or screen_stable=false result. When drag_start returns screen_stable=false, it has automatically moved back to the original point and released the contact; inspect the returned screenshot and retry the complete drag flow instead of calling drag_release. drag_start presses for 500ms, then moves 200 normalized units at 500 normalized units per second (a 400ms interpolated move) in a bounded direction to activate dragging, and keeps the contact down only when its internal wait succeeds. drag_release moves directly to the destination, holds for 200ms, and releases. Never use the removed drag type or perform unrelated input while drag_start is active. ` +
-		`This is a generic input tool and has no picker/wheel movement semantics. Do not tap picker rows to probe for keyboard/edit mode and do not drag picker columns with this tool; use wheel_nudge for the entire picker interaction.`
+		`For a picker/wheel column, use type:"swipe" and read the selected CENTER value plus adjacent row ordering. A desired row above center needs finger-down (end.y > start.y); a row below needs finger-up (end.y < start.y). For values increasing downward, 08 to 07 needs finger-down. Choose each swipe's start INSIDE the intended column from the latest screenshot: near its upper inner edge for finger-down or lower inner edge for finger-up. The end may extend beyond the column while staying inside the screen. Keep X aligned with the column. Estimate remaining rows from the visible value step and use the last observed movement to scale travel: if 120 normalized units moved three rows and one remains, try about 40, not another 120. Use longer travel when many rows remain and one-row corrections near the target. Keep the requested target fixed; verify the centered value after every swipe, even when screen_changed=false. Reset movement estimates when the column or UI changes. Use default timing and omit hold_after_ms. Do not use atomic actions, drag_start, keyboard entry, or taps on picker rows for this interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
@@ -922,8 +912,8 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		},
 		"type":           stringEnumArgSchema(typeDescription, "tap", "double_tap", "long_press", "drag_start", "drag_release", "swipe"),
 		"point":          pointSchema(`Required for tap, double_tap, long_press, drag_start, and drag_release. drag_start uses the target's current point; drag_release uses the destination confirmed from the screen_stable=true screenshot returned by drag_start after its internal stability wait. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"start":          pointSchema(`Required start point for swipe. For ordinary browsing and searching, choose near the appropriate inner edge of the visible scrollable region in the latest screenshot. Determine the margin from the current UI. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
-		"end":            pointSchema(`End point for swipe. For ordinary browsing and searching, choose near the opposite inner edge of the same scrollable region so the path uses most of its visible extent. Prefer explicit end; shorten travel when the target is close or the task needs a fine adjustment. Swipe may provide direction instead of end.`),
+		"start":          pointSchema(`Required start point for swipe. For scrolling and pickers, choose each swipe's start inside the intended visible region from the latest screenshot. Use its upper inner edge for finger-down or lower inner edge for finger-up, with a margin from the current screenshot. Must be a JSON object containing both named keys "x" and "y"; do not use an array, bare value, or positional shorthand.`),
+		"end":            pointSchema(`End point for swipe. After starting inside the intended scrollable region, the end may extend beyond that region along the scroll direction while staying inside the screen with a small margin from physical edges. Many controls continue receiving the gesture after the initial press. Use longer travel when far from the target and shorter travel for fine adjustment; verify movement in the returned screenshot. Swipe may provide direction instead of end.`),
 		"direction":      stringEnumArgSchema("Swipe direction when end is omitted. The gesture starts at start and moves toward that direction.", "up", "down", "left", "right"),
 		"button":         stringEnumArgSchema("Mouse button for pointer gestures.", "left", "right", "middle"),
 		"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
@@ -933,7 +923,7 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"hold_after_ms":  rangedIntegerArgSchema("Optional swipe dwell at the end before release.", 0, mnk.MaxSwipeHoldMs),
 		"steps":          rangedIntegerArgSchema("Optional HID interpolation step count; larger values produce smoother motion. Defaults to the provider default (24).", 1, mnk.MaxSwipeSteps),
 	})
-	schema["description"] = `JSON object for one standard gesture or, rarely, an advanced atomic touch program. Provide either type or actions; a call with neither is rejected. Use type for normal interaction. Reserve actions for uninterrupted custom contact timing that tap, double_tap, long_press, swipe, drag_start, or drag_release cannot express. Never use actions to move a draggable target: call drag_start at its current point, let its internal stability wait finish, determine the destination from its returned screen_stable=true screenshot, then call drag_release at the confirmed point. A screen_stable=false drag_start automatically returns to its original point and releases; inspect its screenshot and retry drag_start rather than calling drag_release. Do not call wait_for_stable_screen separately in the normal drag flow. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. For ordinary browsing and searching, derive explicit start+end from opposite inner edges of the visible scrollable region in the latest screenshot, using most of its extent with margins chosen from the current UI. Shorten travel when the target is close or the task needs a fine adjustment; leave timing at defaults. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized coordinate units per second and duration_ms overrides calculated timing. For HID swipes starting outside the outer 1% screen border with hold_after_ms=0, duration_ms controls main motion with a 180ms minimum and excludes an additional 100ms low-speed release tail, in both absolute-mouse and touchscreen modes. hold_before_ms, hold_after_ms, and steps are optional swipe timing controls.`
+	schema["description"] = `JSON object for one standard gesture or, rarely, an advanced atomic touch program. Provide either type or actions; a call with neither is rejected. Use type for normal interaction. Reserve actions for uninterrupted custom contact timing that tap, double_tap, long_press, swipe, drag_start, or drag_release cannot express. Never use actions to move a draggable target: call drag_start at its current point, let its internal stability wait finish, determine the destination from its returned screen_stable=true screenshot, then call drag_release at the confirmed point. A screen_stable=false drag_start automatically returns to its original point and releases; inspect its screenshot and retry drag_start rather than calling drag_release. Do not call wait_for_stable_screen separately in the normal drag flow. Unknown fields are ignored. Coordinate fields point, start, and end use named objects containing both x and y. For scrolling, start inside the intended scrollable region near its appropriate edge. Many controls continue receiving the gesture after the initial press, so the explicit end may extend beyond that region while staying inside the screen with a margin from physical edges. Use the available travel for larger movements and shorten it near the target; verify the result after every swipe and leave timing at defaults. Swipe accepts either start+end or start+direction; speed defaults to 2500 normalized coordinate units per second and duration_ms overrides calculated timing. For HID swipes starting outside the outer 1% screen border with hold_after_ms=0, duration_ms controls main motion with a 180ms minimum and excludes an additional 100ms low-speed release tail, in both absolute-mouse and touchscreen modes. hold_before_ms, hold_after_ms, and steps are optional swipe timing controls.`
 	schema["examples"] = []map[string]any{
 		{"type": "tap", "point": map[string]any{"x": 500, "y": 500}},
 		{"type": "drag_start", "point": map[string]any{"x": 400, "y": 500}},
@@ -1003,344 +993,6 @@ func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context) error {
 
 func sameResolvedPointerPoint(first, second resolvedPointerPoint) bool {
 	return first.x == second.x && first.y == second.y
-}
-
-// WheelNudgeTool performs one bounded interaction inside a visible wheel
-// column. It taps an adjacent target row when possible, otherwise it uses a
-// low-inertia vertical drag that is less likely to fling past the target.
-type WheelNudgeTool struct {
-	pc                     *pointerController
-	screen                 *screen.ScreenState
-	durationMs             int
-	requireFreshScreenshot bool
-}
-
-type wheelNudgeArgs struct {
-	PickerID       string   `json:"picker_id"`
-	ColumnX        *float64 `json:"column_x"`
-	RemainingGap   *int     `json:"remaining_gap"`
-	CurrentValue   *int     `json:"current_value"`
-	TargetValue    *int     `json:"target_value"`
-	CycleSize      *int     `json:"cycle_size"`
-	CycleStart     *int     `json:"cycle_start"`
-	RowSpacing     *float64 `json:"row_spacing"`
-	ValueStep      *int     `json:"value_step"`
-	CenterY        *float64 `json:"center_y"`
-	VisibleTargetY *float64 `json:"visible_target_y"`
-}
-
-type wheelNudgePlan struct {
-	gap       int
-	rows      int
-	distance  string
-	direction string
-	probe     bool
-	rowOffset int
-	tapY      *float64
-}
-
-func (t *WheelNudgeTool) Name() string { return "wheel_nudge" }
-
-func (t *WheelNudgeTool) Description() string {
-	return `Move a visible picker/wheel column toward a target value. This is the only tool for wheel interactions; never attach wheel semantics to touch_gesture. ` +
-		`Use wheel_nudge directly from the latest screenshot. Do not tap the selected row to expose edit mode and do not use keyboard_text for picker values; the keyboard shortcut is unreliable across picker implementations. ` +
-		`target_value is the final requested value for this column and must remain fixed across calls; never substitute an intermediate visible value just because it is closer on screen. ` +
-		`When the target is exactly one visibly observed row above or below the selected row, pass visible_target_y and the tool taps that coordinate. Without that evidence it performs one bounded low-inertia drag. ` +
-		`Input JSON: {"picker_id":"alarm-create","column_x":393,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"row_spacing":39,"value_step":1,"center_y":253}. ` +
-		`center_y is mandatory and must be measured from the selected center row in the latest screenshot; never omit it or reuse a fixed default across picker layouts. ` +
-		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using max(screenshot width-1,1); normalize center_y, row_spacing, and visible_target_y using max(screenshot height-1,1). In particular, row_spacing=(pixel row spacing/max(screenshot height-1,1))*1000, never divide a vertical distance by screenshot width. Runtime also measures the row spacing from repeated text-line geometry in the latest screenshot and overrides the caller estimate when that image measurement is confident; low-confidence images keep the caller estimate. ` +
-		`value_step is the signed numeric change for one visible row downward. The tool derives the shortest row gap, numeric direction, and finger movement from current_value, target_value, value_step, and the declared domain, so callers must not calculate a gap or guess gesture directions. Omit value_step only when visible ordering is insufficient; the tool then performs one fixed finger-up row probe. ` +
-		`Actual drag travel is coarse-to-fine. With a confident runtime image measurement, gaps of 9+, 5-8, 3-4, 2, and 1 picker rows move at most 6, 4, 3, 2, and 1 measured rows; otherwise the conservative limits remain 5, 3, 2, and 1. Calibrated multi-row drags add a sub-row settling allowance only when at least one full target row remains, preserving the exact-target no-overshoot boundary. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
-		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and call it again with the fresh observation.`
-}
-
-func (t *WheelNudgeTool) ArgsSchema() map[string]any {
-	return objectArgsSchema(map[string]any{
-		"picker_id":        map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance; change it after navigating to another picker screen."},
-		"column_x":         coordinateSchema("Normalized 0-1000 X coordinate at the center of the wheel column."),
-		"current_value":    nonNegativeIntegerSchema("Current centered numeric value from the latest screenshot."),
-		"target_value":     nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
-		"cycle_size":       nonNegativeIntegerSchema("Numeric span/modulus of the cyclic domain, not the number of displayed rows; use 0 for a non-cyclic numeric wheel. For a 00..59 minute wheel with value_step 5, cycle_size is still 60."),
-		"cycle_start":      nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
-		"row_spacing":      coordinateSchema("Best normalized 0-1000 estimate of the vertical distance between adjacent visible row centers. Compute pixel spacing / max(screenshot height-1,1) * 1000; runtime may replace this estimate with a confident image-derived measurement."),
-		"value_step":       integerArgSchema("Signed numeric change for one visible row downward. The tool derives gesture direction from this value; omit only for a genuinely unknown one-row probe."),
-		"center_y":         coordinateSchema("Required normalized 0-1000 vertical center of the selected wheel row, measured from the latest screenshot."),
-		"visible_target_y": coordinateSchema("Exact normalized 0-1000 Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
-	}, "picker_id", "column_x", "current_value", "target_value", "cycle_size", "cycle_start", "row_spacing", "center_y")
-}
-
-func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error) {
-	var pc *pointerController
-	if t != nil {
-		pc = t.pc
-	}
-	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
-		return t.call(callCtx, input)
-	})
-}
-
-func (t *WheelNudgeTool) call(ctx context.Context, input string) (string, error) {
-	args, err := parseWheelNudgeArgs(input)
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-
-	if args.RowSpacing == nil || *args.RowSpacing <= 0 || math.IsNaN(*args.RowSpacing) || math.IsInf(*args.RowSpacing, 0) {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "row_spacing is required and must be a positive finite number measured from the latest screenshot"), nil
-	}
-	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "current_value, target_value, cycle_size, and cycle_start are required"), nil
-	}
-	modelRowSpacing := *args.RowSpacing
-	measurementSummary := ""
-	imageCalibrated := false
-	if t.screen == nil {
-		if t.requireFreshScreenshot {
-			return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
-		}
-	} else if jpegData, _, _, _, ok := t.screen.LatestScreenshot(screenDimensionsStaleAfter); ok {
-		startedAt := time.Now()
-		if measurement, measured := measureWheelRowSpacingJPEG(jpegData, *args.ColumnX, *args.CenterY); measured {
-			measuredRowSpacing := measurement.Normalized
-			args.RowSpacing = &measuredRowSpacing
-			imageCalibrated = true
-			measurementSummary = fmt.Sprintf(
-				" row_spacing_source=image measured_row_spacing=%.1f model_row_spacing=%.1f confidence=%.2f measurement_ms=%.1f",
-				measurement.Normalized,
-				modelRowSpacing,
-				measurement.Confidence,
-				float64(time.Since(startedAt).Microseconds())/1000.0,
-			)
-		}
-	} else if t.requireFreshScreenshot {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
-	}
-	plan, err := planWheelNudge(args)
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-	if imageCalibrated && !plan.probe && plan.tapY == nil {
-		plan.rows = wheelNudgeRowsForConfidentGap(plan.gap)
-		measurementSummary += " motion_profile=image_calibrated"
-	}
-	plannedTravel := float64(plan.rows) * *args.RowSpacing
-	travel := plannedTravel
-	if imageCalibrated && plan.rows >= 3 && plan.rows < plan.gap {
-		travel += wheelNudgeMultiRowCompensation * *args.RowSpacing
-		measurementSummary += fmt.Sprintf(" settle_compensation_rows=%.2f", wheelNudgeMultiRowCompensation)
-	}
-
-	centerY := *args.CenterY
-	gestureTravel := travel
-	maxY := 1000.0
-	if centerY < 0 || centerY > maxY {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "center_y=%.0f is outside the visible coordinate range 0..%.0f", centerY, maxY), nil
-	}
-
-	x := *args.ColumnX
-	if plan.tapY != nil {
-		tapY := *plan.tapY
-		if tapY < 0 || tapY > maxY {
-			return toolErrorResultf(ctx, CodeInvalidArguments, "adjacent wheel row y=%.0f is outside the visible coordinate range 0..%.0f", tapY, maxY), nil
-		}
-		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(tapY)})
-		if err != nil {
-			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-		}
-		if err := tapPointerWithHold(t.pc, point.x, point.y, mouseButtonByte("left"), defaultTapHoldMs); err != nil {
-			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
-		}
-		return fmt.Sprintf("ok: wheel_nudge interaction=tap row_offset=%d target_value=%d%s", plan.rowOffset, *args.TargetValue, measurementSummary), nil
-	}
-
-	// Keep touchdown at the original planned-row boundary. Extending both ends
-	// symmetrically can move the press beyond the outermost visible picker row,
-	// so apply any settling allowance only at the drag destination.
-	startOffset := plannedTravel / 2
-	var startY, endY float64
-	if plan.direction == "up" {
-		startY = clampFloat(centerY+startOffset, 0, maxY)
-		endY = clampFloat(startY-gestureTravel, 0, maxY)
-	} else {
-		startY = clampFloat(centerY-startOffset, 0, maxY)
-		endY = clampFloat(startY+gestureTravel, 0, maxY)
-	}
-	physicalTravel := math.Abs(endY - startY)
-
-	start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(startY)})
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-	end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(endY)})
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-	if sameResolvedPointerPoint(start, end) {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge resolved to the same HID point; refresh the screenshot and use a valid center_y/row_spacing"), nil
-	}
-
-	durationMs := t.durationMs
-	if durationMs <= 0 {
-		durationMs = wheelNudgeDefaultMs
-	}
-	if plan.rows > 4 {
-		durationMs = int(math.Ceil(float64(durationMs) * float64(plan.rows) / 4.0))
-	}
-	if err := runPositionedDragGesture(
-		t.pc,
-		start,
-		end,
-		mouseButtonByte("left"),
-		durationMs,
-		80,
-		wheelNudgeEndpointHoldMs,
-		wheelNudgeDefaultSteps,
-	); err != nil {
-		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
-	}
-
-	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d%s", plan.direction, plan.distance, plan.rows, physicalTravel, durationMs, measurementSummary), nil
-}
-
-func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
-	probe := args.ValueStep == nil
-	rawGap, ok := wheelDomainDistance(*args.CurrentValue, *args.TargetValue, *args.CycleSize, *args.CycleStart)
-	if !ok {
-		return wheelNudgePlan{}, fmt.Errorf("wheel values are outside the declared domain")
-	}
-	gap := rawGap
-	direction := "up"
-	if probe {
-		gap = 1
-	} else {
-		rowGap, allowedDirections, semanticOK := wheelSemanticTarget(args, wheelIncreasingDirectionFromVisibleStep(*args.ValueStep))
-		if !semanticOK {
-			return wheelNudgePlan{}, fmt.Errorf("target_value=%d is not reachable by value_step=%d within the declared domain", *args.TargetValue, *args.ValueStep)
-		}
-		gap = rowGap
-		direction = allowedDirections[0]
-	}
-	rows := wheelNudgeRowsForGap(gap)
-	distance := wheelDistanceForGap(gap)
-	if probe {
-		rows = 1
-		distance = "micro"
-	}
-	rowOffset := 0
-	var tapY *float64
-	if !probe && args.ValueStep != nil {
-		rowOffset = wheelAdjacentTargetRowOffset(*args.CurrentValue, *args.TargetValue, *args.ValueStep, *args.CycleSize, *args.CycleStart)
-		if rowOffset != 0 && args.VisibleTargetY != nil {
-			if args.CenterY == nil {
-				return wheelNudgePlan{}, fmt.Errorf("center_y is required with visible_target_y")
-			}
-			expectedY := *args.CenterY + float64(rowOffset)*(*args.RowSpacing)
-			tolerance := max(3.0, *args.RowSpacing*wheelNudgeRowTolerance)
-			if math.Abs(*args.VisibleTargetY-expectedY) > tolerance {
-				return wheelNudgePlan{}, fmt.Errorf("visible_target_y=%.0f does not match the observed adjacent row near y=%.0f", *args.VisibleTargetY, expectedY)
-			}
-			tapY = args.VisibleTargetY
-		}
-	}
-	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, direction: direction, probe: probe, rowOffset: rowOffset, tapY: tapY}, nil
-}
-
-func wheelAdjacentTargetRowOffset(current, target, valueStep, cycleSize, cycleStart int) int {
-	for _, offset := range []int{-1, 1} {
-		candidate := current + offset*valueStep
-		if cycleSize > 0 {
-			candidate = cycleStart + ((candidate-cycleStart)%cycleSize+cycleSize)%cycleSize
-		}
-		if candidate == target {
-			return offset
-		}
-	}
-	return 0
-}
-
-func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
-	var args wheelNudgeArgs
-	decoder := json.NewDecoder(strings.NewReader(input))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&args); err != nil {
-		return wheelNudgeArgs{}, fmt.Errorf("invalid input: %v. Expected JSON format: {\"picker_id\":\"alarm-create\",\"column_x\":650,\"remaining_gap\":11,\"center_y\":460}", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return wheelNudgeArgs{}, fmt.Errorf("invalid input: expected exactly one JSON object")
-	}
-	if args.ColumnX == nil || math.IsNaN(*args.ColumnX) || math.IsInf(*args.ColumnX, 0) {
-		return wheelNudgeArgs{}, fmt.Errorf("column_x is required and must be a finite number")
-	}
-	if *args.ColumnX < 0 || *args.ColumnX > 1000 {
-		return wheelNudgeArgs{}, fmt.Errorf("column_x must use the normalized 0-1000 scale")
-	}
-	args.PickerID = strings.TrimSpace(args.PickerID)
-	if args.PickerID == "" {
-		return wheelNudgeArgs{}, fmt.Errorf("picker_id is required and must identify the current visible picker instance")
-	}
-	if args.CycleSize != nil && *args.CycleSize < 0 {
-		return wheelNudgeArgs{}, fmt.Errorf("cycle_size must be non-negative")
-	}
-	if args.CycleStart != nil && *args.CycleStart < 0 {
-		return wheelNudgeArgs{}, fmt.Errorf("cycle_start must be non-negative")
-	}
-	if args.RowSpacing != nil && (*args.RowSpacing <= 0 || math.IsNaN(*args.RowSpacing) || math.IsInf(*args.RowSpacing, 0)) {
-		return wheelNudgeArgs{}, fmt.Errorf("row_spacing must be a positive finite number")
-	}
-	if args.RowSpacing != nil && *args.RowSpacing > 1000 {
-		return wheelNudgeArgs{}, fmt.Errorf("row_spacing must use the normalized 0-1000 scale")
-	}
-	if args.ValueStep != nil && *args.ValueStep == 0 {
-		return wheelNudgeArgs{}, fmt.Errorf("value_step must be non-zero")
-	}
-	if args.CenterY == nil || math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0) {
-		return wheelNudgeArgs{}, fmt.Errorf("center_y is required and must be a finite number measured from the selected row in the latest screenshot")
-	}
-	if *args.CenterY < 0 || *args.CenterY > 1000 {
-		return wheelNudgeArgs{}, fmt.Errorf("center_y must use the normalized 0-1000 scale")
-	}
-	if args.VisibleTargetY != nil && (math.IsNaN(*args.VisibleTargetY) || math.IsInf(*args.VisibleTargetY, 0)) {
-		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must be a finite number")
-	}
-	if args.VisibleTargetY != nil && (*args.VisibleTargetY < 0 || *args.VisibleTargetY > 1000) {
-		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must use the normalized 0-1000 scale")
-	}
-	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.RowSpacing == nil {
-		return wheelNudgeArgs{}, fmt.Errorf("complete wheel metadata required: provide current_value, target_value, cycle_size, cycle_start, and measured row_spacing")
-	}
-	return args, nil
-}
-
-type wheelNudgeMotionProfile struct {
-	nearRows   int
-	mediumRows int
-	farRows    int
-}
-
-var (
-	wheelNudgeConservativeProfile = wheelNudgeMotionProfile{nearRows: 2, mediumRows: 3, farRows: 5}
-	wheelNudgeCalibratedProfile   = wheelNudgeMotionProfile{nearRows: 3, mediumRows: 4, farRows: 6}
-)
-
-func wheelNudgeRowsForGapWithProfile(gap int, profile wheelNudgeMotionProfile) int {
-	switch {
-	case gap <= 1:
-		return 1
-	case gap <= 4:
-		return min(gap, profile.nearRows)
-	case gap <= 8:
-		return min(gap, profile.mediumRows)
-	default:
-		return min(gap, profile.farRows)
-	}
-}
-
-func wheelNudgeRowsForGap(gap int) int {
-	return wheelNudgeRowsForGapWithProfile(gap, wheelNudgeConservativeProfile)
-}
-
-func wheelNudgeRowsForConfidentGap(gap int) int {
-	return wheelNudgeRowsForGapWithProfile(gap, wheelNudgeCalibratedProfile)
 }
 
 // MouseScrollTool sends mouse wheel events.

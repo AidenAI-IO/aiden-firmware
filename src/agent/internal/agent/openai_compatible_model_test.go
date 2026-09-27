@@ -781,8 +781,9 @@ func TestRuntimeRawHTTPLogKeepsOneFilePerSession(t *testing.T) {
 	}
 }
 
-// A compaction revision starts a new ContextManager session, so subsequent LLM
-// traffic must land in a new log partition.
+// A compaction revision starts a new transcript session while the long-lived
+// context manager remains in place, so subsequent LLM traffic must land in a
+// new log partition.
 func TestRuntimeRawHTTPLogSwitchesFileAfterSessionRevision(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -816,8 +817,8 @@ func TestRuntimeRawHTTPLogSwitchesFileAfterSessionRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerRevisionFromMessageList() error = %v", err)
 	}
-	if err := contextmanager.SwitchSession(sessionFolder, revision.GetSessionID()); err != nil {
-		t.Fatalf("SwitchSession() error = %v", err)
+	if err := first.Activate(revision); err != nil {
+		t.Fatalf("Activate() error = %v", err)
 	}
 
 	runLLM("after revision")

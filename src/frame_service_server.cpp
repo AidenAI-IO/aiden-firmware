@@ -1,4 +1,5 @@
 #include "frame_service_server.h"
+#include "aiden_log.h"
 #include "frame_jpeg_encoder.h"
 #include "frame_processing.h"
 #include "cJSON/cJSON.h"
@@ -6,6 +7,9 @@
 #include <chrono>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 namespace aiden {
 
@@ -28,6 +32,7 @@ FrameServiceServer::FrameServiceServer(const char* socket_path, size_t ring_capa
       capture_copy_latency_samples_(0),
       consecutive_failures_(0),
       last_recovery_ts_(0),
+      capture_request_count_(0),
       active_payload_sends_(0),
       max_payload_sends_(1) {}
 
@@ -35,6 +40,50 @@ static uint64_t monotonic_ns() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+struct PeerIdentity {
+    PeerIdentity() : pid(-1), uid(-1), gid(-1), process_name("unknown") {}
+    long pid;
+    long uid;
+    long gid;
+    std::string process_name;
+};
+
+static PeerIdentity peer_identity(int fd) {
+    PeerIdentity identity;
+#if defined(__linux__) && defined(SO_PEERCRED)
+    struct LinuxPeerCredentials {
+        pid_t pid;
+        uid_t uid;
+        gid_t gid;
+    } credentials;
+    memset(&credentials, 0, sizeof(credentials));
+    socklen_t length = sizeof(credentials);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) == 0 &&
+        length == sizeof(credentials)) {
+        identity.pid = static_cast<long>(credentials.pid);
+        identity.uid = static_cast<long>(credentials.uid);
+        identity.gid = static_cast<long>(credentials.gid);
+
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%ld/comm", identity.pid);
+        FILE* comm = fopen(path, "r");
+        if (comm) {
+            char name[128] = {};
+            if (fgets(name, sizeof(name), comm)) {
+                name[strcspn(name, "\r\n")] = '\0';
+                if (name[0] != '\0') {
+                    identity.process_name = name;
+                }
+            }
+            fclose(comm);
+        }
+    }
+#else
+    (void)fd;
+#endif
+    return identity;
 }
 
 FrameServiceServer::~FrameServiceServer() {
@@ -366,6 +415,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         header += "}";
         write_uds_message(fd, header, std::vector<uint8_t>());
     } else if (method == "latest_frame") {
+        const PeerIdentity peer = peer_identity(fd);
         uint64_t since_seq = json_u64(root, "since_seq");
         uint32_t timeout_ms = json_u32(root, "timeout_ms");
         std::string format = json_string(root, "format");
@@ -384,10 +434,22 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         std::shared_ptr<const FrameBufferFrame> frame;
         bool recovering = false;
         CaptureHandler capture_handler;
+        uint64_t request_id = 0;
+        std::string request_state;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             capture_handler = capture_handler_;
+            request_id = ++capture_request_count_;
+            request_state = state_;
         }
+        AIDEN_LOG_INFO("server", "capture_request_received",
+                       "request_id=%llu peer_pid=%ld peer_uid=%ld peer_gid=%ld peer_name=%s state=%s capture_mode=%s timeout_ms=%u format=%s",
+                       static_cast<unsigned long long>(request_id),
+                       peer.pid, peer.uid, peer.gid, peer.process_name.c_str(),
+                       request_state.c_str(),
+                       capture_handler ? "on_demand" : "buffered",
+                       timeout_ms, format.c_str());
+        const uint64_t request_started_ns = monotonic_ns();
         FrameServiceStatus status = FrameServiceStatus::NO_NEW_FRAME;
         if (capture_handler) {
             FrameMetadata metadata;
@@ -427,6 +489,22 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
                     status = FrameServiceStatus::TIMEOUT;
                 }
             }
+        }
+        const uint64_t request_capture_elapsed_ms =
+            (monotonic_ns() - request_started_ns) / 1000000ULL;
+        if (status == FrameServiceStatus::OK) {
+            AIDEN_LOG_INFO("server", "capture_request_resolved",
+                           "request_id=%llu status=%s capture_elapsed_ms=%llu bytes=%zu",
+                           static_cast<unsigned long long>(request_id),
+                           frame_service_status_to_string(status),
+                           static_cast<unsigned long long>(request_capture_elapsed_ms),
+                           frame ? frame->data.size() : 0U);
+        } else {
+            AIDEN_LOG_WARN("server", "capture_request_resolved",
+                           "request_id=%llu status=%s capture_elapsed_ms=%llu bytes=0",
+                           static_cast<unsigned long long>(request_id),
+                           frame_service_status_to_string(status),
+                           static_cast<unsigned long long>(request_capture_elapsed_ms));
         }
         if (status == FrameServiceStatus::OK) {
             uint64_t started_ns = monotonic_ns();
@@ -608,6 +686,10 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         header += "]}";
         write_uds_message(fd, header, std::vector<uint8_t>());
     } else if (method == "restart") {
+        const PeerIdentity peer = peer_identity(fd);
+        AIDEN_LOG_WARN("server", "restart_requested",
+                       "peer_pid=%ld peer_uid=%ld peer_gid=%ld peer_name=%s",
+                       peer.pid, peer.uid, peer.gid, peer.process_name.c_str());
         std::function<void()> handler;
         {
             std::lock_guard<std::mutex> lock(mutex_);

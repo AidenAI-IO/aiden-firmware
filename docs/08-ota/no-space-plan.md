@@ -14,7 +14,7 @@ and OTA activity cannot make `/userdata` appear artificially full.
 The production layout appends the partition without shrinking userdata:
 
 ```text
-...,1536M(rootfs_b),3G(userdata),300M(ota)
+...,1792M(rootfs_b),3G(userdata),300M(ota)
 ```
 
 The partition is mounted at `/userdata/ota`, preserving the existing OTA
@@ -27,12 +27,12 @@ systemd mounts it with `userdata-ota.mount`:
 
 ```text
 300M(ota)
-/dev/mmcblk0p12 -> /userdata/ota (ext4)
+/dev/mmcblk0p10 -> /userdata/ota (ext4)
 ```
 
 `aiden-slot-resolve.service` runs before `userdata.mount`,
-`userdata-ota.mount`, and `oem.mount`. `aiden-ota-health.service` requires the
-mounted userdata, OTA workspace, and active OEM image before processing health.
+`userdata-ota.mount`. `aiden-ota-health.service` requires the
+mounted userdata and OTA workspace before processing health.
 
 The Go updater independently checks `/proc/self/mountinfo` before creating its
 lock, state, or download files. The mount must be the ext4 filesystem rooted at
@@ -96,7 +96,7 @@ the factory baseline into `userdata.img` at:
 
 It then repacks `update.img` and audits the mounted userdata image against the
 signed manifest. The OTA partition itself is not an online OTA target; online
-updates continue to write only the inactive `boot`, `oem`, and `rootfs`
+updates continue to write only the inactive `boot` and `rootfs`
 partitions.
 
 ## Existing Protections That Remain
@@ -133,7 +133,7 @@ migration do not change OTA capacity.
 mount | grep ' /userdata/ota '
 df -h /userdata /userdata/ota
 du -h /userdata/ota/downloads/* /userdata/ota/downloads/*.part 2>/dev/null
-/oem/usr/bin/ota status
+/usr/lib/aiden/ota status
 tail -n 100 /var/log/ota/ota.log
 ```
 

@@ -3,7 +3,7 @@ Description=Resolve the active Aiden A/B slot
 DefaultDependencies=no
 After=systemd-udevd.service systemd-remount-fs.service
 Wants=systemd-udev-settle.service
-Before=aiden-rootfs-grow.service oem.mount userdata.mount userdata-ota.mount local-fs-pre.target
+Before=aiden-rootfs-grow.service userdata.mount userdata-ota.mount local-fs-pre.target
 
 [Service]
 Type=oneshot

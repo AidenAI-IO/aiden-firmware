@@ -22,7 +22,7 @@ Allowing multiple processes to directly open `/dev/video0` can lead to resource 
 | --- | --- | --- |
 | Socket (development direct run) | `/tmp/frame_service.sock` | Default value in `frame_service_main.cpp` |
 | Socket (Debian service) | `/run/frame_service/frame_service.sock` | Default value in systemd configuration |
-| EDID | Bridge-aware | RK628D keeps its driver-provided 1080p60 EDID; TC358743 loads `/oem/usr/share/aiden/edid/hdmi_1080p30_cta.hex` |
+| EDID | Bridge-aware | RK628D keeps its driver-provided 1080p60 EDID; TC358743 loads `/usr/share/aiden/edid/hdmi_1080p30_cta.hex` |
 | Capture mode | `on_demand` | One fresh capture for each `latest_frame` / screenshot request |
 | Warm-up frames | Mode-aware | `6` with persistent STREAMON; `0` when streaming restarts per request |
 | Production ring usage | `0` | Health reports `ring_buffer_size=0`, `ring_buffer_used=0` |
@@ -34,7 +34,7 @@ Allowing multiple processes to directly open `/dev/video0` can lead to resource 
 Development mode:
 
 ```bash
-/oem/usr/bin/frame_service --socket /tmp/frame_service.sock
+/usr/lib/aiden/frame_service --socket /tmp/frame_service.sock
 ```
 
 The service initializes HDMI/V4L2 once, pauses the stream, and waits for a

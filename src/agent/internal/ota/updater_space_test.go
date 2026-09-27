@@ -232,8 +232,6 @@ func TestUpdaterChecksActualCapacityBeforeAssetDownload(t *testing.T) {
 	assets := map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
 		"boot_b.img": []byte("boot-b-v2"),
-		"oem_a.img":  []byte("oem-a-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": []byte("rootfs-v2"),
 	}
 	manifest := env.signedManifest(assets, nil)
@@ -290,8 +288,6 @@ func TestUpdaterCapacityCreditsResumablePartialDownload(t *testing.T) {
 	assets := map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
 		"boot_b.img": []byte("boot-b-v2"),
-		"oem_a.img":  []byte("oem-a-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": []byte("rootfs-v2"),
 	}
 	manifest := env.signedManifest(assets, nil)
@@ -338,7 +334,7 @@ func TestUpdaterCapacityCreditsResumablePartialDownload(t *testing.T) {
 	t.Cleanup(server.Close)
 	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	env.config.DownloadSafetyMarginBytes = 64
-	remaining := int64(len(assets["boot_b.img"]) - len(partial) + len(assets["oem_b.img"]) + len(assets["rootfs.img"]))
+	remaining := int64(len(assets["boot_b.img"]) - len(partial) + len(assets["rootfs.img"]))
 	updater := env.updater()
 	updater.availableBytes = func(string) (int64, error) { return remaining + 64, nil }
 
@@ -356,8 +352,6 @@ func TestUpdaterStreamsOneVerifiedAssetAtATimeWithinLargestAssetBudget(t *testin
 	assets := map[string][]byte{
 		"boot_a.img": []byte("boot-a-v2"),
 		"boot_b.img": []byte("boot-b-v2"),
-		"oem_a.img":  []byte("oem-a-v2"),
-		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": []byte("rootfs-v2"),
 	}
 	manifest := env.signedManifest(assets, nil)
@@ -385,7 +379,7 @@ func TestUpdaterStreamsOneVerifiedAssetAtATimeWithinLargestAssetBudget(t *testin
 				Assets []githubAsset `json:"assets"`
 			}
 			release.Assets = append(release.Assets, githubAsset{Name: "manifest.json", BrowserDownloadURL: "http://" + r.Host + "/assets/manifest.json"})
-			for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+			for _, name := range []string{"boot_b.img", "rootfs.img"} {
 				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "http://" + r.Host + "/assets/" + name})
 			}
 			_ = json.NewEncoder(w).Encode(release)
@@ -402,10 +396,8 @@ func TestUpdaterStreamsOneVerifiedAssetAtATimeWithinLargestAssetBudget(t *testin
 			if readErr != nil || !current.Bootable(SlotB) {
 				setInvariantErr("target slot was invalidated before the first asset was downloaded: misc=%+v err=%v", current.Slots[SlotB], readErr)
 			}
-		case "oem_b.img":
-			assertStreamedPartComplete(env, "boot_b", "boot-b-v2", "boot_b.img", setInvariantErr)
 		case "rootfs.img":
-			assertStreamedPartComplete(env, "oem_b", "oem-b-v2", "oem_b.img", setInvariantErr)
+			assertStreamedPartComplete(env, "boot_b", "boot-b-v2", "boot_b.img", setInvariantErr)
 		default:
 			http.NotFound(w, r)
 			return
@@ -419,7 +411,7 @@ func TestUpdaterStreamsOneVerifiedAssetAtATimeWithinLargestAssetBudget(t *testin
 	env.config.DownloadSafetyMarginBytes = 64
 	largest := int64(0)
 	total := int64(0)
-	for _, name := range []string{"boot_b.img", "oem_b.img", "rootfs.img"} {
+	for _, name := range []string{"boot_b.img", "rootfs.img"} {
 		size := int64(len(assets[name]))
 		total += size
 		if size > largest {

@@ -59,7 +59,7 @@ func newVisualCoordinates(screenStates ...*screen.ScreenState) *visualCoordinate
 // each request through two channels: a transient system message appended on every
 // call, and the tail of every wrapped tool's description. The system-message form
 // is never written to the conversation store, so it cannot accumulate.
-const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move, enter_text.focus and wheel_nudge geometry, use pixel coordinates in the latest screenshot. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
+const visualCoordinateInstruction = "Visual coordinate protocol: for touch_gesture, mouse_move and enter_text.focus geometry, use pixel coordinates in the latest screenshot. Do not rescale coordinates or call a normalization tool. Speed parameters retain normalized units per second."
 
 func (v *visualCoordinates) Transform(input []messages.Message) []messages.Message {
 	out := make([]messages.Message, len(input), len(input)+1)
@@ -88,7 +88,7 @@ func (v *visualCoordinates) wrap(tools []langtools.Tool) []langtools.Tool {
 	out := append([]langtools.Tool(nil), tools...)
 	for i, tool := range out {
 		switch tool.Name() {
-		case "touch_gesture", "mouse_move", "enter_text", "wheel_nudge":
+		case "touch_gesture", "mouse_move", "enter_text":
 			out[i] = &visualCoordinateTool{Tool: tool, frames: v}
 		}
 	}
@@ -122,9 +122,6 @@ func (t *visualCoordinateTool) Description() string {
 	if t.Name() == "mouse_move" {
 		description = "Move the mouse without clicking."
 	}
-	if t.Name() == "wheel_nudge" {
-		description = "Nudge a picker wheel toward the requested value. Geometry is measured in pixels of the latest screenshot."
-	}
 	return description + " " + visualCoordinateInstruction
 }
 
@@ -153,8 +150,8 @@ func (t *visualCoordinateTool) ArgsSchema() map[string]any {
 					continue
 				}
 				switch key {
-				case "x", "y", "column_x", "center_y", "visible_target_y", "row_spacing":
-					props[key] = numberArgSchema("Pixel coordinate or spacing in the image; must be inside the image bounds.")
+				case "x", "y":
+					props[key] = numberArgSchema("Pixel coordinate in the image; must be inside the image bounds.")
 				default:
 					rewrite(child)
 				}
@@ -224,27 +221,11 @@ func convertVisualArguments(args map[string]any, frame visualFrame) error {
 				return fmt.Errorf("%s requires a pixel point object containing x and y", key)
 			}
 		}
-		limit := 0
 		switch key {
 		case "coordinate", "start_x", "start_y", "end_x", "end_y":
 			return fmt.Errorf("%s is unsupported by the visual coordinate protocol; use named point/start/end objects", key)
-		case "column_x":
-			limit = frame.width
-		case "center_y", "visible_target_y", "row_spacing":
-			limit = frame.height
 		}
-		if limit > 0 {
-			n, ok := value.(float64)
-			if !ok {
-				return fmt.Errorf("%s must be a pixel value between 0 and %d", key, limit-1)
-			}
-			normalized, err := normalizeVisualAxis(n, limit)
-			if err != nil {
-				return fmt.Errorf("%s: %w", key, err)
-			}
-			args[key] = normalized
-			continue
-		}
+
 		switch child := value.(type) {
 		case map[string]any:
 			if err := convertVisualArguments(child, frame); err != nil {

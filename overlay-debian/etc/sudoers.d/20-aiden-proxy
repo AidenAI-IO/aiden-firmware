@@ -1,0 +1,3 @@
+# Preserve only proxy settings from the login shell for commands such as apt.
+# Authentication and command permissions remain defined by the main sudoers file.
+Defaults env_keep += "http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY"

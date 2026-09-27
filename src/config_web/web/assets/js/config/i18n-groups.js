@@ -8,7 +8,7 @@ export const GROUP_TRANSLATIONS = {
       device_settings: 'Device Settings',
 
       conversation_settings: 'Conversation Settings',
-      prompts: 'Custom Instructions',
+      prompts: 'Agent Prompt',
       iteration_control: 'Max Iterations',
       context_management: 'Context Management',
       tool_settings: 'Tool Settings',
@@ -50,7 +50,7 @@ export const GROUP_TRANSLATIONS = {
       device_settings: '设备设置',
 
       conversation_settings: '对话设置',
-      prompts: '自定义提示词',
+      prompts: 'Agent 提示词',
       iteration_control: '最大工具调用轮数',
       context_management: '上下文管理',
       tool_settings: '工具设置',

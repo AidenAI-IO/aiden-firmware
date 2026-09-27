@@ -46,11 +46,10 @@ export const AGENT_SETTINGS_GROUPS = {
       prompts: {
         id: 'prompts',
         titleKey: 'groups.prompts',
-        title: 'Custom Instructions',
+        title: 'Agent Prompt',
         order: 1,
         fields: [
-          { path: 'agent.custom_instruction', section: 'agent', key: 'custom_instruction' },
-          { path: 'agent.additional_prompt', section: 'agent', key: 'additional_prompt' },
+          { path: 'agent.prompt', section: 'agent', key: 'prompt' },
         ]
       },
       iteration_control: {

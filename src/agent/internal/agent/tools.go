@@ -205,7 +205,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		screen:      screen,
 		touchscreen: hidCfg.PointerTouchscreen(),
 	}
-	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen, requireFreshScreenshot: true}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture, iosKeyboardIsolation: iosKeyboardIsolation}
 	textInputHW := &textInputHardwareDeps{
 		pointerMode:  hidCfg.PointerModeOrDefault(),
@@ -221,7 +220,6 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{mnkProvider: mnkProvider}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
