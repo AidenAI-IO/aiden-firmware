@@ -37,11 +37,11 @@ cat >"${TEST_ROOT}/bin/hwclock" <<'EOF'
 set -eu
 [ "${TZ}" = UTC0 ] && [ "${LC_ALL}" = C ] || exit 99
 case "$*" in
-    '--show --utc')
+    '--show --utc --noadjfile')
         cat "${RTC_TEST_CASE}/rtc"
         [ "${RTC_READ_FAILURE:-0}" = 0 ]
         ;;
-    '--systohc --utc')
+    '--systohc --utc --noadjfile')
         [ "${RTC_WRITE_FAILURE:-0}" = 0 ] || exit 1
         cat "${RTC_TEST_CASE}/system" >>"${RTC_TEST_CASE}/writes"
         ;;

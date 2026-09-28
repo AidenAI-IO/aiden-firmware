@@ -18,7 +18,7 @@ if ! baseline_epoch=$(date -u -d "${default_date} 00:00:00 UTC" +%s); then
 fi
 
 # Do not mistake an absent, unreadable or malformed RTC for a reset date.
-if ! rtc_time=$(hwclock --show --utc 2>/dev/null); then
+if ! rtc_time=$(hwclock --show --utc --noadjfile 2>/dev/null); then
     echo "Unable to read RTC; leaving clocks unchanged" >&2
     exit 0
 fi
@@ -34,4 +34,4 @@ current_epoch=$(date -u +%s)
 if [ "${current_epoch}" -lt "${baseline_epoch}" ]; then
     date -u --set="@${baseline_epoch}" >/dev/null
 fi
-hwclock --systohc --utc
+hwclock --systohc --utc --noadjfile
