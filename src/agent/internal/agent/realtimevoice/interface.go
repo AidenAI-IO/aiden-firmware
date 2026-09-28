@@ -108,11 +108,15 @@ type Capabilities struct {
 	// until the provider reports an interruption. A local microphone energy
 	// gate must not classify anonymous response output as stale on its own.
 	ServerAuthoritativeInterruption bool
-	CanCommitInputTurn              bool
-	CanInterruptResponse            bool
-	CanSendToolResult               bool
-	CanSendText                     bool
-	CanReplayContext                bool
+	// ServerAuthoritativeTurnDetection means the provider alone decides whether
+	// buffered input became a user turn. The caller must not promote local audio
+	// energy into a pending input turn for admission decisions.
+	ServerAuthoritativeTurnDetection bool
+	CanCommitInputTurn               bool
+	CanInterruptResponse             bool
+	CanSendToolResult                bool
+	CanSendText                      bool
+	CanReplayContext                 bool
 }
 
 type SessionInfo struct {
