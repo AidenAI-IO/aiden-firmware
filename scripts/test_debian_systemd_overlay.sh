@@ -232,6 +232,10 @@ grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fqx 'AIDEN_WIFI_HE=0' "${OVERLAY}/etc/aiden_boot.conf"
+grep -Fqx 'ENABLE_WIFIDRV=0' "${OVERLAY}/etc/aiden_boot.conf"
+grep -Fqx 'ENABLE_WLAN_GUARD=0' "${OVERLAY}/etc/aiden_boot.conf"
+grep -Fqx 'ENABLE_BLUETOOTH_HCI=0' "${OVERLAY}/etc/aiden_boot.conf"
+grep -Fqx 'ENABLE_BLE_SERVICE=0' "${OVERLAY}/etc/aiden_boot.conf"
 grep -Fqx 'After=aiden-wifi-driver.service dev-ttyS0.device' \
     "${UNIT_DIR}/aiden-bluetooth-attach.service" \
     || fail "Bluetooth attach service does not wait for the Aiden UART0 device"

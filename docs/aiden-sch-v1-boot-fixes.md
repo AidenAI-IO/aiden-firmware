@@ -8,7 +8,7 @@ table 2-1 and the SDK pinctrl definitions.
 
 | Function | RV1106 pin / mux | Previous conflict |
 | --- | --- | --- |
-| WL_EN | pin 3, GPIO3_C5, MMC power sequence | No SDIO power sequence |
+| WL_EN | pin 3, GPIO3_C5, external pull-up to V_WIFI_1V8 | Linux must not drive the MCU-owned rail |
 | BT wake | pin 4, GPIO3_C6 | Activity LED drove the same net |
 | CPU AVS | pin 74, GPIO1_A2, PWM0 M0 | Fixed regulator and BT host IRQ |
 | RK628 I2C | pins 93/92, GPIO1_C2/C3, I2C4 M1 | I2C3 M1 goes to MCU UART |
@@ -24,7 +24,7 @@ table 2-1 and the SDK pinctrl definitions.
 The charger and BQ27220 are on the companion MCU's I2C bus. Remove
 the fictitious RV1106 I2C1 fuel-gauge node; I2C1 M1 steals Bluetooth UART0
 RX/TX. BT_WAKE_MCU is routed to the MCU and is not a Linux host IRQ.
-The MCU must assert WIFI_VCC_PWREN; Linux cannot switch that rail directly.
+The MCU must assert WIFI_VCC_PWREN; Linux cannot switch that rail directly. The current image therefore disables the Wi-Fi, Bluetooth and BLE feature gates until MCU firmware that asserts GD32 PA4 is available. This avoids a failed boot unit while preserving the AIC8800 driver for a hardware-enabled board.
 
 ## Media initialization
 

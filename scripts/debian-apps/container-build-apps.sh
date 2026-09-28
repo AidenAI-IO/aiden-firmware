@@ -47,7 +47,12 @@ mkdir -p "${BUILD_DIR}" "${DIST_DIR}/bin" "${DIST_DIR}/lib" \
     "${DIST_DIR}/maps" "${DIST_DIR}/metadata"
 
 ttyd_download=${BUILD_DIR}/${TTYD_ASSET}
-curl -fL --retry 3 --connect-timeout 20 -o "${ttyd_download}" "${TTYD_URL}"
+ttyd_cache=/work/.cache/debian-apps/${TTYD_ASSET}
+if [ -f "${ttyd_cache}" ] && echo "${TTYD_SHA256}  ${ttyd_cache}" | sha256sum -c - >/dev/null 2>&1; then
+    cp -f "${ttyd_cache}" "${ttyd_download}"
+else
+    curl -fL --retry 3 --connect-timeout 20 -o "${ttyd_download}" "${TTYD_URL}"
+fi
 echo "${TTYD_SHA256}  ${ttyd_download}" | sha256sum -c -
 install -m 0755 "${ttyd_download}" "${DIST_DIR}/bin/ttyd"
 printf 'version=%s\nasset=%s\nsha256=%s\nurl=%s\n' \

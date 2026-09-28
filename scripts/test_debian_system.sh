@@ -332,8 +332,10 @@ grep -Eq '^[[:space:]]*model = "Aiden SCH v1";$' \
 for serial_contract in \
     '0:/serial@ff4a0000:okay' \
     '1:/serial@ff4b0000:disabled' \
-    '2:/serial@ff4c0000:okay' \
-    '3:/serial@ff4d0000:okay'; do
+    '2:/serial@ff4c0000:disabled' \
+    '3:/serial@ff4d0000:disabled' \
+    '4:/serial@ff4e0000:okay' \
+    '5:/serial@ff4f0000:okay'; do
     grep -Fq "'${serial_contract}'" "${SYSTEM_DIR}/audit-bsp.sh" \
         || fail "BSP audit is missing production UART contract ${serial_contract}"
 done

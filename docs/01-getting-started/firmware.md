@@ -18,10 +18,10 @@ When flashing the full firmware, you typically use `update.img`.
 
 This project's firmware is built on `pico-sdk` and includes the following customizations:
 
-- Wi-Fi and Bluetooth use the AIC8800D80 SDIO/UART combo module;
+- The AIC8800D80 SDIO/UART combo driver is included, but Wi-Fi, Bluetooth and BLE feature gates are disabled on SCH v1 until the GD32 MCU firmware asserts the schematic's `WIFI_VCC_PWREN` rail;
 - Kernel builds the Rockchip RK628 HDMI-to-CSI V4L2 driver and disables the
   unpopulated Toshiba TC358743 path;
-- The Aiden SCH v1 DTS declares RK628F on 100 kHz I2C3 at `0x50`, with
+- The Aiden SCH v1 DTS declares RK628F on 100 kHz I2C4 at `0x50`, with
   GPIO1_B0 reset, GPIO1_B1 interrupt, and four continuous-clock CSI lanes;
 - RK628F keeps its driver-provided 1080p60 EDID;
 - USB-C port is configured as a composite gadget on boot: keyboard HID,
