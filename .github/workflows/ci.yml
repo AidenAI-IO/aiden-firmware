@@ -32,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Verify self-hosted runner safety
         run: bash scripts/test_github_actions_self_hosted_safety.sh
 

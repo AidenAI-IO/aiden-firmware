@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,20 @@ def test_endpoint_for_docker_rewrites_localhost():
     assert webui.endpoint_for_docker("http://localhost:8080") == "http://host.docker.internal:8080"
     assert webui.endpoint_for_docker("http://127.0.0.1:9090/api") == "http://host.docker.internal:9090/api"
     assert webui.endpoint_for_docker("http://192.168.1.20:8080") == "http://192.168.1.20:8080"
+
+
+def test_container_boot_failure_detail_ignores_timed_out_diagnostics(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(webui.subprocess, "run", fake_run)
+
+    assert webui.container_boot_failure_detail("container-id") == ""
+    assert len(calls) == 2
+    assert all(call[1]["timeout"] == webui.DOCKER_DIAGNOSTIC_TIMEOUT_SEC for call in calls)
 
 
 def test_webui_task_screen_url_points_at_webui_viewer():

@@ -95,6 +95,7 @@ AGENT_DAEMON_COMPOSE_FILE = BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.
 DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
+DOCKER_DIAGNOSTIC_TIMEOUT_SEC = 5
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
 DEFAULT_JUDGE_BASE_URL = JudgeConfig().base_url
 WEBUI_SETTINGS_FILE = "webui-settings.json"
@@ -2028,9 +2029,12 @@ def container_boot_failure_detail(container_name: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            timeout=DOCKER_DIAGNOSTIC_TIMEOUT_SEC,
         ).stdout.strip()
         if state:
             detail.append(f"container state: {state}")
+    except subprocess.TimeoutExpired:
+        pass
     except Exception:
         pass
     try:
@@ -2039,10 +2043,13 @@ def container_boot_failure_detail(container_name: str) -> str:
             capture_output=True,
             text=True,
             check=False,
+            timeout=DOCKER_DIAGNOSTIC_TIMEOUT_SEC,
         )
         tail_lines = (logs.stdout + logs.stderr).strip().splitlines()
         if tail_lines:
             detail.append("last container logs:\n" + "\n".join(tail_lines[-40:]))
+    except subprocess.TimeoutExpired:
+        pass
     except Exception:
         pass
     return "\n".join(detail)
