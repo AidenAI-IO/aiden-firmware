@@ -222,16 +222,18 @@ run_bsp() {
         CONFIG_BT_RFCOMM_TTY CONFIG_BT_LE CONFIG_BT_HCIUART \
         CONFIG_BT_HCIUART_H4 CONFIG_CRYPTO_ECDH CONFIG_CRYPTO_CMAC \
         CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
-        CONFIG_VIDEO_RK628_CSI CONFIG_VIDEO_TC358743; do
+        CONFIG_VIDEO_RK628_CSI; do
         grep -qx "${symbol}=y" "${kernel_config}" || {
             echo "Required production kernel setting is not enabled: ${symbol}" >&2
             exit 1
         }
     done
-    grep -qx '# CONFIG_VIDEO_TC358743_CEC is not set' "${kernel_config}" || {
-        echo "TC358743 CEC must remain disabled in the production kernel" >&2
-        exit 1
-    }
+    for symbol in CONFIG_VIDEO_TC358743 CONFIG_VIDEO_TC358743_CEC; do
+        grep -qx "# ${symbol} is not set" "${kernel_config}" || {
+            echo "Production kernel setting must remain disabled: ${symbol}" >&2
+            exit 1
+        }
+    done
     grep -qx \
         'blkdevparts=mmcblk0:32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
         "${env_text}"

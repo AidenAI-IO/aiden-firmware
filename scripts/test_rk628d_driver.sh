@@ -40,8 +40,8 @@ require_pattern '^CONFIG_VIDEO_V4L2_SUBDEV_API=y$' "$KERNEL_FRAGMENT" \
     "RK628 CSI requires the V4L2 subdevice API"
 require_pattern '^CONFIG_VIDEO_RK628_CSI=y$' "$KERNEL_FRAGMENT" \
     "the kernel fragment must enable the RK628 CSI driver"
-require_pattern '^CONFIG_VIDEO_TC358743=y$' "$KERNEL_FRAGMENT" \
-    "the dual-bridge image must retain the TC358743 driver"
+require_pattern '^# CONFIG_VIDEO_TC358743 is not set$' "$KERNEL_FRAGMENT" \
+    "the RK628F production image must disable the unused TC358743 driver"
 require_pattern '^# CONFIG_VIDEO_TC358743_CEC is not set$' "$KERNEL_FRAGMENT" \
     "the unused TC358743 CEC path must stay disabled"
 require_pattern 'RK_KERNEL_DEFCONFIG_FRAGMENT=.*aiden-rk628\.config' "$BOARD_CONFIG" \
@@ -243,4 +243,4 @@ if driver_edid != fixture or sdk_edid != fixture:
     raise SystemExit("FAIL: RK628 and libaiden must use the same 1080p60 EDID")
 PY
 
-echo "PASS: dual-bridge RK628D driver integration contract"
+echo "PASS: RK628F driver integration contract"
