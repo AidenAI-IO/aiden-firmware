@@ -1,9 +1,9 @@
 [Unit]
 Description=Aiden local configuration and recovery portal
 Requires=aiden-userdata-migrate.service aiden-environment.service
-Wants=aiden-agent.service aiden-usb-dnsmasq.service aiden-wifi-proxy.service
+Wants=aiden-usb-dnsmasq.service aiden-wifi-proxy.service
 After=aiden-userdata-migrate.service aiden-environment.service
-After=aiden-wifi-proxy.service aiden-agent.service aiden-usb-dnsmasq.service
+After=aiden-wifi-proxy.service aiden-usb-dnsmasq.service
 StartLimitIntervalSec=60s
 StartLimitBurst=5
 ConditionPathExists=/usr/lib/aiden/agent

@@ -177,8 +177,11 @@ func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *tes
 		t.Fatalf("restriction notice count in deciding prompt = %d, want 1", got)
 	}
 	notices := collectMessagesByRole(manager.MessageListDump().Messages, messages.MessageRoleNotice)
-	if len(notices) != 1 {
-		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
+	if len(notices) != 2 {
+		t.Fatalf("persisted notices = %d, want restriction and termination notices", len(notices))
+	}
+	if !strings.HasPrefix(notices[1].Content, "Interrupt [loop_detected]:") {
+		t.Fatalf("termination notice = %q", notices[1].Content)
 	}
 	if strings.Contains(notices[0].Content, "<notice>") || !strings.Contains(notices[0].Content, "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress.") {
 		t.Fatalf("persisted notice = %#v", notices[0])

@@ -67,6 +67,25 @@ func voiceConfig(cfg agent.Config) agent.Config {
 	}
 }
 
+func activeVoiceConfig(cfg agent.Config) agent.Config {
+	active := voiceConfig(cfg)
+	active.InputMode = cfg.InputModeOrDefault()
+	switch active.InputMode {
+	case "stt":
+		active.VoiceModel = agent.VoiceModelConfig{}
+	case "realtime":
+		// These clients are published independently by Server and Runtime.
+		// Editing them must not wait for a live realtime conversation to end.
+		active.STT = agent.STTConfig{}
+		active.TTS = agent.TTSConfig{}
+	default:
+		active.STT = agent.STTConfig{}
+		active.TTS = agent.TTSConfig{}
+		active.VoiceModel = agent.VoiceModelConfig{}
+	}
+	return active
+}
+
 func (c *inputLifecycle) buildDialog(cfg agent.Config) (*agent.AudioDialog, error) {
 	if c.newDialog != nil {
 		return c.newDialog(cfg)
@@ -149,7 +168,7 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 	c.dialogMu.Lock()
 	oldDialog := c.dialog
 	c.dialogMu.Unlock()
-	voiceChanged := !reflect.DeepEqual(voiceConfig(old), voiceConfig(cfg))
+	voiceChanged := !reflect.DeepEqual(activeVoiceConfig(old), activeVoiceConfig(cfg))
 	quickChanged := old.QuickCapture.GPIOPin != cfg.QuickCapture.GPIOPin || old.QuickCapture.EnabledOrDefault() != cfg.QuickCapture.EnabledOrDefault()
 	if voiceChanged {
 		close(c.stop)
@@ -170,10 +189,11 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 		}
 	}
 	var dialog *agent.AudioDialog
+	var commitInput func()
 	if voiceChanged {
 		dialog, err = c.buildDialog(cfg)
 		if err == nil {
-			err = dialog.PrepareInput()
+			commitInput, err = dialog.PrepareInputReplacement(oldDialog)
 		}
 	}
 	var quick wakeupWatcher
@@ -225,6 +245,9 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 		if voiceChanged {
 			c.dialogMu.Lock()
 			c.dialog = nil
+			if commitInput != nil {
+				commitInput()
+			}
 			c.dialogMu.Unlock()
 			if oldDialog != nil {
 				_ = oldDialog.Close()

@@ -1368,6 +1368,12 @@ def test_memory_suite_covers_representative_memory_behaviors():
     assert len(suite.tasks) >= 15
     assert all(task.category == "memory" for task in suite.tasks)
 
+    procedure_task = task_by_id["use_procedure_steps"]
+    assert any(
+        "YYYY-MM-DD-商家-金额" in item.check
+        for item in procedure_task.rubric
+    )
+
     assert any(
         "recall_session_chunks" in item.check
         for item in task_by_id["recall_session_chunk_details"].rubric

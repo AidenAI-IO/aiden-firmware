@@ -59,6 +59,7 @@ type AgentLoop struct {
 	ContextOverflowRecovery    func(context.Context, *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error)
 	toolExecutionHookFactory   func() toolExecutionHookHandler
 	contextManager             *contextmanager.ContextManager
+	notices                    *runNotices
 }
 
 func NewAgentLoop(
@@ -96,7 +97,12 @@ func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
 	}
 }
 
-func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
+func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (answer string, runErr error) {
+	if l.notices == nil {
+		l.notices = &runNotices{manager: func() *contextmanager.ContextManager { return l.contextManager }}
+		defer func() { l.notices = nil }()
+		defer l.notices.finishOnReturn(ctx, &runErr)
+	}
 	agentTools := l.Profile.Tools
 	transforms := l.outboundTransforms()
 	if IsAnthropicModel(l.Model.Spec().Provider, l.Model.Spec().Name) {
@@ -127,6 +133,9 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 restartBudget:
 	for {
 		for i := 0; i < l.MaxIterations; i++ {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 			if decision := policy.CheckBeforeIteration(ctx, i+1, l.MaxIterations); decision.Stop {
 				answer, done, err := l.stopWithSteerCheck(ctx, llmExecutor, policy, decision)
 				if err != nil {
@@ -261,6 +270,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(llmCtx), turnOptions...)
 	if err != nil {
 		l.abortStreamingResponse(ctx)
+		if ctx.Err() != nil {
+			return "", iterationContinue, ctx.Err()
+		}
 		if contextOverflowRecoveryUsed != nil && !*contextOverflowRecoveryUsed && isProviderContextExceededError(err) && l.ContextOverflowRecovery != nil {
 			*contextOverflowRecoveryUsed = true
 			newManager, compacted, recoveryErr := l.ContextOverflowRecovery(ctx, llmExecutor.ContextManager())
@@ -301,7 +313,13 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 					return "", iterationRestartBudget, nil
 				}
 			}
+			if err := ctx.Err(); err != nil {
+				return "", iterationContinue, err
+			}
 			if steerInterrupted {
+				if err := l.appendSteerResumeNotice(); err != nil {
+					return "", iterationContinue, err
+				}
 				// A queued steer may have been canceled after the interrupt fired.
 				// Retry the original task with the request's rearmed signal channel.
 				return "", iterationRestartBudget, nil
@@ -309,9 +327,16 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		}
 		return "", iterationContinue, err
 	}
+	if err := ctx.Err(); err != nil {
+		l.abortStreamingResponse(ctx)
+		return "", iterationContinue, err
+	}
 	l.finishStreamingResponse(ctx)
 	l.emitRoleOutputWithReasoning(ctx, contentResp)
 	if answer := l.touchPointerModeMismatchContentFinalAnswer(contentResp); answer != "" {
+		if err := l.notices.stop("device_mode_mismatch", "Execution stopped because the touch mode appears incompatible with the connected device."); err != nil {
+			return "", iterationContinue, err
+		}
 		if l.Recorder != nil {
 			l.Recorder.RecordDefaultFinish(answer)
 		}
@@ -460,6 +485,12 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolCallMessage, toolExecution.Step, prepared)
+	if err := ctx.Err(); err != nil {
+		if appendErr != nil {
+			return "", iterationContinue, errors.Join(err, appendErr)
+		}
+		return "", iterationContinue, err
+	}
 	if toolExecution.Error != nil {
 		if appendErr != nil {
 			return "", iterationContinue, errors.Join(toolExecution.Error, appendErr)
@@ -486,12 +517,18 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 					hasPending = true
 				}
 			}
+			if err := ctx.Err(); err != nil {
+				return "", iterationContinue, err
+			}
 			if hasPending {
 				policy.ResetForSteer()
 				logging.Infof("agent", "steer", "tool canceled but pending steer exists (length=%d), restarting iteration budget", len(steer.Content))
 				return "", iterationRestartBudget, nil
 			}
 			if ctx.Err() == nil {
+				if err := l.appendSteerResumeNotice(); err != nil {
+					return "", iterationContinue, err
+				}
 				// The steer signal interrupted the tool, but its queued message was
 				// canceled before consumption. Retry the original task with the
 				// request's rearmed signal channel and a fresh iteration budget.
@@ -515,6 +552,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", iterationContinue, appendErr
 	}
 	if answer := l.touchPointerModeMismatchFinalAnswer(toolExecution.Step); answer != "" {
+		if err := l.notices.stop("device_mode_mismatch", "Execution stopped because the touch mode appears incompatible with the connected device."); err != nil {
+			return "", iterationContinue, err
+		}
 		if l.Recorder != nil {
 			l.Recorder.RecordDefaultFinish(answer)
 		}
@@ -541,6 +581,12 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
+		if err := l.contextManager.AppendMessage(messages.Message{
+			Role:    messages.MessageRoleNotice,
+			Content: fmt.Sprintf("Pause [%s]: Execution is intentionally paused. This is not confirmation that the task is complete. Continue when the requested user action or wakeup input arrives.", toolExecution.Call.Action.Tool),
+		}); err != nil {
+			return "", iterationContinue, err
+		}
 		answer := runPausingToolFinalAnswer(&toolExecution.Step)
 		if l.Recorder != nil {
 			l.Recorder.RecordDefaultFinish(answer)
@@ -648,6 +694,9 @@ func (l *AgentLoop) stopWithDecision(ctx context.Context, policy *TerminationPol
 	if policy != nil {
 		lastTool = policy.lastToolName
 	}
+	if err := l.notices.stop(string(decision.Reason), "Execution stopped before completion: "+decision.Message+"."); err != nil {
+		return "", err
+	}
 	answer := formatLoopGuardStopMessage(decision, lastTool)
 	if l != nil && l.Recorder != nil {
 		l.Recorder.RecordEvent(TaskEpisodeEvent{
@@ -665,7 +714,7 @@ func (l *AgentLoop) stopWithDecision(ctx context.Context, policy *TerminationPol
 }
 
 func (l *AgentLoop) checkPendingSteer(ctx context.Context) (RunSteerMessage, bool) {
-	if l == nil || l.SteerProvider == nil {
+	if l == nil || l.SteerProvider == nil || ctx.Err() != nil {
 		return RunSteerMessage{}, false
 	}
 	return l.SteerProvider(ctx)
@@ -689,26 +738,24 @@ func (l *AgentLoop) consumeAndPersistSteer(
 }
 
 func (l *AgentLoop) persistSteer(ctx context.Context, executor *executor.LLMExecutor, steer RunSteerMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Normalize once so the model context, the recorded steer, and the emitted
 	// event all carry the same text. Whitespace-only input would otherwise reach
 	// the model as an empty message while being recorded as the placeholder.
 	steer.Content = steerHumanMessageContent(steer)
 
-	// Step 1: Append to context manager
+	// Persist the interrupt notice and new instruction together.
+	manager := l.contextManager
 	if executor != nil {
-		if err := executor.AppendMessage(messages.Message{
-			Role:    messages.MessageRoleUser,
-			Content: steer.Content,
-		}); err != nil {
-			return err
-		}
-	} else if l.contextManager != nil {
-		if err := l.contextManager.AppendMessage(messages.Message{
-			Role:    messages.MessageRoleUser,
-			Content: steer.Content,
-		}); err != nil {
-			return err
-		}
+		manager = executor.ContextManager()
+	}
+	if err := manager.AppendMessages([]messages.Message{
+		interruptNotice("steer", "A new instruction interrupted the current execution plan. Continue this run using the following user instruction; the previous plan is not confirmed complete."),
+		{Role: messages.MessageRoleUser, Content: steer.Content},
+	}); err != nil {
+		return err
 	}
 
 	// Step 2: Track the steer for session event persistence.
@@ -730,12 +777,8 @@ func (l *AgentLoop) persistSteer(ctx context.Context, executor *executor.LLMExec
 	return nil
 }
 
-func formatSteerInterruptMessage(steer RunSteerMessage) string {
-	content := strings.TrimSpace(steer.Content)
-	if content == "" {
-		return "User interrupted the current task."
-	}
-	return fmt.Sprintf("User interrupted: %s", content)
+func (l *AgentLoop) appendSteerResumeNotice() error {
+	return l.contextManager.AppendMessage(interruptNotice("steer_resumed", "The current model request or tool was interrupted, but no replacement instruction was consumed. Continue the original task from its last confirmed state."))
 }
 
 func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {

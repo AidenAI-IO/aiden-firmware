@@ -104,6 +104,7 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 
 add_executable(aiden_tests
     test_main.cpp
+    contract_fixtures_test.cpp
     aiden_log_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp

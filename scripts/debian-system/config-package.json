@@ -7,6 +7,7 @@
     "etc/locale.conf",
     "etc/profile.d/aiden-*.sh",
     "etc/sudoers.d/*-aiden-*",
+    "etc/ssh/sshrc",
     "etc/ssh/sshd_config.d/*-aiden.conf",
     "etc/dnsmasq.d/usb0.conf",
     "etc/dnsmasq.d/aiden*.conf",
@@ -50,6 +51,7 @@
     "etc/systemd/system/aiden-wifi-driver.service"
   ],
   "live": [
+    "etc/ssh/sshrc",
     "etc/profile.d/*",
     "etc/sudoers.d/*",
     "etc/locale.conf",
@@ -71,6 +73,7 @@
     "usr/lib/aiden/aiden-log.sh",
     "usr/lib/aiden/aiden-managed-env-run",
     "usr/lib/aiden/aiden-python-prepare",
+    "usr/lib/aiden/aiden-ssh-session-tty",
     "usr/lib/aiden/aiden-ttyd-*",
     "usr/lib/aiden/aiden-wifi-proxy-*"
   ]

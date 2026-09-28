@@ -168,8 +168,8 @@ func TestArtifactStoreCleanerRemovesStaleUncommittedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	orphanData := filepath.Join(manager.artifactStore.root, "tr_uncommitted.data")
-	tempFile := filepath.Join(manager.artifactStore.root, ".artifact-interrupted")
+	orphanData := filepath.Join(manager.ArtifactStoreRoot(), "tr_uncommitted.data")
+	tempFile := filepath.Join(manager.ArtifactStoreRoot(), ".artifact-interrupted")
 	for _, path := range []string{orphanData, tempFile} {
 		if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", filepath.Base(path), err)

@@ -1,4 +1,5 @@
 #include "doctest.h"
+#include "aiden_log.h"
 #include "frame_capture_manager.h"
 #include "frame_service_client.h"
 #include "frame_service_server.h"
@@ -254,6 +255,49 @@ bool wait_for_warmup_count(int expected) {
     return false;
 }
 
+}
+
+TEST_CASE("FrameCaptureManager logs request and capture operation boundaries") {
+    FILE* output = tmpfile();
+    REQUIRE(output != NULL);
+    aiden::set_log_service("frame_service");
+    aiden::set_log_output(output);
+
+    FrameServiceServer server("/tmp/aiden_frame_logging_unused.sock", 4);
+    FakeCaptureSource source;
+    source.frames.push_back(CapturedFrame{metadata(1), std::vector<uint8_t>{1, 2}});
+    FrameCaptureManagerOptions options;
+    options.recovery_initial_backoff_ms = 1;
+    options.recovery_max_backoff_ms = 1;
+    options.recovery_idle_max_backoff_ms = 1;
+    FrameCaptureManager manager(&source, &server, options);
+
+    REQUIRE(manager.start());
+    REQUIRE(wait_for_source_ready(&source));
+    CapturedFrame captured;
+    CHECK(manager.capture(1000, &captured) == FrameServiceStatus::OK);
+    manager.stop();
+
+    fflush(output);
+    REQUIRE(fseek(output, 0, SEEK_SET) == 0);
+    std::string log;
+    char buffer[4096];
+    size_t bytes = 0;
+    while ((bytes = fread(buffer, 1, sizeof(buffer), output)) > 0) {
+        log.append(buffer, bytes);
+    }
+
+    CHECK(log.find("[frame_service][capture] source_open_started ") != std::string::npos);
+    CHECK(log.find("[frame_service][capture] worker_idle ") != std::string::npos);
+    CHECK(log.find("[frame_service][capture] request_queued ") != std::string::npos);
+    CHECK(log.find("[frame_service][capture] frame_read_started ") != std::string::npos);
+    CHECK(log.find("[frame_service][capture] cycle_completed ") != std::string::npos);
+    CHECK(log.find("frame_read_ms=") != std::string::npos);
+    CHECK(log.find("generation=1") != std::string::npos);
+
+    aiden::set_log_output(NULL);
+    aiden::set_log_service("unknown");
+    fclose(output);
 }
 
 TEST_CASE("FrameCaptureManager warms NV12 once across same-layout recovery") {

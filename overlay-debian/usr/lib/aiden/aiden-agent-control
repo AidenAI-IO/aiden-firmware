@@ -5,6 +5,10 @@ case "${1:-}" in
     restart|reload)
         systemctl restart aiden-environment.service
         systemctl restart aiden-agent.service
+        # Restarting the required environment stops its reverse dependents,
+        # including aiden.target. Re-enter the target so its Wants= set brings
+        # back config-web and the rest of the device service group.
+        systemctl start aiden.target
         ;;
     start|stop)
         systemctl "$1" aiden-agent.service

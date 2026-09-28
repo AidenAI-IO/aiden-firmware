@@ -160,7 +160,8 @@ At least cover the following failure scenarios:
 | Scenario | Expected |
 | --- | --- |
 | Invalid signature or invalid manifest | Reject update, do not write partitions, do not switch slot |
-| SHA256 or size mismatch | Reject update, do not write target partition |
+| Archive SHA256 or size mismatch | Reject update before writing the target partition |
+| Extracted image SHA256 mismatch | Reject update during the streamed write; keep the target slot unbootable and do not switch slots |
 | Downgrade release | Reject update, do not switch slot |
 | Health marker missing or mismatched | Target slot not marked successful, rollback after tries consumed |
 | Inactive boot image corrupted | SPL should not hang, should fall back to previous successful slot |

@@ -811,6 +811,9 @@ func TestRotateRealtimeContextForReplayStartsRevisionWhenTruncated(t *testing.T)
 	if rotated.GetSessionID() == originalSessionID {
 		t.Fatal("truncated context reused the original session")
 	}
+	if rotated != manager {
+		t.Fatal("context manager pointer changed during replay rotation")
+	}
 	dump := rotated.MessageListDump()
 	if dump.ParentSessionID != originalSessionID {
 		t.Fatalf("parent session = %q, want %q", dump.ParentSessionID, originalSessionID)

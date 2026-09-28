@@ -29,6 +29,7 @@ import (
 	speechtext "aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tokencounter"
 
+	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
@@ -172,6 +173,34 @@ func TestRuntimeRun(t *testing.T) {
 
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}
+
+func TestRuntimeParseFallbackDoesNotPersistInterruptNotice(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: failingGenerateModel{err: fmt.Errorf("%w: raw model response", agents.ErrUnableToParseOutput)}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "parse fallback"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "raw model response" {
+		t.Fatalf("Run() output = %q, want raw model response", result.Output)
+	}
+	for _, message := range runtime.contextManager.CloneMessageList() {
+		if message.Role == messages.MessageRoleNotice && strings.HasPrefix(message.Content, "Interrupt [") {
+			t.Fatalf("recoverable parse fallback persisted interruption notice: %q", message.Content)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runtime.contextManager.GetSessionFolder(), pendingBackendRunFile)); !os.IsNotExist(err) {
+		t.Fatalf("pending run journal remains after parse fallback: %v", err)
 	}
 }
 
@@ -1806,10 +1835,12 @@ func TestRuntimeRunCanceledToolDoesNotPoisonNextRunToolHistory(t *testing.T) {
 		t.Fatalf("first Run() error = %v, want context canceled", err)
 	}
 
+	requireInterruptNotices(t, runtime.contextManager, "canceled")
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "continue"})
 	if err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
+	requireInterruptNotices(t, runtime.contextManager, "canceled")
 	if result.Output != "continued" {
 		t.Fatalf("second Run() output = %q, want continued", result.Output)
 	}
@@ -2744,6 +2775,44 @@ func TestRuntimeRunStopsLocallyWhenHardInputBudgetCannotFit(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRejectsHardInputBudgetFromMeasuredUsage(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	manager, err := contextmanager.NewContextManagerFromMessageList(
+		agentpath.ContextManagerSessionFolder(configDir), []messages.Message{
+			{Role: messages.MessageRoleSystem, Content: "system"},
+			{Role: messages.MessageRoleUser, Content: "hello"},
+			{
+				Role: messages.MessageRoleAssistant, Content: "ok",
+				Usage: &messages.Usage{InputTokens: 9_000, OutputTokens: 100, TotalTokens: 9_100},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("must not be called")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir: configDir, ContextPruneThreshold: 0.8, MaxIterations: 1,
+			Model: ModelConfig{
+				Provider: "openai", APIMode: "responses", ResponsesContextManagement: "compaction", MaxResponseTokens: 256,
+			},
+		},
+		&testModelResolver{model: llmModel, spec: model.ModelSpec{ContextWindow: 5_000, MaxOutput: 256}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+	_, err = runtime.Run(context.Background(), RunRequest{Input: "continue"})
+	if err == nil || !strings.Contains(err.Error(), "context remains over usable input budget") {
+		t.Fatalf("Run() error = %v, want measured-usage budget rejection", err)
+	}
+	if llmModel.callCount != 0 {
+		t.Fatalf("model call count = %d, want 0", llmModel.callCount)
+	}
+}
+
 func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -2770,8 +2839,9 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := contextmanager.SwitchSession(sessionFolder, manager.GetSessionID()); err != nil {
-				t.Fatal(err)
+			originalSessionID := manager.GetSessionID()
+			if err := manager.SwitchSession(manager.GetSessionID()); err != nil {
+				t.Fatalf("SwitchSession() error = %v", err)
 			}
 			if tc.chunkWriteFails {
 				// A file where the chunk directory belongs makes persistence fail
@@ -2840,8 +2910,8 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if len(llmModel.tools[0]) != 0 || len(llmModel.tools[1]) == 0 {
 				t.Fatal("expected summary before the tool-enabled model request")
 			}
-			if runtime.contextManager == manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
-				t.Fatal("successful recovery did not activate the prepared revision")
+			if runtime.contextManager != manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() || loaded.GetSessionID() == originalSessionID {
+				t.Fatal("successful recovery did not activate the prepared revision on the existing manager")
 			}
 			if !tc.chunkWriteFails {
 				if len(index.Chunks) != 1 || index.Chunks[0].Summary != tc.summary || index.Chunks[0].EventCount != 1 {
@@ -4482,6 +4552,29 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeInitialRotateCreatesOneContextSession(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Instruction: "system"},
+		nil,
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	if err := runtime.rotateContext(); err != nil {
+		t.Fatalf("rotateContext() error = %v", err)
+	}
+	files, err := filepath.Glob(filepath.Join(agentpath.ContextManagerSessionFolder(configDir), "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob context sessions: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("initial rotate created %d transcript sessions, want 1: %#v", len(files), files)
+	}
+}
+
 func TestRuntimeClearMemoryReplacesAndRemovesUserContextSession(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	runtime, err := NewRuntime(Config{
@@ -4638,6 +4731,8 @@ func TestRuntimePreemptCancelsActiveRun(t *testing.T) {
 	if secondResult.Output != "second" {
 		t.Fatalf("second run output = %q, want 'second'", secondResult.Output)
 	}
+
+	requireInterruptNotices(t, runtime.contextManager, "preempted")
 
 	// WasPreempted should report true.
 	if !runtime.WasPreempted(5 * time.Second) {

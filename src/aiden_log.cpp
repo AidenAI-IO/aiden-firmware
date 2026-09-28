@@ -1,14 +1,31 @@
 #include "aiden_log.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
 
 #include <cctype>
+#include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+
+#if defined(__APPLE__)
+#include <pthread.h>
+#endif
 
 namespace aiden {
 namespace {
@@ -113,6 +130,43 @@ std::string utc_timestamp() {
     return buffer;
 }
 
+uint64_t monotonic_millis() {
+#if defined(CLOCK_MONOTONIC)
+    struct timespec now;
+    memset(&now, 0, sizeof(now));
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+        return static_cast<uint64_t>(now.tv_sec) * 1000ULL +
+               static_cast<uint64_t>(now.tv_nsec) / 1000000ULL;
+    }
+#endif
+    return 0;
+}
+
+uint64_t process_id() {
+#if defined(_WIN32)
+    return static_cast<uint64_t>(GetCurrentProcessId());
+#else
+    return static_cast<uint64_t>(getpid());
+#endif
+}
+
+uint64_t native_thread_id() {
+#if defined(_WIN32)
+    return static_cast<uint64_t>(GetCurrentThreadId());
+#elif defined(__linux__) && defined(SYS_gettid)
+    return static_cast<uint64_t>(syscall(SYS_gettid));
+#elif defined(__APPLE__)
+    uint64_t thread_id = 0;
+    if (pthread_threadid_np(NULL, &thread_id) == 0) {
+        return thread_id;
+    }
+    return 0;
+#else
+    return static_cast<uint64_t>(
+        std::hash<std::thread::id>()(std::this_thread::get_id()));
+#endif
+}
+
 }  // namespace
 
 void set_log_service(const char* service) {
@@ -130,6 +184,7 @@ void log_event(LogLevel level,
                const char* event,
                const char* format,
                ...) {
+    const int saved_errno = errno;
     va_list args;
     va_start(args, format);
     const std::string message = format_message(format, args);
@@ -147,6 +202,12 @@ void log_event(LogLevel level,
     line.append(normalize_identifier(component, "runtime"));
     line.append("] ");
     line.append(normalize_identifier(event, "log_message"));
+    line.append(" monotonic_ms=");
+    line.append(std::to_string(monotonic_millis()));
+    line.append(" pid=");
+    line.append(std::to_string(process_id()));
+    line.append(" tid=");
+    line.append(std::to_string(native_thread_id()));
     if (!message.empty()) {
         line.append(" message=");
         append_quoted(&line, message);
@@ -156,6 +217,7 @@ void log_event(LogLevel level,
     FILE* output = g_log_output ? g_log_output : stderr;
     fwrite(line.data(), 1, line.size(), output);
     fflush(output);
+    errno = saved_errno;
 }
 
 }  // namespace aiden

@@ -1,10 +1,10 @@
 package contextmanager
 
 import (
+	"aiden-agent/internal/agent/session"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,45 +17,41 @@ import (
 )
 
 const (
-	ArtifactSingleMaxBytes   = 8 * 1024 * 1024
-	ArtifactSessionMaxBytes  = 32 * 1024 * 1024
 	artifactMetadataMaxBytes = 64 * 1024
 
 	artifactDefaultTTL   = 7 * 24 * time.Hour
 	artifactSensitiveTTL = time.Hour
 )
 
+// Keep the public context-manager names stable while the data types belong to
+// the session package.
+type ArtifactMetadata = session.ArtifactMetadata
+type ArtifactFile = session.ArtifactFile
+
+const (
+	ArtifactSingleMaxBytes  = session.ArtifactSingleMaxBytes
+	ArtifactSessionMaxBytes = session.ArtifactSessionMaxBytes
+)
+
 var (
-	ErrArtifactTooLarge    = errors.New("artifact exceeds single-artifact size limit")
-	ErrArtifactSessionFull = errors.New("session artifact size limit exceeded")
+	ErrArtifactTooLarge    = session.ErrArtifactTooLarge
+	ErrArtifactSessionFull = session.ErrArtifactSessionFull
 
 	// artifactFilesystemMu coordinates stores with the cleaner, which operates
 	// through a separate object and therefore cannot use artifactStore.mu.
 	artifactFilesystemMu sync.RWMutex
 )
 
-type ArtifactMetadata struct {
-	ToolName   string    `json:"tool_name,omitempty"`
-	ToolCallID string    `json:"tool_call_id,omitempty"`
-	MIMEType   string    `json:"mime_type"`
-	Size       int64     `json:"size"`
-	SHA256     string    `json:"sha256"`
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	Sensitive  bool      `json:"sensitive,omitempty"`
-	Complete   bool      `json:"complete"`
-}
-
-type ArtifactFile struct {
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
-	SHA256   string `json:"sha256"`
-	Complete bool   `json:"complete"`
-}
-
 type artifactStore struct {
 	root string
 	mu   sync.Mutex
+}
+
+func (s *artifactStore) Root() string {
+	if s == nil {
+		return ""
+	}
+	return s.root
 }
 
 // ArtifactPathRecoverable reports whether an artifact data path still has a
@@ -198,6 +194,12 @@ func (s *artifactStore) store(mimeType string, data []byte, metadata ArtifactMet
 		SHA256:   metadata.SHA256,
 		Complete: true,
 	}, nil
+}
+
+// StoreArtifact implements session.ArtifactStore while keeping the concrete
+// filesystem store private to the storage layer.
+func (s *artifactStore) StoreArtifact(mimeType string, data []byte, metadata session.ArtifactMetadata) (session.ArtifactFile, error) {
+	return s.store(mimeType, data, metadata)
 }
 
 func findReusableArtifact(root string, requested ArtifactMetadata) (ArtifactFile, bool, error) {

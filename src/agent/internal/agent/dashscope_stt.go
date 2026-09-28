@@ -245,10 +245,10 @@ func extractPCMFromWAV(wavData []byte) ([]byte, int, error) {
 // --- DashScope protocol message types ---
 
 type dashScopeMessage struct {
-	EventID string          `json:"event_id"`
-	Type    string          `json:"type"`
+	EventID string            `json:"event_id"`
+	Type    string            `json:"type"`
 	Session *dashScopeSession `json:"session,omitempty"`
-	Audio   string          `json:"audio,omitempty"`
+	Audio   string            `json:"audio,omitempty"`
 }
 
 type dashScopeSession struct {
@@ -260,16 +260,16 @@ type dashScopeSession struct {
 }
 
 type dashScopeTurnDetection struct {
-	Type              string `json:"type"`
+	Type              string  `json:"type"`
 	Threshold         float64 `json:"threshold,omitempty"`
-	SilenceDurationMs int    `json:"silence_duration_ms,omitempty"`
+	SilenceDurationMs int     `json:"silence_duration_ms,omitempty"`
 }
 
 type dashScopeServerEvent struct {
-	EventID    string `json:"event_id"`
-	Type       string `json:"type"`
-	Transcript string `json:"transcript,omitempty"`
-	Text       string `json:"text,omitempty"`
+	EventID    string                 `json:"event_id"`
+	Type       string                 `json:"type"`
+	Transcript string                 `json:"transcript,omitempty"`
+	Text       string                 `json:"text,omitempty"`
 	Error      *dashScopeErrorPayload `json:"error,omitempty"`
 }
 

@@ -238,7 +238,7 @@ PATH="$fake_bin:$PATH" \
   "$repo_root/scripts/create_github_release.sh" \
     --tag-name v-test \
     --release-name "Test Release" \
-    --target-commitish "$(git -C "$repo_root" rev-parse HEAD)" \
+    --target-commitish "$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'test-commit')" \
     --asset-glob "$assets_dir/*" \
     --required-assets 'boot_a.img boot_b.img rootfs.img update.img manifest.json' \
     --upload-assets "$upload_assets" \

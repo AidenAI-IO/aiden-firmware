@@ -168,8 +168,8 @@ SH
 chmod +x "$fake_bin/sleep"
 
 log_file="$tmp_dir/release.log"
-target_commitish="$(git -C "$repo_root" rev-parse HEAD)"
-expected_commit_title="$(git -C "$repo_root" show -s --format=%s "$target_commitish")"
+target_commitish="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'test-commit')"
+expected_commit_title="$(git -C "$repo_root" show -s --format=%s "$target_commitish" 2>/dev/null || printf '%s' "$target_commitish")"
 if ! PATH="$fake_bin:$PATH" \
   FAKE_GH_STATE_DIR="$state_dir" \
   GH_TOKEN="test-token" \

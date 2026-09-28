@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -288,6 +289,30 @@ func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term str
 			return err
 		}
 	}
+	attempted, err := pasteSearchQuery(ctx, cfg, term)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if attempted && err == nil {
+		logging.Infof("agent", "app_search", "query input route=pip_clipboard_paste")
+		return nil
+	}
+	if attempted {
+		logging.Infof("agent", "app_search", "query input route=local_hid clipboard_error=%v", err)
+		// A failed paste may have inserted text. Clear it without Escape,
+		// which could dismiss Spotlight, before the existing local input path.
+		engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
+		if err := engine.tapKeys(ctx, []string{"meta", "a"}); err != nil {
+			return err
+		}
+		if err := engine.sleepFor(ctx, textInputKeystrokeGap); err != nil {
+			return err
+		}
+		if err := engine.tapKeys(ctx, []string{"backspace"}); err != nil {
+			return err
+		}
+	}
+
 	input := map[string]any{
 		"text":  term,
 		"focus": map[string]any{"x": 500, "y": 120},
@@ -304,6 +329,31 @@ func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term str
 		return fmt.Errorf("enter search query: %s", strings.TrimSpace(result.Suggestion))
 	}
 	return nil
+}
+
+// PiP can write the clipboard without leaving the focused system search UI.
+// The existing result lookup, tap and app-open confirmation verify the outcome.
+func pasteSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term string) (attempted bool, err error) {
+	platform := cfg.platform
+	if platform == "" {
+		platform = cfg.entryTool.platform()
+	}
+	if platform != "ios" || cfg.entryTool.bridgeTool == nil {
+		return false, nil
+	}
+	bridgeTool := cfg.entryTool.bridgeTool
+	bridge := bridgeTool.currentBridge()
+	if bridge == nil || !phoneBridgeCanUsePiPBackground(bridge.getStatus(), "clipboard_write") {
+		return false, nil
+	}
+	if err := bridgeTool.writeClipboard(ctx, bridge, term); err != nil {
+		return true, err
+	}
+	if err := bridgeTool.sleepAfterClipboardWrite(ctx); err != nil {
+		return true, err
+	}
+	_, _, err = bridgeTool.pasteClipboard(ctx, platform)
+	return true, err
 }
 
 func appSearchFallbackTerms(searchTerm string) []string {
