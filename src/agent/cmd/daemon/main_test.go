@@ -2548,3 +2548,27 @@ func alternatingSamples(samples int, center, amplitude int16) []int16 {
 	}
 	return out
 }
+
+func TestAidenBoardDoesNotClaimHDMIPowerAndResetAsWakeup(t *testing.T) {
+	pins := wakeupGPIOPinsForModel("Aiden SCH v1\x00")
+	if len(pins) != 0 {
+		t.Fatalf("SCH v1 must not claim HDMI GPIOs as inputs: %v", pins)
+	}
+	old := wakeupGPIOPins
+	wakeupGPIOPins = pins
+	t.Cleanup(func() { wakeupGPIOPins = old })
+	watchers, err := startWakeupWatchers(func(int, func()) (wakeupWatcher, error) {
+		t.Fatal("must not export GPIOs on SCH v1")
+		return nil, nil
+	}, func() {})
+	if err != nil || len(watchers) != 0 {
+		t.Fatalf("disabled watchers = %v, %v", watchers, err)
+	}
+}
+
+func TestPicoZeroRetainsLegacyWakeupPins(t *testing.T) {
+	pins := wakeupGPIOPinsForModel("Luckfox Pico Zero\x00")
+	if len(pins) != 2 || pins[0] != 33 || pins[1] != 32 {
+		t.Fatalf("legacy pins = %v", pins)
+	}
+}

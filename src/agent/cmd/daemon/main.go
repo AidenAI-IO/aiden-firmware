@@ -37,7 +37,20 @@ var voiceSteerListenTimeout = defaultVoiceSteerListenTimeout
 var voiceTurnCancelWaitTimeout = 2 * time.Second
 var wakeupDebounceNow = time.Now
 
-var wakeupGPIOPins = []int{33, 32}
+var wakeupGPIOPins = boardWakeupGPIOPins()
+
+func wakeupGPIOPinsForModel(model string) []int {
+	if strings.TrimRight(model, "\x00\n") == "Aiden SCH v1" {
+		// GPIO32/33 are RK628 power/reset on SCH v1, not wakeup inputs.
+		return nil
+	}
+	return []int{33, 32}
+}
+
+func boardWakeupGPIOPins() []int {
+	model, _ := os.ReadFile("/proc/device-tree/model")
+	return wakeupGPIOPinsForModel(string(model))
+}
 
 func main() {
 	exitCode := 0
@@ -381,6 +394,9 @@ func startQuickCaptureGPIOWatcher(cfg agent.Config, trigger quickCaptureTrigger,
 }
 
 func wakeupGPIOPinsLabel() string {
+	if len(wakeupGPIOPins) == 0 {
+		return "no legacy GPIO inputs on this board"
+	}
 	return "GPIO 33/GPIO 32"
 }
 

@@ -401,7 +401,7 @@ else
     login_status=$?
 fi
 [ "${login_status}" -eq 1 ] || fail "unknown ttyd login account returned ${login_status}"
-[ "${login_output}" = 'login: Invalid login name' ] \
+[ "${login_output%$'\r'}" = 'login: Invalid login name' ] \
     || fail "unexpected unknown-account output: ${login_output}"
 sed -n '1p' "${getent_args}" | grep -Fxq 'passwd'
 sed -n '2p' "${getent_args}" | grep -Fxq 'missing$'

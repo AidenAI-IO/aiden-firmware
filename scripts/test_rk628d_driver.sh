@@ -54,16 +54,16 @@ require_pattern 'rk628: rk628@50' "$DTS" \
 reject_pattern 'tc358743' "$DTS" \
     "Aiden RK628F hardware must not retain the legacy TC358743 node"
 require_pattern 'clock-frequency = <100000>;' "$DTS" \
-    "RK628F I2C3 must run at the validated 100 kHz rate"
-require_pattern 'pinctrl-0 = <&i2c3m1_xfer>;' "$DTS" \
-    "RK628F must use the Aiden I2C3 M1 pin group"
-require_pattern 'reset-gpios = <&gpio1 RK_PB0 GPIO_ACTIVE_LOW>;' "$DTS" \
-    "RK628F reset must use Aiden GPIO1_B0"
+    "RK628F I2C4 must run at the validated 100 kHz rate"
+require_pattern 'pinctrl-0 = <&i2c4m1_xfer>;' "$DTS" \
+    "RK628F must use the Aiden I2C4 M1 pin group"
+require_pattern 'reset-gpios = <&gpio1 RK_PA1 GPIO_ACTIVE_LOW>;' "$DTS" \
+    "RK628F reset must use Aiden GPIO1_A1"
 require_pattern 'interrupts = <RK_PB1 IRQ_TYPE_LEVEL_HIGH>;' "$DTS" \
     "RK628F interrupt must use Aiden GPIO1_B1"
 require_pattern 'rk628_reset_pin: rk628-reset-pin' "$DTS" \
     "RK628 reset must have a dedicated pinctrl group"
-require_pattern '<1 RK_PB0 RK_FUNC_GPIO &pcfg_pull_none>' "$DTS" \
+require_pattern '<1 RK_PA1 RK_FUNC_GPIO &pcfg_pull_none>' "$DTS" \
     "RK628 reset must be push-pull without an internal pull-up"
 require_pattern '<1 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>' "$DTS" \
     "RK628 interrupt must retain its Aiden GPIO pull-up"

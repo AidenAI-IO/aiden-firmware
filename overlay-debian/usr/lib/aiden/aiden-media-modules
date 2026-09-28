@@ -32,10 +32,9 @@ for sensor in imx415 os04a10 sc4336 sc3336 sc530ai gc2053 sc200ai \
         rmmod "${sensor}" 2>/dev/null || true
     fi
 done
-[ ! -w /sys/module/video_rkcif/parameters/clr_unready_dev ] || \
-    echo 1 >/sys/module/video_rkcif/parameters/clr_unready_dev
-[ ! -w /sys/module/video_rkisp/parameters/clr_unready_dev ] || \
-    echo 1 >/sys/module/video_rkisp/parameters/clr_unready_dev
+# Keep async notifiers intact while the HDMI bridge is absent or probing.
+# clr_unready_dev forces completion with missing endpoints and can Oops in
+# vendor CIF kernels. Normal V4L2 async binding completes the graph itself.
 
 insert_if_present rga3.ko
 insert_if_present mpp_vcodec.ko
