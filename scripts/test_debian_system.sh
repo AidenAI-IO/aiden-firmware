@@ -130,10 +130,13 @@ grep -Eq '^[[:space:]]*debootstrap \\' \
 for package in \
     systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 iputils-arping \
     wpasupplicant bluez systemd-resolved systemd-timesyncd dnsmasq-base \
-    e2fsprogs v4l-utils libdrm2 python3 python3-pip; do
+    e2fsprogs util-linux-extra v4l-utils libdrm2 python3 python3-pip; do
     grep -qx "${package}" "${SYSTEM_DIR}/packages.list" \
         || fail "production package list is missing ${package}"
 done
+grep -Fq 'test -x "${ROOTFS_MOUNT}/usr/sbin/hwclock"' \
+    "${SYSTEM_DIR}/container-audit-images.sh" \
+    || fail "rootfs image audit does not enforce the hwclock runtime contract"
 if grep -Eq '^(net-tools|dhcpcd|dhcpcd-base|isc-dhcp-client|flash-kernel|initramfs-tools)$' \
     "${SYSTEM_DIR}/packages.list"; then
     fail "banned package is present in production package list"

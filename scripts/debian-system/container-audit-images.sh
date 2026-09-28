@@ -99,7 +99,7 @@ audit_packages() {
     for package in \
         systemd-sysv udev dbus kmod openssh-server sudo adb iproute2 \
         iputils-arping wpasupplicant bluez systemd-resolved \
-        systemd-timesyncd dnsmasq-base e2fsprogs v4l-utils libdrm2; do
+        systemd-timesyncd dnsmasq-base e2fsprogs util-linux-extra v4l-utils libdrm2; do
         awk -F '\t' -v package="${package}" \
             'NR > 1 && ($1 == package || $1 == package ":armhf") {found=1} END {exit !found}' \
             "${OUTPUT_DIR}/packages.txt" \
@@ -164,6 +164,7 @@ audit_rootfs() {
         || fail "rootfs ownership or mode is invalid"
     test -x "${ROOTFS_MOUNT}/lib/systemd/systemd" || fail "systemd PID 1 is missing"
     test -x "${ROOTFS_MOUNT}/usr/sbin/sshd" || fail "sshd is missing"
+    test -x "${ROOTFS_MOUNT}/usr/sbin/hwclock" || fail "hwclock is missing"
     grep -qx 'aiden:x:1000:1000::/home/aiden:/bin/bash' \
         "${ROOTFS_MOUNT}/etc/passwd" || fail "aiden login user is missing"
     grep -qx 'aiden:x:1000:' "${ROOTFS_MOUNT}/etc/group" \
