@@ -98,7 +98,7 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 		return nil, false, nil
 	}
 	messageList, sourceVersion := session.MessageSnapshot()
-	tokensBefore := estimateMessageListTokenUsage(messageList)
+	tokensBefore := session.TokenCount()
 	c.lastCompactionStats = CompactionStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 
 	HeadN := c.ProtectRule.HeadN
@@ -190,7 +190,7 @@ func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targe
 		return nil, false, nil
 	}
 	messageList, sourceVersion := session.MessageSnapshot()
-	tokensBefore := estimateMessageListTokenUsage(messageList)
+	tokensBefore := session.TokenCount()
 	c.lastPruneStats = HistoricalPruneStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 	if targetTokens <= 0 {
 		return nil, false, nil
@@ -216,6 +216,7 @@ func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targe
 		c.lastPruneStats.HistoricalToolResultsPruned == 0 &&
 		c.lastPruneStats.CurrentTurnStatesDropped == 0 &&
 		c.lastPruneStats.CurrentTurnToolExchangesPruned == 0 {
+		c.lastPruneStats.TokensAfter = tokensBefore
 		return nil, false, nil
 	}
 	return newContextRevision(session, messageList, sourceVersion)

@@ -89,7 +89,7 @@ type Runtime struct {
 	telemetrySessionID      string
 	runGate                 chan struct{}
 	preemptMu               sync.Mutex
-	activeCancel            context.CancelFunc
+	activeCancel            context.CancelCauseFunc
 	preemptHooks            []func()
 	lastPreemptTime         time.Time
 	userContextResetMu      sync.Mutex
@@ -807,7 +807,7 @@ func (r *Runtime) Preempt() {
 	r.preemptMu.Lock()
 	defer r.preemptMu.Unlock()
 	if r.activeCancel != nil {
-		r.activeCancel()
+		r.activeCancel(errRunPreempted)
 		r.lastPreemptTime = time.Now()
 	}
 	for i, hook := range r.preemptHooks {
@@ -932,7 +932,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	// Register this run's cancel so future callers can preempt us.
-	runCtx, runCancel := context.WithCancel(ctx)
+	runCtx, runCancel := context.WithCancelCause(ctx)
 	if req.UserActionHandler != nil {
 		runCtx = WithUserActionHandler(runCtx, req.UserActionHandler)
 	}
@@ -943,7 +943,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		r.preemptMu.Lock()
 		r.activeCancel = nil
 		r.preemptMu.Unlock()
-		runCancel()
+		runCancel(nil)
 	}()
 
 	// Check if we were preempted while waiting for runGate.
@@ -1160,6 +1160,15 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		steerRecorder = tracker
 	}
 
+	if recoveredManager, err := recoverPendingBackendRunManager(agentpath.ContextManagerSessionFolder(cfg.ConfigDir), r.contextManager); err != nil {
+		return RunResult{}, err
+	} else if recoveredManager != nil {
+		if recoveredManager != r.contextManager {
+			recoveredManager.AddAppendMessageHook(r.getStateHook())
+		}
+		r.contextManager = recoveredManager
+	}
+
 	// Configuration changes rotate at the next task boundary, preserving the
 	// complete old transcript and provider-specific continuation metadata.
 	// setup context manager if not initialized
@@ -1196,6 +1205,13 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
+	notices, err := startRunNotices(func() *contextmanager.ContextManager { return r.contextManager }, runID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	// Covers preparation failures before AgentLoop starts as well as panics.
+	defer notices.finishOnReturn(ctx, &runErr)
+
 	// The compactor runs on the run's usage-tracking model so its model calls are
 	// counted and traced as part of the episode rather than disappearing from the
 	// run's token accounting.
@@ -1215,8 +1231,14 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	compactionTrigger, compactionEnabled := conversationCompactionTrigger(usableInputBudget, cfg.ContextCompactionThresholdOrDefault())
 	contextBudgetOptions := chains.GetLLMCallOptions(callOptions...)
 	contextBudgetOptions = append(contextBudgetOptions, llms.WithTools((&FunctionAgent{Tools: profile.Tools}).toolsAsLLM()))
+	var contextBudgetCallOptions llms.CallOptions
+	for _, option := range contextBudgetOptions {
+		if option != nil {
+			option(&contextBudgetCallOptions)
+		}
+	}
 	tokenUsage := estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
-	messageTokenUsage := tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
+	messageTokenUsage := activeMessageTokens(r.contextManager, contextBudgetCallOptions)
 
 	// Historical state and tool-result pruning is deterministic and has its own
 	// configurable trigger. It is intentionally independent from conversation
@@ -1242,7 +1264,6 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			if err = r.contextManager.Activate(newManager); err != nil {
 				return RunResult{}, err
 			}
-			messageTokenUsage = tokencounter.EstimateMessagesTokens(r.contextManager.CloneMessageList())
 			tokenUsage = estimateActivePromptTokens(r.contextManager, contextBudgetOptions)
 		}
 	}
@@ -1271,6 +1292,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	agentLoop := NewAgentLoop(m, profile, maxIterations, executorHandler, episodeRecorder, cfg.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop.notices = notices
 	agentLoop.ScreenState = r.screenState
 	agentLoop.SteerRecorder = steerRecorder
 	agentLoop.ToolResultObserver = newScreenToolResultObserver(r.screenState)
@@ -1284,7 +1306,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if currentManager == nil {
 			return nil, false, nil
 		}
-		messageTokens := tokencounter.EstimateMessagesTokens(currentManager.CloneMessageList())
+		messageTokens := activeMessageTokens(currentManager, options)
 		toolSchemaTokens := tokencounter.EstimateToolSchemaTokens(options)
 		targetTokens := 0
 		reason := ""
@@ -1293,7 +1315,7 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 			targetTokens = pruneTarget
 			reason = "active_turn_threshold"
 		}
-		if usableInputBudget > 0 && messageTokens+toolSchemaTokens > usableInputBudget {
+		if usableInputBudget > 0 && activePromptTokens(currentManager, options) > usableInputBudget {
 			hardBudgetExceeded = true
 			hardTarget := max(1, usableInputBudget-toolSchemaTokens)
 			// The emergency pass may break recent-exchange protection, so only
@@ -1329,8 +1351,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		var budgetErr error
 		if pruneErr == nil && hardBudgetExceeded {
-			afterMessageTokens := tokencounter.EstimateMessagesTokens(activeManager.CloneMessageList())
-			if afterMessageTokens+toolSchemaTokens > usableInputBudget {
+			afterMessageTokens := activeMessageTokens(activeManager, options)
+			if activePromptTokens(activeManager, options) > usableInputBudget {
 				budgetErr = fmt.Errorf("context remains over usable input budget after pruning: messageTokens=%d toolSchemaTokens=%d usableInputBudget=%d",
 					afterMessageTokens, toolSchemaTokens, usableInputBudget)
 			}
@@ -1365,8 +1387,8 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 				activeManager = compactedManager
 				changed = true
 			}
-			afterMessageTokens := tokencounter.EstimateMessagesTokens(activeManager.CloneMessageList())
-			if afterMessageTokens+toolSchemaTokens > usableInputBudget {
+			afterMessageTokens := activeMessageTokens(activeManager, options)
+			if activePromptTokens(activeManager, options) > usableInputBudget {
 				return nil, false, fmt.Errorf("context remains over usable input budget after pruning and compaction: messageTokens=%d toolSchemaTokens=%d usableInputBudget=%d",
 					afterMessageTokens, toolSchemaTokens, usableInputBudget)
 			}
@@ -1427,20 +1449,23 @@ func (r *Runtime) run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
+	// If the agent couldn't parse the LLM output format, extract the raw
+	// text and return it as the response instead of failing.
+	if errors.Is(err, agents.ErrUnableToParseOutput) {
+		raw := err.Error()
+		const prefix = "unable to parse agent output: "
+		if idx := strings.Index(raw, prefix); idx >= 0 {
+			output = strings.TrimSpace(raw[idx+len(prefix):])
+			err = nil
+		}
+	}
+	// End execution tracking before session bookkeeping and TTS. Canceling
+	// playback after a completed loop must not mark its task interrupted.
+	if noticeErr := notices.finish(ctx, err); noticeErr != nil {
+		err = errors.Join(err, noticeErr)
+	}
 	if err != nil {
-		// If the agent couldn't parse the LLM output format, extract the raw
-		// text and return it as the response instead of failing.
-		if errors.Is(err, agents.ErrUnableToParseOutput) {
-			raw := err.Error()
-			const prefix = "unable to parse agent output: "
-			if idx := strings.Index(raw, prefix); idx >= 0 {
-				output = strings.TrimSpace(raw[idx+len(prefix):])
-				err = nil
-			}
-		}
-		if err != nil {
-			return RunResult{}, err
-		}
+		return RunResult{}, err
 	}
 
 	output = strings.TrimSpace(output)

@@ -7,6 +7,32 @@ import (
 	"testing"
 )
 
+func TestTokenCountUsesLatestUsageThenEstimatesAppends(t *testing.T) {
+	first := messages.Message{Role: messages.MessageRoleAssistant, Usage: &messages.Usage{InputTokens: 800, OutputTokens: 20, TotalTokens: 820}}
+	s := New("tokens", "", []messages.Message{first})
+	if got := s.TokenCount(); got != 820 || !s.HasTokenUsage() {
+		t.Fatalf("initial occupancy = %d, usage=%v; want 820, true", got, s.HasTokenUsage())
+	}
+	if err := s.AppendMessages([]messages.Message{{Role: messages.MessageRoleUser, Content: "1234"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.TokenCount(); got != 821 || !s.HasTokenUsage() {
+		t.Fatalf("occupancy after append = %d, usage=%v; want 821, true", got, s.HasTokenUsage())
+	}
+	latest := messages.Message{Role: messages.MessageRoleAssistant, Usage: &messages.Usage{InputTokens: 900, OutputTokens: 30, TotalTokens: 930}}
+	if err := s.AppendMessages([]messages.Message{latest}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.TokenCount(); got != 930 {
+		t.Fatalf("latest usage was added rather than replacing baseline: %d", got)
+	}
+	retained := s.CloneMessageList()
+	s = NewWithTokenPersistence("revision", "tokens", retained, nil, nil, nil, len(retained), nil)
+	if s.HasTokenUsage() || s.TokenCount() == 930 {
+		t.Fatalf("invalidated usage baseline persisted: count=%d usage=%v", s.TokenCount(), s.HasTokenUsage())
+	}
+}
+
 func TestNewAndCloneMessageListOwnMessageData(t *testing.T) {
 	input := []messages.Message{{
 		Role:    messages.MessageRoleToolResult,
