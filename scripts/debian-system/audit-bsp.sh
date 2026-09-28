@@ -21,6 +21,7 @@ readonly DUMPIMAGE=${SDK_DIR}/sysdrv/source/uboot/u-boot/tools/dumpimage
 readonly KERNEL_IMAGE=${SDK_DIR}/sysdrv/source/objs_kernel/arch/arm/boot/zImage
 readonly KERNEL_CONFIG=${SDK_DIR}/sysdrv/source/objs_kernel/.config
 readonly BSP_DTB=${SDK_DIR}/output/out/sysdrv_out/board_uclibc_rv1106/rv1106g-aiden-custom.dtb
+readonly EXPECTED_MODEL='Aiden SCH v1'
 readonly PARTITION_LAYOUT='32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)'
 readonly MISC_METADATA_HEX=00414230010000000f00010000000000000000000000000000000000671e21a4
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
@@ -110,7 +111,8 @@ audit_boot() {
         model=$(fdtget -t s "${fdt}" / model)
         serial=$(fdtget -t s "${fdt}" /aliases serial1)
         status=$(fdtget -t s "${fdt}" /serial@ff4b0000 status)
-        [ "${model}" = 'Luckfox Pico Zero' ] || fail "boot_${slot}.img has the wrong model"
+        [ "${model}" = "${EXPECTED_MODEL}" ] \
+            || fail "boot_${slot}.img has the wrong model: ${model}"
         [ "${serial}" = /serial@ff4b0000 ] || fail "boot_${slot}.img has the wrong serial alias"
         [ "${status}" = okay ] || fail "boot_${slot}.img disables the recovery serial port"
         grep -qw "blkdevparts=mmcblk0:${PARTITION_LAYOUT}" <<<"${bootargs}" \

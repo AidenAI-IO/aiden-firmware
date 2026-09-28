@@ -308,6 +308,12 @@ grep -Fq './build.sh abimages' "${SYSTEM_DIR}/build.sh"
 grep -Fq 'canonicalize-bsp.py' "${SYSTEM_DIR}/build.sh"
 grep -Fq 'audit-bsp.sh' "${SYSTEM_DIR}/build.sh"
 grep -Fq 'factory A/B metadata is invalid' "${SYSTEM_DIR}/audit-bsp.sh"
+grep -Fq "readonly EXPECTED_MODEL='Aiden SCH v1'" \
+    "${SYSTEM_DIR}/audit-bsp.sh" \
+    || fail "BSP audit does not require the Aiden SCH v1 production model"
+grep -Eq '^[[:space:]]*model = "Aiden SCH v1";$' \
+    "${sdk_dir}/sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-aiden-custom.dts" \
+    || fail "production DTS does not identify the Aiden SCH v1 board"
 grep -Fq 'boot_${slot}.img contains multiple root arguments' \
     "${SYSTEM_DIR}/audit-bsp.sh"
 grep -Fq 'bsp-artifacts.sha256' "${SYSTEM_DIR}/audit-bsp.sh"
