@@ -232,6 +232,23 @@ grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fqx 'AIDEN_WIFI_HE=0' "${OVERLAY}/etc/aiden_boot.conf"
+grep -Fqx 'After=aiden-wifi-driver.service dev-ttyS0.device' \
+    "${UNIT_DIR}/aiden-bluetooth-attach.service" \
+    || fail "Bluetooth attach service does not wait for the Aiden UART0 device"
+grep -Fqx 'ConditionPathExists=/dev/ttyS0' \
+    "${UNIT_DIR}/aiden-bluetooth-attach.service" \
+    || fail "Bluetooth attach service does not target the Aiden UART0 device"
+grep -Fqx 'ExecStart=/usr/bin/hciattach -n -s 1500000 /dev/ttyS0 any 1500000 flow nosleep' \
+    "${UNIT_DIR}/aiden-bluetooth-attach.service" \
+    || fail "Bluetooth attach command does not use the Aiden UART0 transport"
+grep -Fq '[ -c /dev/ttyS0 ]' \
+    "${OVERLAY}/usr/lib/aiden/aiden-bluetooth-prepare" \
+    || fail "Bluetooth preparation does not validate the Aiden UART0 device"
+if grep -Rq '/dev/ttyS1' \
+    "${UNIT_DIR}/aiden-bluetooth-attach.service" \
+    "${OVERLAY}/usr/lib/aiden/aiden-bluetooth-prepare"; then
+    fail "Bluetooth runtime still targets the legacy Pico UART1 transport"
+fi
 grep -Fqx 'Wants=wpa_supplicant@wlan0.service' "${UNIT_DIR}/aiden-wlan-guard.service"
 if grep -Eq '^Requires=.*wpa_supplicant@wlan0' "${UNIT_DIR}/aiden-wlan-guard.service"; then
     fail "Wi-Fi guard must survive restarting supplicant during recovery"

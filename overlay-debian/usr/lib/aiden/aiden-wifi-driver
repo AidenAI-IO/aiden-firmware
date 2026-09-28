@@ -21,7 +21,7 @@ insert_if_present cfg80211.ko
 insert_if_present aic8800_bsp.ko aic_fw_path=/oem/usr/ko/aic8800dc_fw
 sleep 1
 # Preserve the Buildroot workaround from 2b08d9a9 (#177), which the Debian
-# loader initially omitted: AIC8800DC can associate and acquire DHCP over HE
+# loader initially omitted: AIC8800 variants can associate and acquire DHCP over HE
 # but subsequently lose IPv4 connectivity with some APs. Keep HT/VHT enabled.
 # This parameter takes effect at module load.
 insert_if_present aic8800_fdrv.ko he_on="${he_on}"

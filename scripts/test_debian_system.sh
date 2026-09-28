@@ -144,8 +144,14 @@ grep -Fq '1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)' \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
 grep -Fq 'RK_UBOOT_DEFCONFIG_FRAGMENT="rk-emmc.config rv1106-ab.config aiden-rv1106-rockusb.config"' \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
-grep -Fq 'RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config aiden-rk628.config debian-system.config"' \
+grep -Fq 'RK_KERNEL_DEFCONFIG_FRAGMENT="aiden-zram.config rv1106-bt.config rv1106-sdiowifi.config aiden-rk628.config debian-system.config"' \
     "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
+grep -Fq 'RK_ENABLE_WIFI_CHIP=AIC8800D80' \
+    "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk" \
+    || fail "production board config does not select the AIC8800D80"
+grep -Fq 'RK_CAMERA_SENSOR_IQFILES=""' \
+    "${SYSTEM_DIR}/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk" \
+    || fail "bridge-only production board unexpectedly packages camera IQ files"
 for symbol in CONFIG_MEDIA_CONTROLLER CONFIG_VIDEO_V4L2_SUBDEV_API \
     CONFIG_VIDEO_RK628_CSI CONFIG_VIDEO_TC358743 \
     CONFIG_VIDEO_TC358743_CEC; do
@@ -166,6 +172,15 @@ fi
 # checked-out submodule still carries them so a stale or rewritten SDK
 # checkout fails here instead of an hour into the BSP build.
 sdk_dir=${REPO_ROOT}/pico-sdk
+for sdk_test in \
+    test_ab_boot_config.py \
+    test_aiden_custom_dts.py \
+    test_hdmi_bridge_config.py \
+    test_mk_ab_misc.py; do
+    PYTHONDONTWRITEBYTECODE=1 \
+        python3 "${sdk_dir}/project/scripts/${sdk_test}" \
+        || fail "pinned SDK contract test failed: ${sdk_test}"
+done
 grep -Fq 'export RK_JOBS="${RK_JOBS:-$(getconf _NPROCESSORS_ONLN)}"' \
     "${sdk_dir}/project/build.sh" \
     || fail "pico-sdk no longer defaults RK_JOBS to all host CPUs"
@@ -314,6 +329,32 @@ grep -Fq "readonly EXPECTED_MODEL='Aiden SCH v1'" \
 grep -Eq '^[[:space:]]*model = "Aiden SCH v1";$' \
     "${sdk_dir}/sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-aiden-custom.dts" \
     || fail "production DTS does not identify the Aiden SCH v1 board"
+for serial_contract in \
+    '0:/serial@ff4a0000:okay' \
+    '1:/serial@ff4b0000:disabled' \
+    '2:/serial@ff4c0000:okay' \
+    '3:/serial@ff4d0000:okay'; do
+    grep -Fq "'${serial_contract}'" "${SYSTEM_DIR}/audit-bsp.sh" \
+        || fail "BSP audit is missing production UART contract ${serial_contract}"
+done
+grep -Fq 'fiq_serial_id=$(fdtget -t u "${fdt}" /fiq-debugger rockchip,serial-id)' \
+    "${SYSTEM_DIR}/audit-bsp.sh" \
+    || fail "BSP audit does not verify the active FIQ recovery console"
+if grep -Fq "grep -qw 'rootwait'" "${SYSTEM_DIR}/audit-bsp.sh"; then
+    fail "BSP audit requires rootwait even though the slot FIT builder does not emit it"
+fi
+for firmware in \
+    aic_userconfig_8800d80.txt \
+    fmacfw_8800d80_u02.bin \
+    fw_adid_8800d80_u02.bin \
+    fw_patch_8800d80_u02.bin \
+    fw_patch_table_8800d80_u02.bin \
+    lmacfw_rf_8800d80_u02.bin; do
+    grep -Fq "${firmware}" "${SYSTEM_DIR}/audit-bsp.sh" \
+        || fail "BSP audit does not require AIC8800D80 firmware ${firmware}"
+    grep -Fq "${firmware}" "${SYSTEM_DIR}/container-audit-images.sh" \
+        || fail "final image audit does not require AIC8800D80 firmware ${firmware}"
+done
 grep -Fq 'boot_${slot}.img contains multiple root arguments' \
     "${SYSTEM_DIR}/audit-bsp.sh"
 grep -Fq 'bsp-artifacts.sha256' "${SYSTEM_DIR}/audit-bsp.sh"

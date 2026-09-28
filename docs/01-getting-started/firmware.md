@@ -18,10 +18,12 @@ When flashing the full firmware, you typically use `update.img`.
 
 This project's firmware is built on `pico-sdk` and includes the following customizations:
 
-- Wi-Fi uses the external antenna by default;
-- Kernel builds both the Rockchip RK628 and Toshiba TC358743 HDMI-to-CSI V4L2 drivers;
-- DTS declares the Firefly RK628D board on 100 kHz I2C4 at `0x50`, with GPIO3_C5 push-pull/no-pull reset and four continuous-clock CSI lanes, plus the legacy TC358743 board at `0x0f` with two non-continuous-clock lanes. Only the bridge that responds on I2C registers a V4L2 subdevice;
-- Bridge-aware HDMI timing: RK628D keeps its 1080p60 EDID, while TC358743 automatically advertises 1080p30 to fit its two-lane CSI link;
+- Wi-Fi and Bluetooth use the AIC8800D80 SDIO/UART combo module;
+- Kernel builds the Rockchip RK628 HDMI-to-CSI V4L2 driver and disables the
+  unpopulated Toshiba TC358743 path;
+- The Aiden SCH v1 DTS declares RK628F on 100 kHz I2C3 at `0x50`, with
+  GPIO1_B0 reset, GPIO1_B1 interrupt, and four continuous-clock CSI lanes;
+- RK628F keeps its driver-provided 1080p60 EDID;
 - USB-C port is configured as a composite gadget on boot: keyboard HID,
   pointer/touch HID, and CDC ECM networking (`usb0`, default `192.168.42.1`);
 - Builds a Debian 13 rootfs from `overlay-debian/` and a separate OEM image from

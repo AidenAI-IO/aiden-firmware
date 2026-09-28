@@ -9,7 +9,7 @@ BT1120="$KERNEL_DIR/drivers/media/i2c/rk628/rk628_bt1120_v4l2.c"
 HDMIRX="$KERNEL_DIR/drivers/media/i2c/rk628/rk628_hdmirx.c"
 HDMIRX_HEADER="$KERNEL_DIR/drivers/media/i2c/rk628/rk628_hdmirx.h"
 KERNEL_FRAGMENT="$KERNEL_DIR/arch/arm/configs/aiden-rk628.config"
-DTS="$KERNEL_DIR/arch/arm/boot/dts/rv1106-luckfox-pico-zero-ipc.dtsi"
+DTS="$KERNEL_DIR/arch/arm/boot/dts/rv1106g-aiden-custom.dts"
 BOARD_CONFIG="$ROOT_DIR/scripts/debian-system/BoardConfig-EMMC-Debian13-RV1106_Luckfox_Pico_Zero-IPC.mk"
 
 require_pattern() {
@@ -48,35 +48,31 @@ require_pattern 'RK_KERNEL_DEFCONFIG_FRAGMENT=.*aiden-rk628\.config' "$BOARD_CON
     "the board build must apply the HDMI bridge kernel fragment"
 
 require_pattern 'compatible = "rockchip,rk628-csi-v4l2";' "$DTS" \
-    "Pico Zero DTS must bind the RK628 CSI driver"
-require_pattern 'rk628-csi@50' "$DTS" \
-    "Pico Zero DTS must use the strapped RK628 address 0x50"
-require_pattern 'compatible = "toshiba,tc358743";' "$DTS" \
-    "the dual-bridge DTS must retain the TC358743 node"
-require_pattern 'tc358743@f' "$DTS" \
-    "the dual-bridge DTS must retain TC358743 address 0x0f"
+    "Aiden DTS must bind the RK628 CSI driver"
+require_pattern 'rk628: rk628@50' "$DTS" \
+    "Aiden DTS must use the strapped RK628 address 0x50"
+reject_pattern 'tc358743' "$DTS" \
+    "Aiden RK628F hardware must not retain the legacy TC358743 node"
 require_pattern 'clock-frequency = <100000>;' "$DTS" \
-    "shared HDMI bridge I2C must run at the validated 100 kHz rate"
-require_pattern 'reset-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_LOW>;' "$DTS" \
-    "RK628 reset must use Pico Zero CSI connector pin 17"
+    "RK628F I2C3 must run at the validated 100 kHz rate"
+require_pattern 'pinctrl-0 = <&i2c3m1_xfer>;' "$DTS" \
+    "RK628F must use the Aiden I2C3 M1 pin group"
+require_pattern 'reset-gpios = <&gpio1 RK_PB0 GPIO_ACTIVE_LOW>;' "$DTS" \
+    "RK628F reset must use Aiden GPIO1_B0"
+require_pattern 'interrupts = <RK_PB1 IRQ_TYPE_LEVEL_HIGH>;' "$DTS" \
+    "RK628F interrupt must use Aiden GPIO1_B1"
 require_pattern 'rk628_reset_pin: rk628-reset-pin' "$DTS" \
     "RK628 reset must have a dedicated pinctrl group"
-require_pattern '<3 RK_PC5 RK_FUNC_GPIO &pcfg_pull_none>' "$DTS" \
+require_pattern '<1 RK_PB0 RK_FUNC_GPIO &pcfg_pull_none>' "$DTS" \
     "RK628 reset must be push-pull without an internal pull-up"
-reject_pattern 'reset-gpios = <&gpio1 RK_PC2' "$DTS" \
-    "RK628 reset must not use the unrelated GPIO1_C2 pin"
+require_pattern '<1 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>' "$DTS" \
+    "RK628 interrupt must retain its Aiden GPIO pull-up"
 
-rk628_node="$(sed -n '/rk628_csi: rk628-csi@50 {/,/^[[:space:]]*};/p' "$DTS")"
-tc358743_node="$(sed -n '/tc358743_csi: tc358743@f {/,/^[[:space:]]*};/p' "$DTS")"
+rk628_node="$(sed -n '/rk628: rk628@50 {/,/^[[:space:]]*};/p' "$DTS")"
 rk628_input="$(sed -n '/rk628_csi_in: endpoint@0 {/,/^[[:space:]]*};/p' "$DTS")"
-tc358743_input="$(sed -n '/tc358743_csi_in: endpoint@1 {/,/^[[:space:]]*};/p' "$DTS")"
 
 if ! grep -q '^[[:space:]]*reg = <0x50>;$' <<< "$rk628_node"; then
     echo "FAIL: RK628 node must use I2C register address 0x50" >&2
-    exit 1
-fi
-if ! grep -q '^[[:space:]]*reg = <0x0f>;$' <<< "$tc358743_node"; then
-    echo "FAIL: TC358743 node must use I2C register address 0x0f" >&2
     exit 1
 fi
 if ! grep -q 'continues-clk;' <<< "$rk628_node" || \
@@ -85,25 +81,15 @@ if ! grep -q 'continues-clk;' <<< "$rk628_node" || \
     echo "FAIL: RK628 must retain its validated four-lane continuous-clock CSI contract" >&2
     exit 1
 fi
-if ! grep -q 'clock-noncontinuous;' <<< "$tc358743_node" || \
-        ! grep -q 'data-lanes = <1 2>;' <<< "$tc358743_node" || \
-        ! grep -q 'data-lanes = <1 2>;' <<< "$tc358743_input"; then
-    echo "FAIL: TC358743 must retain its two-lane non-continuous-clock CSI contract" >&2
-    exit 1
-fi
 if grep -qE 'clocks = <&cru MCLK_REF_MIPI0>|clock-names = "soc_24M"|GPIO_OPEN_DRAIN' <<< "$rk628_node"; then
-    echo "FAIL: Firefly RK628D must use its onboard clock and push-pull reset" >&2
+    echo "FAIL: Aiden RK628F must use its onboard clock and push-pull reset" >&2
     exit 1
 fi
 
 require_pattern 'remote-endpoint = <&rk628_csi_out>;' "$DTS" \
     "CSI D-PHY must expose the RK628 endpoint"
-require_pattern 'remote-endpoint = <&tc358743_csi_out>;' "$DTS" \
-    "CSI D-PHY must expose the TC358743 endpoint"
 require_pattern 'remote-endpoint = <&rk628_csi_in>;' "$DTS" \
     "RK628 output must link back to the CSI D-PHY"
-require_pattern 'remote-endpoint = <&tc358743_csi_in>;' "$DTS" \
-    "TC358743 output must link back to the CSI D-PHY"
 
 require_pattern 'case RKMODULE_GET_HDMI_MODE:' "$DRIVER" \
     "RK628 driver must identify itself as an HDMI input"

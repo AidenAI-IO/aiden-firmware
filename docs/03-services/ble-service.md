@@ -35,7 +35,7 @@ aiden-wifi-driver.service -> aiden-bluetooth-attach.service -> bluetooth.service
 ```
 
 `aiden-bluetooth-attach.service` loads the AES/CMAC crypto required by LE SMP, then attaches the
-AIC8800 controller on `/dev/ttyS1` at 1.5 Mbaud without powering it through the
+AIC8800D80 controller on `/dev/ttyS0` at 1.5 Mbaud without powering it through the
 legacy `HCIDEVUP` ioctl. Debian `bluetooth.service` bind-mounts the BlueZ state directory,
 starts the daemon, and lets BlueZ power `hci0` through the management API. This
 ordering is required for the kernel to register the LE SMP fixed channel used

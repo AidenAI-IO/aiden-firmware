@@ -265,6 +265,12 @@ audit_rootfs() {
     grep -Eq '^After=.*aiden-wifi-proxy\.service' \
         "${ROOTFS_MOUNT}/etc/systemd/system/aiden-wifi-proxy-agent-restart.service" \
         || fail "Wi-Fi proxy restart service is missing proxy ordering"
+    cmp "${ROOTFS_MOUNT}/etc/systemd/system/aiden-bluetooth-attach.service" \
+        "${REPO_ROOT}/overlay-debian/etc/systemd/system/aiden-bluetooth-attach.service" \
+        || fail "Bluetooth attach service differs from the Aiden UART0 source"
+    cmp "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-bluetooth-prepare" \
+        "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-bluetooth-prepare" \
+        || fail "Bluetooth preparation differs from the Aiden UART0 source"
 
     test -L "${ROOTFS_MOUNT}/etc/systemd/system/multi-user.target.wants/aiden.target" \
         || fail "aiden.target is not enabled"
@@ -357,8 +363,19 @@ audit_oem_files() {
         rga3.ko mpp_vcodec.ko rknpu.ko rockit.ko; do
         test -s "${OEM_MOUNT}/usr/ko/${module}" || fail "kernel module is missing: ${module}"
     done
-    test -s "${OEM_MOUNT}/usr/ko/aic8800dc_fw/fmacfw_patch_8800dc_u02.bin" \
-        || fail "AIC8800 firmware is missing"
+    local firmware
+    for firmware in \
+        aic_userconfig_8800d80.txt \
+        fmacfw_8800d80_h_u02.bin \
+        fmacfw_8800d80_u02.bin \
+        fw_adid_8800d80_u02.bin \
+        fw_patch_8800d80_u02.bin \
+        fw_patch_8800d80_u02_ext0.bin \
+        fw_patch_table_8800d80_u02.bin \
+        lmacfw_rf_8800d80_u02.bin; do
+        test -s "${OEM_MOUNT}/usr/ko/aic8800dc_fw/${firmware}" \
+            || fail "AIC8800D80 firmware is missing: ${firmware}"
+    done
 }
 
 audit_elf_closure() {
