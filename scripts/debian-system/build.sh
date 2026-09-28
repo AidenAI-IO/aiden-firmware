@@ -64,6 +64,13 @@ require_command() {
     }
 }
 
+kernel_setting_is_disabled() {
+    local kernel_config=$1
+    local symbol=$2
+
+    ! grep -Eq "^${symbol}=(y|m)$" "${kernel_config}"
+}
+
 validate_epoch() {
     case "${BUILD_EPOCH}" in
         '' | *[!0-9]*)
@@ -229,7 +236,7 @@ run_bsp() {
         }
     done
     for symbol in CONFIG_VIDEO_TC358743 CONFIG_VIDEO_TC358743_CEC; do
-        grep -qx "# ${symbol} is not set" "${kernel_config}" || {
+        kernel_setting_is_disabled "${kernel_config}" "${symbol}" || {
             echo "Production kernel setting must remain disabled: ${symbol}" >&2
             exit 1
         }

@@ -63,6 +63,24 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
     "${SYSTEM_DIR}/generate-spdx.py" \
     "${SYSTEM_DIR}/validate-ota-config.py"
 
+kernel_config_fixture=${TEST_ROOT}/kernel.config
+for disabled_value in '# CONFIG_VIDEO_TC358743_CEC is not set' \
+    'CONFIG_VIDEO_TC358743_CEC=n' ''; do
+    printf '%s\n' "${disabled_value}" >"${kernel_config_fixture}"
+    bash -c 'source "$1"; kernel_setting_is_disabled "$2" CONFIG_VIDEO_TC358743_CEC' \
+        _ "${SYSTEM_DIR}/build.sh" "${kernel_config_fixture}" \
+        || fail "kernel validation rejects a disabled or dependency-omitted setting"
+done
+for enabled_value in y m; do
+    printf 'CONFIG_VIDEO_TC358743_CEC=%s\n' "${enabled_value}" \
+        >"${kernel_config_fixture}"
+    if bash -c \
+        'source "$1"; kernel_setting_is_disabled "$2" CONFIG_VIDEO_TC358743_CEC' \
+        _ "${SYSTEM_DIR}/build.sh" "${kernel_config_fixture}"; then
+        fail "kernel validation accepts CONFIG_VIDEO_TC358743_CEC=${enabled_value}"
+    fi
+done
+
 for script in \
     build.sh audit-bsp.sh canonicalize-bsp.py container-build-rootfs.sh container-assemble-images.sh \
     container-install-ota-config.sh container-audit-images.sh \
