@@ -27,6 +27,12 @@ func run(args []string, out io.Writer) error {
 }
 
 func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConfig)) error {
+	return runWithDependencies(args, out, configure, ota.RunSelfCheck)
+}
+
+// runWithDependencies dispatches OTA commands with an injectable probe runner,
+// so command outcomes can be tested independently of board hardware.
+func runWithDependencies(args []string, out io.Writer, configure func(*ota.UpdaterConfig), selfCheck func(context.Context, ota.SelfCheckConfig) ota.SelfCheckReport) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
 	if (command == "health" || command == "mark-health" || command == "provision-identity" || command == "update" || command == "check-now" || command == "status" || command == "self-check" || command == "rollback" || command == "recover") && len(positional) != 0 {
@@ -47,7 +53,7 @@ func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConf
 
 	switch command {
 	case "self-check":
-		report := ota.RunSelfCheck(ctx, ota.DefaultSelfCheckConfig())
+		report := selfCheck(ctx, ota.DefaultSelfCheckConfig())
 		if err := ota.SaveSelfCheckReport(filepath.Join(config.StateDir, "health", "current.json"), report); err != nil {
 			return err
 		}

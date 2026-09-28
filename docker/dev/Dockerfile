@@ -1,6 +1,20 @@
-FROM golang:1.23-bookworm AS agent-builder
+FROM --platform=linux/amd64 debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS agent-builder
 
-ENV GOTOOLCHAIN=auto
+ARG DEBIAN_FRONTEND=noninteractive
+ARG GO_VERSION=1.26.0
+ARG GO_SHA256=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL --retry 3 --connect-timeout 20 \
+        "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+        -o /tmp/go.tar.gz \
+    && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+ENV PATH=/usr/local/go/bin:${PATH} GOTOOLCHAIN=local
 WORKDIR /build
 
 COPY src/agent/go.mod src/agent/go.sum ./
@@ -9,7 +23,7 @@ COPY src/agent/ ./
 RUN mkdir -p /out \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/agent ./cmd/daemon
 
-FROM debian:bookworm-slim AS ttyd-builder
+FROM --platform=linux/amd64 debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS ttyd-builder
 
 ARG TARGETARCH
 
@@ -41,7 +55,7 @@ RUN apt-get update \
         echo "$sha256  /out/ttyd" | sha256sum -c -; \
         chmod 0755 /out/ttyd
 
-FROM debian:bookworm-slim AS runtime-base
+FROM --platform=linux/amd64 debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS runtime-base
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

@@ -18,14 +18,25 @@ git submodule sync --recursive
 git submodule update --init --recursive
 ```
 
-## Host Test Build
+## Docker Test Build
 
-Build the host-native test targets without Rockchip dependencies:
+The host is only a Docker client. Build and test toolchains run inside the
+pinned `docker/test/Dockerfile` image:
 
 ```bash
-cmake -S . -B build-host -DAIDEN_TESTS=ON
-cmake --build build-host
-ctest --test-dir build-host --output-on-failure
+make check        # short local smoke/profile, Docker-only
+make check-full   # all required suites; same gate as CI
+```
+
+`make check` is for short development iterations; it does not replace the full
+CI check. The suite selection and commands live in
+[`tests/test-manifest.yaml`](../../tests/test-manifest.yaml).
+Full production ARM smoke validation is available after the SDK submodule is
+initialized; the Docker smoke image prepares the pinned OpenCV-Mobile input when
+needed:
+
+```bash
+make check-production
 ```
 
 Full hardware targets depend on Rockchip/Luckfox armhf libraries. Use the Debian
@@ -120,19 +131,20 @@ Do not start a `--arch x86_64` Colima VM for this workflow; keep the native VM a
 ## Makefile Shortcuts
 
 ```bash
-make build        # cmake -S . -B build && cmake --build build
-make clean        # Remove build/
-make test         # Build and run host-native unit tests
-make test-clean   # Remove build-host/
+make build          # Dockerized ARM production smoke build
+make clean          # Remove generated build/
+make check          # Quick Dockerized local feedback
+make check-fast     # Alias for make check
+make check-full     # All required suites, also run by CI
+make test           # Alias for make check-full
+make check-docker   # Docker-backed package contract tests
+make check-production  # Dockerized ARM production smoke test
+make test-clean     # Remove generated build-host/
 ```
 
-`make test` is equivalent to:
-
-```bash
-cmake -S . -B build-host -DAIDEN_TESTS=ON
-cmake --build build-host
-cd build-host && ctest --output-on-failure
-```
+`make check` and `make check-full` both build `docker/test/Dockerfile` and
+execute `tests/test-manifest.yaml`; only their suite profiles differ. No host
+compiler or host language runtime is required. CI always uses the full profile.
 
 ## Main Build Targets
 

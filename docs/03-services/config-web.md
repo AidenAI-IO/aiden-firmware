@@ -110,6 +110,15 @@ and TTS sessions retain their current provider until completion. Prompt/provider
 changes open a new context session at the next task/session boundary and leave
 existing transcript files intact.
 
+The editor shows the persisted configuration even when runtime application
+fails. Provider records and references remain saved; the application status
+reports the error, and **Retry** reapplies the complete saved configuration.
+An earlier failed voice-mode change can therefore also block a later model
+save until the voice dependency is repaired or that saved change is reverted.
+Saving a section preserves unsaved drafts in other fields. Manual TOML edits
+and configuration imports use the same save queue and application status as
+form and provider edits.
+
 USB restart requirements survive Agent-only restarts: the bound USB descriptor
 and `<config-dir>/cache/usb-boot.json` retain the active settings for the current
 Linux boot ID. A real device reboot accepts the saved USB identity and layout.

@@ -1,0 +1,174 @@
+version: 1
+name: aiden-firmware
+
+# This manifest is executed inside docker/test/Dockerfile. "quick" selects
+# short local feedback; the full profile remains the CI gate. Keep commands
+# deterministic and make dependencies explicit: a missing dependency in a
+# selected required suite is a failure, not an implicit skip.
+suites:
+  - name: manifest-runner
+    class: deterministic
+    paths: [tests/run_manifest.py, tests/test_manifest_runner.py, tests/test-manifest.yaml]
+    command: python3 tests/test_manifest_runner.py
+    quick: true
+    dependencies: [python3]
+    required: true
+    timeout_seconds: 60
+
+  - name: contracts
+    class: deterministic
+    paths:
+      - tests/contracts
+      - src/agent/internal/ota/manifest.go
+      - src/frame_service_protocol.cpp
+    command: python3 tests/contracts/validate_fixtures.py
+    quick: true
+    dependencies: [python3]
+    required: true
+    timeout_seconds: 60
+
+  - name: cpp-host
+    class: deterministic
+    paths: [CMakeLists.txt, cmake, src, tests]
+    command: |
+      cmake -S . -B build-docker-host -DAIDEN_TESTS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      cmake --build build-docker-host --parallel "${AIDEN_TEST_JOBS:-2}"
+      ctest --test-dir build-docker-host --output-on-failure
+    quick: true
+    quick_command: |
+      cmake -S . -B build-docker-host -DAIDEN_TESTS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      cmake --build build-docker-host --parallel "${AIDEN_TEST_JOBS:-2}"
+      ctest --test-dir build-docker-host --output-on-failure -R '^aiden_tests$'
+    dependencies: [cmake, c++, ctest]
+    required: true
+    timeout_seconds: 900
+
+  - name: go-static
+    class: deterministic
+    paths: [src/agent]
+    workdir: src/agent
+    command: |
+      test -z "$(gofmt -l .)"
+      go vet ./...
+    quick: true
+    dependencies: [go]
+    required: true
+    timeout_seconds: 600
+
+  - name: go-unit
+    class: deterministic
+    paths: [src/agent]
+    workdir: src/agent
+    command: go test -count=1 -timeout=10m ./...
+    quick: true
+    quick_command: go test -count=1 -timeout=2m -run '^TestShared' ./internal/ota
+    dependencies: [go]
+    required: true
+    timeout_seconds: 900
+
+  - name: web
+    class: deterministic
+    paths: [tests, src/config_web/web, src/agent/internal/agent/web_ui_test]
+    command: |
+      node src/agent/internal/agent/web_ui_test/history_reconciliation.test.js
+      node --test --experimental-vm-modules \
+        tests/*.mjs \
+        tests/contracts/*.test.mjs \
+        src/config_web/web/tests/*.mjs
+    quick: true
+    dependencies: [node]
+    required: true
+    timeout_seconds: 300
+
+  - name: benchmark-python
+    class: deterministic
+    paths: [benchmark]
+    command: cd benchmark && uv run --locked pytest -q tests ../tests/benchmark
+    quick: true
+    quick_command: cd benchmark && uv run --locked pytest -q tests/test_suite.py tests/test_mnk_provider.py
+    dependencies: [uv]
+    required: true
+    timeout_seconds: 1200
+
+  - name: skillopt-python
+    class: deterministic
+    paths: [skillopt]
+    command: cd skillopt && uv run --locked pytest -q
+    quick: true
+    dependencies: [uv]
+    required: true
+    timeout_seconds: 900
+
+  - name: docker-sandbox-contract
+    class: docker
+    paths: [compose.yml, docker, scripts/test_docker_sandbox.sh, tests/benchmark]
+    command: python3 -m unittest tests.benchmark.test_docker_sandbox
+    dependencies: [python3]
+    required: true
+    timeout_seconds: 300
+
+  # This suite is promoted to required only by make check-docker/CI's
+  # Docker-backed job. The normal manifest never receives the host socket.
+  - name: docker-package-contract
+    class: docker
+    paths: [scripts/test_system_config_package.sh, scripts/debian-package, docker/test]
+    command: bash scripts/test_system_config_package.sh
+    dependencies: [bash, docker]
+    requires_docker_socket: true
+    required: false
+    timeout_seconds: 900
+
+  # Run on a disposable Linux CI runner. Host networking lets the test reach
+  # the ports published by its sibling Docker Compose services.
+  - name: docker-sandbox-smoke
+    class: docker
+    paths: [compose.yml, docker/dev, scripts/test_docker_sandbox.sh, scripts/select_docker_web_ports.py]
+    command: |
+      docker compose config --quiet
+      sh scripts/test_docker_sandbox.sh
+    dependencies: [docker, python3, sh, curl]
+    requires_docker_socket: true
+    requires_host_network: true
+    required: false
+    timeout_seconds: 1200
+
+  - name: script-contracts
+    class: deterministic
+    paths: [scripts, .github/workflows, tests]
+    command: |
+      bash scripts/test_github_actions_self_hosted_safety.sh
+      bash scripts/test_debian_only_policy.sh
+      GOPROXY=https://inherited.example RK_JOBS=2 bash scripts/test_debian_apps.sh
+      bash scripts/test_release_ci_scripts.sh
+      bash scripts/test_rootfs_cli_tool_catalog.sh
+      bash scripts/test_clean_rootfs_overlay_staging.sh
+      bash scripts/test_build_rootfs_cli_tools.sh
+      bash scripts/test_stage_rootfs_cli_tools.sh
+      bash scripts/test_compress_release_images.sh
+      bash scripts/test_ota_partition_layout.sh
+      sh scripts/test_ota_device_config.sh
+      bash scripts/test_ota_manifest_generation.sh
+      bash scripts/test_github_release_upload.sh
+      bash scripts/test_debian_apt_cache.sh
+      bash scripts/test_reusable_rootfs_release_asset.sh
+      bash scripts/test_debian_package.sh
+      python3 scripts/test_debian_package_release.py
+      python3 scripts/test_debian_package_lifecycle.py
+      python3 scripts/test_channel_release.py
+      python3 scripts/test_apt_repository.py
+      python3 scripts/check_normalized_coords.py
+      bash scripts/test_check_normalized_coords.sh
+    dependencies: [bash, sh, python3, jq, git, openssl, rg]
+    required: true
+    timeout_seconds: 1200
+
+  - name: production-cross-smoke
+    class: production
+    paths: [CMakeLists.txt, cmake, src, scripts/production_smoke.sh]
+    command: bash scripts/production_smoke.sh
+    dependencies: [bash, cmake, ninja, go, curl, sha256sum, arm-linux-gnueabihf-gcc, readelf]
+    required_inputs:
+      - pico-sdk/project/build.sh
+      - third_party/rknpu2/v2.3.2/lib/librknnmrt.a
+    required: false
+    timeout_seconds: 1800

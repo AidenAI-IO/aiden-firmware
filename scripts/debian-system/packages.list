@@ -4,6 +4,9 @@ systemd-sysv
 udev
 dbus
 kmod
+# Registers logins with logind for shutdown broadcasts and session cleanup.
+# Otherwise ssh.service's KillMode=process leaves sessions until the final kill.
+libpam-systemd
 openssh-server
 sudo
 ca-certificates

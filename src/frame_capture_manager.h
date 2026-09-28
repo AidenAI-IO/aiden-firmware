@@ -77,6 +77,8 @@ private:
     std::thread thread_;
     std::thread jpeg_warmup_thread_;
     std::atomic<bool> jpeg_warmup_running_;
+    uint64_t received_requests_;
+    uint64_t recovery_count_;
     bool have_jpeg_warmup_key_;
     uint32_t jpeg_warmup_width_;
     uint32_t jpeg_warmup_height_;

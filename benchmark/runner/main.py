@@ -90,6 +90,15 @@ def wait_for_agent_clock(
         time.sleep(min(max(0, poll_sec), max(0, deadline - now)))
 
 
+def recover_agent_after_timeout(client: AgentClient, timeout_sec: int = 90) -> bool:
+    """Wait for an Agent to become usable after a task timeout.
+
+    Keep this small compatibility seam separate from task execution so callers
+    and tests can replace the recovery policy without replacing the runner.
+    """
+    return wait_for_agent_ready(client, timeout_sec=timeout_sec)
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="benchmark.runner")
     sub = parser.add_subparsers(dest="cmd", required=True)
