@@ -86,7 +86,12 @@ func (s *Server) loadWiFiRegionState(configCountry string) wifiregion.State {
 	state, err := wifiregion.LoadState(s.options.WiFiRegionStatePath)
 	if err != nil {
 		logging.Warnf("config_web", "wifi_region", "Wi-Fi region state unreadable, continuing without provenance: %v", err)
-		state = wifiregion.EmptyState()
+		// A missing sidecar identifies an older deployment; a corrupt or
+		// unreadable one does not establish that provenance.
+		if country, ok := wifiregion.Normalize(configCountry); ok {
+			return wifiregion.State{Version: wifiregion.StateVersion, Country: country, Source: wifiregion.SourceUnknown}
+		}
+		return wifiregion.EmptyState()
 	}
 	reconciled, changed := wifiregion.ReconcileState(state, configCountry)
 	if changed {
@@ -236,7 +241,7 @@ func (s *Server) handleWiFiRegionUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 	defer s.wifiOpMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(r.Context(), wifiCandidateApplyTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), wifiCandidateApplyTimeout)
 	defer cancel()
 	result := s.applyWiFiRegion(ctx, country)
 	status := http.StatusOK

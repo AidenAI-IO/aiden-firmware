@@ -38,7 +38,10 @@ func (driver *fakeWiFiRegionDriver) Apply(_ context.Context, _ string, country s
 	return nil
 }
 
-func (driver *fakeWiFiRegionDriver) Read(context.Context, string) (string, error) {
+func (driver *fakeWiFiRegionDriver) Read(ctx context.Context, _ string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
 	if driver.staleReads > 0 {
@@ -243,6 +246,25 @@ func TestWiFiRegionStateIsReconciledAgainstTheConfigurationFile(t *testing.T) {
 	}
 }
 
+func TestUnreadableWiFiRegionStateDoesNotBecomeExistingChoice(t *testing.T) {
+	options := testOptions(t)
+	if err := os.WriteFile(options.WiFiRegionStatePath, []byte("{invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := server.loadWiFiRegionState("CN")
+	if state.Country != "CN" || state.Source != wifiregion.SourceUnknown {
+		t.Fatalf("state=%+v, want CN/unknown after a corrupt sidecar", state)
+	}
+	data, err := os.ReadFile(options.WiFiRegionStatePath)
+	if err != nil || string(data) != "{invalid" {
+		t.Fatalf("corrupt sidecar unexpectedly changed: data=%q err=%v", data, err)
+	}
+}
+
 func TestStaleRegionStateCannotAutoApplyBeacon(t *testing.T) {
 	options := testOptions(t)
 	options.WiFiRegionAutoApplyBeacon = true
@@ -289,7 +311,7 @@ func TestConnectionCountryCannotOverrideUserChoice(t *testing.T) {
 	}
 }
 
-func TestRegionUpdateWithoutSavedNetworkAppliesAndPersists(t *testing.T) {
+func TestRegionUpdateAfterClientDisconnectAppliesAndPersists(t *testing.T) {
 	options := testOptions(t)
 	options.WiFiBackend = "systemd-networkd"
 	if err := os.WriteFile(options.WiFiConfigPath, []byte("country=CN\n"), 0o600); err != nil {
@@ -312,9 +334,13 @@ func TestRegionUpdateWithoutSavedNetworkAppliesAndPersists(t *testing.T) {
 	}
 	driver := &fakeWiFiRegionDriver{country: "CN"}
 	server.wifiRegionDriver = driver
-	result := server.applyWiFiRegion(context.Background(), "US")
-	if result["ok"] != true {
-		t.Fatalf("result=%v", result)
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPut, "/api/network/wifi/region", strings.NewReader(`{"country":"US"}`)).WithContext(ctx)
+	cancel()
+	response := httptest.NewRecorder()
+	server.handleWiFiRegionUpdate(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want a completed update", response.Code, response.Body.String())
 	}
 	config, err := loadWiFiConfig(options.WiFiConfigPath)
 	if err != nil || config.Country != "US" || len(config.Networks) != 0 {
