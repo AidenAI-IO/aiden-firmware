@@ -778,6 +778,12 @@
   opacity: 0.55;
 }
 
+/* A lone action row in its own card, e.g. "删除提供商": the label and its
+   note centre, as a native destructive action does. */
+.ds-row--centered {
+  text-align: center;
+}
+
 /* A full-width text action in its own card, e.g. "测试连接". */
 .ds-card-action {
   width: 100%;

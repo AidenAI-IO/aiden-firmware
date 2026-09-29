@@ -293,8 +293,8 @@ export async function voicePage(context) {
  */
 async function deleteRecord(context, saver, {schema, snapshot, kind, mode, name}) {
   const confirmed = await confirmSheet({
-    title: t('model.delete_title', {name: recordLabel(schema, kind, name, recordsOf(snapshot, kind)[name]), defaultValue: '删除 {{name}}？'}),
-    body: msg('model.delete_body', '已保存的 API Key 和地址会一并删除，之后需要重新配置。'),
+    title: t('model.delete_title', {name: recordLabel(schema, kind, name, recordsOf(snapshot, kind)[name]), defaultValue: '删除 {{name}} 的配置？'}),
+    body: msg('model.delete_body', '已保存的 API Key 等连接信息会一并删除，之后需要重新配置。'),
     confirmLabel: msg('action.delete', '删除'),
     danger: true,
     action: 'confirm-delete-provider',
@@ -338,7 +338,7 @@ export async function voiceProvidersPage(context) {
             action: `delete-${kind}-provider-${name}`,
             onDelete: () => deleteRecord(context, saver, {schema, snapshot, kind, mode, name}),
             lockedLabel: name === current ? msg('model.in_use', '使用中') : null,
-            onLocked: () => toast(msg('model.in_use_hint', '正在使用的提供商不能删除，请先切换到其他提供商。')),
+            onLocked: () => toast(msg('model.in_use_hint', '正在使用的配置不能删除，请先切换到其他提供商。')),
           })),
         })
       : null,
@@ -544,10 +544,10 @@ export async function voiceProviderEditPage(context) {
       }),
       useIt ? el('div', {class: 'page__footer page__footer--stack'}, [useIt]) : null,
       existingName ? group({rows: [row({
-        label: msg('model.delete_provider', '删除提供商'),
+        label: msg('model.delete_config', '删除配置'),
         labelTone: existingName === current ? null : 'danger',
-        extraClass: existingName === current ? 'ds-row--muted' : null,
-        description: existingName === current ? msg('model.in_use_hint', '正在使用的提供商不能删除，请先切换到其他提供商。') : null,
+        extraClass: existingName === current ? 'ds-row--centered ds-row--muted' : 'ds-row--centered',
+        description: existingName === current ? msg('model.in_use_hint', '正在使用的配置不能删除，请先切换到其他提供商。') : null,
         action: 'delete-provider',
         onPress: existingName === current ? null : () => deleteRecord(context, saver, {schema, snapshot, kind, mode, name: existingName}),
       })]}) : null,

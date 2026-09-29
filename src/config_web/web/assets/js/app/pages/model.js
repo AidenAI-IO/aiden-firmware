@@ -339,8 +339,8 @@ export async function modelPage(context) {
  */
 async function deleteProvider(context, saver, name, record) {
   const confirmed = await confirmSheet({
-    title: t('model.delete_title', {name: recordLabel(name, record), defaultValue: '删除 {{name}}？'}),
-    body: msg('model.delete_body', '已保存的 API Key 和地址会一并删除，之后需要重新配置。'),
+    title: t('model.delete_title', {name: recordLabel(name, record), defaultValue: '删除 {{name}} 的配置？'}),
+    body: msg('model.delete_body', '已保存的 API Key 等连接信息会一并删除，之后需要重新配置。'),
     confirmLabel: msg('action.delete', '删除'),
     danger: true,
     action: 'confirm-delete-provider',
@@ -367,7 +367,7 @@ export async function providersPage(context) {
 
   // A configured provider opens its credentials, as the design draws it; the
   // check marks the one the main model uses, and switching happens there.
-  // Swiping left deletes it, except the one in use.
+  // Swiping left deletes its configuration, except the one in use.
   const configuredRows = names.map(name => {
     const record = all[name];
     return swipeRow(row({
@@ -382,7 +382,7 @@ export async function providersPage(context) {
       action: `delete-provider-${name}`,
       onDelete: () => deleteProvider(context, saver, name, record),
       lockedLabel: name === current ? msg('model.in_use', '使用中') : null,
-      onLocked: () => toast(msg('model.in_use_hint', '正在使用的提供商不能删除，请先切换到其他提供商。')),
+      onLocked: () => toast(msg('model.in_use_hint', '正在使用的配置不能删除，请先切换到其他提供商。')),
     });
   });
 
@@ -568,10 +568,10 @@ export async function providerEditPage(context) {
       }),
       useAsMain ? el('div', {class: 'page__footer page__footer--stack'}, [useAsMain]) : null,
       existing ? group({rows: [row({
-        label: msg('model.delete_provider', '删除提供商'),
+        label: msg('model.delete_config', '删除配置'),
         labelTone: isCurrent ? null : 'danger',
-        extraClass: isCurrent ? 'ds-row--muted' : null,
-        description: isCurrent ? msg('model.in_use_hint', '正在使用的提供商不能删除，请先切换到其他提供商。') : null,
+        extraClass: isCurrent ? 'ds-row--centered ds-row--muted' : 'ds-row--centered',
+        description: isCurrent ? msg('model.in_use_hint', '正在使用的配置不能删除，请先切换到其他提供商。') : null,
         action: 'delete-provider',
         onPress: isCurrent ? null : () => deleteProvider(context, saver, existingName, existing),
       })]}) : null,
