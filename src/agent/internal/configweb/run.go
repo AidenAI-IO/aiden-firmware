@@ -23,6 +23,8 @@ func Run(args []string) int {
 	fs.StringVar(&options.AgentConfigPath, "config", options.AgentConfigPath, "agent TOML path")
 	fs.StringVar(&options.WiFiConfigPath, "wifi-config", options.WiFiConfigPath, "wpa_supplicant config path")
 	fs.StringVar(&options.WiFiConfigEnvironmentPath, "wifi-config-environment", options.WiFiConfigEnvironmentPath, "runtime wpa_supplicant config environment path")
+	fs.StringVar(&options.WiFiRegionStatePath, "wifi-region-state", options.WiFiRegionStatePath, "Wi-Fi regulatory domain provenance sidecar path")
+	fs.BoolVar(&options.WiFiRegionAutoApplyBeacon, "wifi-region-auto-apply-beacon", options.WiFiRegionAutoApplyBeacon, "apply a country agreed by at least three distinct access points without asking")
 	fs.StringVar(&options.WiFiInterface, "wifi-interface", options.WiFiInterface, "Wi-Fi interface")
 	fs.StringVar(&options.WiFiBackend, "wifi-backend", options.WiFiBackend, "Wi-Fi backend (legacy or systemd-networkd)")
 	fs.StringVar(&options.OTAStatePath, "ota-state", options.OTAStatePath, "OTA state JSON path")

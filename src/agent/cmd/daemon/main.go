@@ -66,6 +66,8 @@ func main() {
 			os.Exit(backup.RunRecover(os.Args[2:], os.Stdout, os.Stderr))
 		case "wifi-proxy":
 			os.Exit(wifiproxy.Run(os.Args[2:]))
+		case "wifi-region-apply":
+			os.Exit(runWiFiRegionApply(os.Args[2:]))
 		}
 	}
 
