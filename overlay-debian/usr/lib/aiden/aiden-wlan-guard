@@ -23,7 +23,8 @@ log() {
         case "${log_lines}" in ''|*[!0-9]*) log_lines=0 ;; esac
         if [ "${log_lines}" -gt 2000 ]; then
             tail -n 1000 "${log_file}" >"${log_file}.tmp.$$" 2>/dev/null &&
-                mv "${log_file}.tmp.$$" "${log_file}" 2>/dev/null || true
+                cat "${log_file}.tmp.$$" >"${log_file}" 2>/dev/null &&
+                rm -f "${log_file}.tmp.$$" 2>/dev/null || true
         fi
     fi
 }
@@ -33,9 +34,6 @@ mark() {
 gateway() {
     ip route show default dev "${interface}" 2>/dev/null \
         | awk '$1 == "default" && $2 == "via" {print $3; exit}'
-}
-associated() {
-    [ "$(wpa_cli -i "${interface}" status 2>/dev/null | sed -n 's/^wpa_state=//p')" = COMPLETED ]
 }
 reachable() {
     host=$(gateway)

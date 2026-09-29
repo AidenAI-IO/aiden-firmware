@@ -59,6 +59,20 @@ if [ ! -s "${wifi_target}" ]; then
             echo 'update_config=1'
             echo 'country=CN'
         } >"${wifi_tmp}"
+        # Record that this country is a first-boot default rather than a
+        # deliberate setting. Without the marker the portal would read a valid
+        # country with no provenance as a pre-existing deployment's choice and
+        # would never offer to detect the real region. A configuration carried
+        # over from /userdata above gets no marker, which is what protects it.
+        wifi_region_target=/userdata/system/wifi-region.json
+        if [ ! -s "${wifi_region_target}" ]; then
+            mkdir -p /userdata/system
+            wifi_region_tmp=${wifi_region_target}.tmp.$$
+            printf '{\n  "version": 1,\n  "country": "CN",\n  "source": "factory"\n}\n' \
+                >"${wifi_region_tmp}"
+            chmod 0600 "${wifi_region_tmp}"
+            mv "${wifi_region_tmp}" "${wifi_region_target}"
+        fi
     fi
     chmod 0600 "${wifi_tmp}"
     validate_dir=/run/aiden/wpa-validate-$$

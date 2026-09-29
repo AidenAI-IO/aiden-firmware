@@ -58,15 +58,31 @@ sleep 1
 # but subsequently lose IPv4 connectivity with some APs. Keep HT/VHT enabled.
 # This parameter takes effect at module load.
 stage=firmware
-insert_if_present aic8800_fdrv.ko he_on="${he_on}"
+insert_if_present aic8800_fdrv.ko he_on="${he_on}" custregd=1
 sleep 2
 stage=bluetooth
 insert_if_present aic8800_btlpm.ko
 
+stage=interface-check
 [ -e /sys/class/net/wlan0 ] || {
     log "stage=${stage} result=failed reason=wlan0-missing"
     mark "failed reason=wlan0-missing"
     exit 1
 }
+
+# The AIC8800 wiphy manages its own regulatory domain. The standard
+# wpa_supplicant country hint does not reach it; apply the configured country
+# before wpa_supplicant can bring the interface online.
+stage=region
+[ "$(cat /sys/module/aic8800_fdrv/parameters/custregd)" = Y ] || {
+    log "stage=${stage} result=failed reason=self-managed-regulatory-disabled"
+    exit 1
+}
+if ! /usr/lib/aiden/agent wifi-region-apply \
+    --config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf \
+    --interface=wlan0; then
+    log "stage=${stage} result=failed reason=region-apply"
+    exit 1
+fi
 log "stage=complete result=success wlan0=$(cat /sys/class/net/wlan0/operstate 2>/dev/null || echo unknown)"
 mark "complete"

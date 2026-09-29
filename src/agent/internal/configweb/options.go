@@ -15,6 +15,7 @@ const (
 	defaultAgentConfigPath           = "/userdata/agent/agent.toml"
 	defaultWiFiConfigPath            = "/userdata/wpa_supplicant.conf"
 	defaultWiFiConfigEnvironmentPath = "/run/aiden/wpa_supplicant-config.env"
+	defaultWiFiRegionStatePath       = "/userdata/system/wifi-region.json"
 	defaultSystemEnvPath             = "/userdata/system/env"
 	defaultWebRoot                   = "/usr/share/aiden/config-web"
 	defaultMaintenanceLockPath       = "/run/aiden/backup.lock"
@@ -34,6 +35,8 @@ type Options struct {
 	WiFiConfigEnvironmentPath string
 	WiFiInterface             string
 	WiFiBackend               string
+	WiFiRegionStatePath       string
+	WiFiRegionAutoApplyBeacon bool
 	OTAStatePath              string
 	CmdlinePath               string
 	SystemEnvPath             string
@@ -82,6 +85,7 @@ func DefaultOptions() Options {
 		BindAddress:               "0.0.0.0",
 		Port:                      80,
 		AgentConfigPath:           defaultAgentConfigPath,
+		WiFiRegionStatePath:       defaultWiFiRegionStatePath,
 		WiFiConfigPath:            defaultWiFiConfigPath,
 		WiFiConfigEnvironmentPath: defaultWiFiConfigEnvironmentPath,
 		WiFiInterface:             "wlan0",

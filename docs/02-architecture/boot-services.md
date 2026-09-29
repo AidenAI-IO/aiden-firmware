@@ -179,8 +179,8 @@ The driver, supplicant, and guard also keep bounded persistent diagnostics:
 
 | Component | Path | Contents |
 | --- | --- | --- |
-| Driver loader | `/var/log/wifi_driver/wifi_driver.log` | Module path, load result, parameters, and `wlan0` creation |
-| Supplicant | `/var/log/wpa_supplicant/wlan0.log` | Configuration parsing, association, authentication, and restart errors |
+| Driver loader | `/var/log/wifi_driver/wifi_driver.log` | Module path, load result, parameters, and `wlan0` creation; trimmed to the newest 1,000 lines when it exceeds 2,000 |
+| Supplicant | `/var/log/wpa_supplicant/wlan0.log` | Configuration parsing, association, authentication, and restart errors; trimmed to the newest 1,000 lines when it exceeds 2,000 |
 | Recovery guard | `/var/log/wlan_guard/wlan_guard.log` | Link state transitions, gateway failures, recovery attempts, and budget exhaustion |
 
 These files complement, rather than replace, journald. The guard log is

@@ -280,12 +280,16 @@ grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}"' \
 grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'stage=begin he_on=${he_on}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'result=failed reason=wlan0-missing' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
-grep -Fq 'wifi-driver:begin' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -q 'wifi-driver:begin' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'invalid-he_on' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'StandardOutput=append:/var/log/wifi_driver/wifi_driver.log' \
     "${UNIT_DIR}/aiden-wifi-driver.service"
 grep -Fq 'StandardError=append:/var/log/wifi_driver/wifi_driver.log' \
     "${UNIT_DIR}/aiden-wifi-driver.service"
+grep -Fqx 'ExecStartPre=/usr/lib/aiden/aiden-wifi-log-retention' \
+    "${UNIT_DIR}/aiden-wifi-driver.service"
+grep -Fqx 'ExecStartPre=/usr/lib/aiden/aiden-wifi-log-retention' \
+    "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
 grep -Fq 'StandardOutput=append:/var/log/wpa_supplicant/wlan0.log' \
     "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
 grep -Fq 'StandardError=append:/var/log/wpa_supplicant/wlan0.log' \
@@ -298,8 +302,12 @@ grep -Fq 'link-not-ready wpa_state=' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'recovery-end attempt=' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
-grep -Fq 'wlan-guard:gateway-failure' \
+grep -q 'wlan-guard:gateway-failure' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
+grep -Fq 'cat "${log_file}.tmp.$$" >"${log_file}"' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
+grep -Fq 'aiden-wifi-log-retention' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wifi-log-retention"
 grep -Fq 'log_file=${WLAN_GUARD_LOG_FILE:-/var/log/wlan_guard/wlan_guard.log}' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'StandardOutput=append:/var/log/wlan_guard/wlan_guard.log' \

@@ -32,7 +32,7 @@ func SnapshotProtectedData(root, version string) (_ string, resultErr error) {
 	relativePaths := []string{
 		"agent/agent.toml", "system/env", "wpa_supplicant.conf",
 		"system/wifi-proxies.json", "audio_service/playback_volume",
-		"debian/wifi/wpa_supplicant-wlan0.conf",
+		"debian/wifi/wpa_supplicant-wlan0.conf", "system/wifi-region.json",
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
@@ -269,6 +269,7 @@ func restoreProtectedData(snapshotDir, protectedRoot string, renameFile func(str
 		"system/wifi-proxies.json":              true,
 		"audio_service/playback_volume":         true,
 		"debian/wifi/wpa_supplicant-wlan0.conf": true,
+		"system/wifi-region.json":               true,
 	}
 	seen := make(map[string]bool)
 	for _, rel := range manifest.Files {
