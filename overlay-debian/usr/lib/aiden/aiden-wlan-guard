@@ -86,6 +86,8 @@ last_gateway=""
 log "started interface=${interface} interval=${interval} threshold=${threshold} max_recoveries=${max_recoveries}"
 mark "started interface=${interface}"
 while :; do
+    # Keep the shared supplicant log bounded while the daemon is running.
+    /usr/lib/aiden/aiden-wifi-log-retention 2>/dev/null || true
     state=$(wpa_cli -i "${interface}" status 2>/dev/null |
         sed -n 's/^wpa_state=//p' | head -n 1)
     host=$(gateway)

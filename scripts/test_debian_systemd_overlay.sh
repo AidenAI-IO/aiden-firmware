@@ -308,6 +308,8 @@ grep -Fq 'cat "${log_file}.tmp.$$" >"${log_file}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'aiden-wifi-log-retention' \
     "${OVERLAY}/usr/lib/aiden/aiden-wifi-log-retention"
+grep -Fq '/usr/lib/aiden/aiden-wifi-log-retention 2>/dev/null || true' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'log_file=${WLAN_GUARD_LOG_FILE:-/var/log/wlan_guard/wlan_guard.log}' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'StandardOutput=append:/var/log/wlan_guard/wlan_guard.log' \
