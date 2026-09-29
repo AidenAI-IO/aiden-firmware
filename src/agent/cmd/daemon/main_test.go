@@ -506,7 +506,7 @@ func TestRealtimeEndConversationToolDefersTeardownToSessionLoop(t *testing.T) {
 
 func TestRealtimeInstructionsCoverMemoryWritesAndStandby(t *testing.T) {
 	instructions := agent.DefaultRealtimeVoiceInstructions
-	for _, phrase := range []string{"save_memory", "forget_memory", "recall_session_chunks", "audio_volume", "end_conversation", "query_agent_task", "update_agent_task"} {
+	for _, phrase := range []string{"save_memory", "forget_memory", "recall_session_chunks", "audio_volume", "end_conversation", "query_agent_task", "update_agent_task", "stop listening", "stop the service", "go idle", "wait for the next wakeup", "conversation-control requests"} {
 		if !strings.Contains(instructions, phrase) {
 			t.Fatalf("realtime instructions missing guidance for %q: %s", phrase, instructions)
 		}
