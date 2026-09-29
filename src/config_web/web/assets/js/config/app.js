@@ -23,7 +23,7 @@ import {
 import {toggleSTTTest} from './stt-test.js';
 import {resetConversationMemory} from './memory.js';
 import {applySystemEnv, refreshSystemEnvApplication, cancelSystemEnvEdit, enterSystemEnvEdit, handleSystemEnvEditorKeydown, saveSystemEnv, toggleSystemEnvComment} from './system-env.js';
-import {closeWifiModal, connectSavedWifi, connectSelectedWifi, forgetWifi, openWifiModal, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
+import {closeWifiModal, closeWifiRegionModal, connectSavedWifi, connectSelectedWifi, forgetWifi, loadWifiRegion, openWifiModal, openWifiRegionModal, saveWifiRegion, scanWifi, syncWifiProxyFields, toggleWifiListExpanded} from './wifi.js';
 import {VISIBLE_FIELDS} from './field-visibility.js';
 import {SECTION_TO_GROUP_MAP} from './config-groups.js';
 import {cancelDataBackup, chooseDataRestore, closeDataBackup, createDataBackup, initBackup, startDataBackup, startDataRestore} from './backup.js';
@@ -67,6 +67,9 @@ const simpleActions = {
   }),
   'close-test-toast': closeTestToast,
   'close-wifi-modal': closeWifiModal,
+  'open-wifi-region': openWifiRegionModal,
+  'close-wifi-region': closeWifiRegionModal,
+  'save-wifi-region': saveWifiRegion,
   'connect-selected-wifi': connectSelectedWifi,
   'toggle-wifi-list': toggleWifiListExpanded,
   'add-model-provider': () => addProviderRecord(ModelProvidersManager),
@@ -206,6 +209,7 @@ async function reloadAll() {
     const payload = await loadConfig();
     await loadManualConfig(true);
     await scanWifi(false);
+    await loadWifiRegion().catch(() => {});
     setBanner(payload.config_valid === false ? t('config.invalid_recovery') : t('page.config_refreshed'), payload.config_valid === false);
   } catch (err) {
     setBanner(t('page.refresh_failed'), true);
@@ -248,6 +252,7 @@ async function init() {
     setManualConfigLocked(true);
     await loadManualConfig(false);
     await scanWifi(false);
+    await loadWifiRegion().catch(() => {});
     await refreshAgentLog(false);
     setBanner(initialReadyMessage(metaOk, payload), !metaOk || payload.config_valid === false);
   } catch (err) {

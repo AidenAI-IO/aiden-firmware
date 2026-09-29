@@ -1,6 +1,7 @@
 [Unit]
 Description=Load the Luckfox AIC8800 Wi-Fi driver and firmware
-After=systemd-udevd.service
+Requires=aiden-userdata-migrate.service
+After=systemd-udevd.service aiden-userdata-migrate.service
 Before=wpa_supplicant@wlan0.service
 
 [Service]
@@ -9,7 +10,7 @@ EnvironmentFile=/etc/aiden_boot.conf
 ExecCondition=/usr/lib/aiden/aiden-feature-enabled ENABLE_WIFIDRV
 ExecStart=/usr/lib/aiden/aiden-wifi-driver
 RemainAfterExit=yes
-TimeoutStartSec=20s
+TimeoutStartSec=35s
 
 [Install]
 WantedBy=multi-user.target

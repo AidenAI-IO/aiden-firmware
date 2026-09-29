@@ -1188,6 +1188,8 @@ func restoreTargetSpecFor(file backup.FileManifest, strategy string) (restoreTar
 			spec.rootRel, spec.unit = "debian/wifi/wpa_supplicant-wlan0.conf", "network-wpa"
 		case "wifi-proxies.json":
 			spec.rootRel, spec.unit = "system/wifi-proxies.json", "network-proxy"
+		case "wifi-region.json":
+			spec.rootRel, spec.unit = "system/wifi-region.json", "network-region"
 		default:
 			return spec, fmt.Errorf("unexpected network path %q", p)
 		}

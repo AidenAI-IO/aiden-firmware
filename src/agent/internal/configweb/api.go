@@ -33,6 +33,9 @@ const (
 	apiWiFiConnect
 	apiWiFiConnectStatus
 	apiWiFiForget
+	apiWiFiRegionGet
+	apiWiFiRegionResolve
+	apiWiFiRegionUpdate
 	apiSystemEnvironmentGet
 	apiSystemEnvironmentPut
 	apiSystemEnvironmentApply
@@ -88,6 +91,9 @@ var apiRoutes = []apiRoute{
 	{apiWiFiConnect, routeVariant{http.MethodPut, apiPrefix + "/network/wifi/connection"}},
 	{apiWiFiConnectStatus, routeVariant{http.MethodGet, apiPrefix + "/network/wifi/connection"}},
 	{apiWiFiForget, routeVariant{http.MethodDelete, apiPrefix + "/network/wifi/connection"}},
+	{apiWiFiRegionGet, routeVariant{http.MethodGet, apiPrefix + "/network/wifi/region"}},
+	{apiWiFiRegionResolve, routeVariant{http.MethodPost, apiPrefix + "/network/wifi/region/resolve"}},
+	{apiWiFiRegionUpdate, routeVariant{http.MethodPut, apiPrefix + "/network/wifi/region"}},
 	{apiSystemEnvironmentGet, routeVariant{http.MethodGet, apiPrefix + "/system/environment"}},
 	{apiSystemEnvironmentPut, routeVariant{http.MethodPut, apiPrefix + "/system/environment"}},
 	{apiSystemEnvironmentApply, routeVariant{http.MethodPost, apiPrefix + "/system/environment/apply"}},
@@ -228,6 +234,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleWiFiConnectStatus(w, r)
 	case apiWiFiForget:
 		s.handleWiFiForget(w, r)
+	case apiWiFiRegionGet:
+		s.handleWiFiRegionGet(w, r)
+	case apiWiFiRegionResolve:
+		s.handleWiFiRegionResolve(w, r)
+	case apiWiFiRegionUpdate:
+		s.handleWiFiRegionUpdate(w, r)
 	case apiSystemEnvironmentGet:
 		s.handleGetSystemEnv(w, r)
 	case apiSystemEnvironmentPut:
@@ -286,6 +298,7 @@ func endpointConflictsWithMaintenance(endpoint apiEndpoint) bool {
 	case apiConfigUpdate, apiConfigLocale, apiConfigTest, apiMemoryReset,
 		apiSTTTestStart, apiSTTTestStop, apiStorageFormat, apiStorageEject,
 		apiConfigBackupImport, apiWiFiScan, apiWiFiConnect, apiWiFiForget,
+		apiWiFiRegionUpdate,
 		apiSystemEnvironmentPut, apiSystemEnvironmentApply, apiOTAUpdate,
 		apiDeviceReboot, apiUSBReenumerate, apiLLMLogImport:
 		return true
