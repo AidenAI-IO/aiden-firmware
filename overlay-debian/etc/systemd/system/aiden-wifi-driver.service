@@ -8,6 +8,8 @@ Type=oneshot
 EnvironmentFile=/etc/aiden_boot.conf
 ExecCondition=/usr/lib/aiden/aiden-feature-enabled ENABLE_WIFIDRV
 ExecStart=/usr/lib/aiden/aiden-wifi-driver
+StandardOutput=append:/var/log/wifi_driver/wifi_driver.log
+StandardError=append:/var/log/wifi_driver/wifi_driver.log
 RemainAfterExit=yes
 TimeoutStartSec=20s
 

@@ -200,9 +200,29 @@ is left enabled (about 3 MB on the tested board).
 | OTA health | `/var/log/ota/ota.log` |
 | Agent | `/userdata/agent/log/agent.log` |
 | Wi-Fi Proxy | `/var/log/wifi_proxy/wifi_proxy.log` |
+| Wi-Fi driver | `/var/log/wifi_driver/wifi_driver.log` |
+| wpa_supplicant (wlan0) | `/var/log/wpa_supplicant/wlan0.log` |
+| WLAN guard | `/var/log/wlan_guard/wlan_guard.log` |
 
 Use `journalctl -u <unit>` for systemd lifecycle and helper failures. Service
 stdout/stderr that is intentionally persisted remains in the files above.
+
+For a Wi-Fi startup failure, collect the following without rebooting if
+possible:
+
+```bash
+systemctl status aiden-wifi-driver.service wpa_supplicant@wlan0.service \
+    systemd-networkd.service aiden-wlan-guard.service --no-pager
+cat /var/log/wifi_driver/wifi_driver.log
+cat /var/log/wpa_supplicant/wlan0.log
+cat /var/log/wlan_guard/wlan_guard.log
+wpa_cli -i wlan0 status
+networkctl status wlan0 --no-pager
+```
+
+The Wi-Fi logs intentionally record configuration metadata and state changes,
+not the contents of `wpa_supplicant-wlan0.conf`, so the PSK is not copied into
+the diagnostic files.
 
 `frame_service` exclusively owns `/dev/video0`; stop `aiden-frame.service`
 before a direct camera diagnostic. The Agent screenshot tool depends on the

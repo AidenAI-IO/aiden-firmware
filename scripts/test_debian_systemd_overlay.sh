@@ -278,6 +278,34 @@ fi
 grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fq 'stage=begin he_on=${he_on}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fq 'result=failed reason=wlan0-missing' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fq 'wifi-driver:begin' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fq 'invalid-he_on' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fq 'StandardOutput=append:/var/log/wifi_driver/wifi_driver.log' \
+    "${UNIT_DIR}/aiden-wifi-driver.service"
+grep -Fq 'StandardError=append:/var/log/wifi_driver/wifi_driver.log' \
+    "${UNIT_DIR}/aiden-wifi-driver.service"
+grep -Fq 'StandardOutput=append:/var/log/wpa_supplicant/wlan0.log' \
+    "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
+grep -Fq 'StandardError=append:/var/log/wpa_supplicant/wlan0.log' \
+    "${UNIT_DIR}/wpa_supplicant@wlan0.service.d/20-aiden.conf"
+for log_directory in /var/log/wifi_driver /var/log/wpa_supplicant /var/log/wlan_guard; do
+    grep -Fqx "d ${log_directory} 0755 root root -" "${TMPFILES}" \
+        || fail "tmpfiles does not create ${log_directory}"
+done
+grep -Fq 'link-not-ready wpa_state=' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
+grep -Fq 'recovery-end attempt=' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
+grep -Fq 'wlan-guard:gateway-failure' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
+grep -Fq 'log_file=${WLAN_GUARD_LOG_FILE:-/var/log/wlan_guard/wlan_guard.log}' \
+    "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
+grep -Fq 'StandardOutput=append:/var/log/wlan_guard/wlan_guard.log' \
+    "${UNIT_DIR}/aiden-wlan-guard.service"
+grep -Fq 'StandardError=append:/var/log/wlan_guard/wlan_guard.log' \
+    "${UNIT_DIR}/aiden-wlan-guard.service"
 grep -Fqx 'AIDEN_WIFI_HE=0' "${OVERLAY}/etc/aiden_boot.conf"
 grep -Fqx 'Wants=wpa_supplicant@wlan0.service' "${UNIT_DIR}/aiden-wlan-guard.service"
 if grep -Eq '^Requires=.*wpa_supplicant@wlan0' "${UNIT_DIR}/aiden-wlan-guard.service"; then
@@ -494,6 +522,10 @@ InactiveExitTimestampMonotonic=1000000
 ActiveEnterTimestampMonotonic=3500000
 ExecMainStartTimestampMonotonic=1100000
 ExecMainExitTimestampMonotonic=0
+ExecMainCode=exited
+ExecMainStatus=0
+ConditionResult=yes
+AssertResult=yes
 ActiveState=active
 SubState=running
 Result=success
@@ -505,6 +537,10 @@ InactiveExitTimestampMonotonic=0
 ActiveEnterTimestampMonotonic=0
 ExecMainStartTimestampMonotonic=2000000
 ExecMainExitTimestampMonotonic=2800000
+ExecMainCode=exited
+ExecMainStatus=1
+ConditionResult=yes
+AssertResult=yes
 ActiveState=failed
 SubState=failed
 Result=exit-code
@@ -527,9 +563,9 @@ env "${timeline_env[@]}" "${timeline_helper}" init-systemd
 env "${timeline_env[@]}" "${timeline_helper}" mark agent:listening
 env "${timeline_env[@]}" "${timeline_helper}" finalize-systemd
 grep -q 'systemd:begin$' "${timeline_root}/timeline.log"
-grep -q '3.50 2.50 unit:active aiden-agent.service sub=running result=success$' \
+grep -q '3.50 2.50 unit:active aiden-agent.service sub=running result=success code=exited status=0 condition=yes assert=yes$' \
     "${timeline_root}/timeline.log"
-grep -q '2.80 0.80 unit:failed failed.service sub=failed result=exit-code$' \
+grep -q '2.80 0.80 unit:failed failed.service sub=failed result=exit-code code=exited status=1 condition=yes assert=yes$' \
     "${timeline_root}/timeline.log"
 grep -q 'mark agent:listening$' "${timeline_root}/timeline.log"
 grep -q 'mark systemd:aiden-target$' "${timeline_root}/timeline.log"

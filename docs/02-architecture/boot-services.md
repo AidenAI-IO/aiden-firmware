@@ -175,6 +175,19 @@ restart the guard after changing them. Restarting the guard also resets its
 budget. `iw ... set power_save off` is not used as a fix: that operation is a
 no-op in the bundled driver's `rwnx_cfg80211_set_power_mgmt` implementation.
 
+The driver, supplicant, and guard also keep bounded persistent diagnostics:
+
+| Component | Path | Contents |
+| --- | --- | --- |
+| Driver loader | `/var/log/wifi_driver/wifi_driver.log` | Module path, load result, parameters, and `wlan0` creation |
+| Supplicant | `/var/log/wpa_supplicant/wlan0.log` | Configuration parsing, association, authentication, and restart errors |
+| Recovery guard | `/var/log/wlan_guard/wlan_guard.log` | Link state transitions, gateway failures, recovery attempts, and budget exhaustion |
+
+These files complement, rather than replace, journald. The guard log is
+bounded to the newest 1,000 lines after it exceeds 2,000 lines. No Wi-Fi
+configuration contents or PSK are written. This avoids adding a continuously
+running diagnostic service while preserving evidence across reboot.
+
 Use the USB connection while investigating wireless connectivity:
 
 ```bash
