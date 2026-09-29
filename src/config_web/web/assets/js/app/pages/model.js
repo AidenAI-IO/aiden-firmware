@@ -567,13 +567,13 @@ export async function providerEditPage(context) {
         ],
       }),
       useAsMain ? el('div', {class: 'page__footer page__footer--stack'}, [useAsMain]) : null,
-      existing ? group({rows: [row({
+      // The configuration in use cannot be deleted, so it gets no delete row.
+      existing && !isCurrent ? group({rows: [row({
         label: msg('model.delete_config', '删除配置'),
-        labelTone: isCurrent ? null : 'danger',
-        extraClass: isCurrent ? 'ds-row--centered ds-row--muted' : 'ds-row--centered',
-        description: isCurrent ? msg('model.in_use_hint', '正在使用的配置不能删除，请先切换到其他提供商。') : null,
+        labelTone: 'danger',
+        extraClass: 'ds-row--centered',
         action: 'delete-provider',
-        onPress: isCurrent ? null : () => deleteProvider(context, saver, existingName, existing),
+        onPress: () => deleteProvider(context, saver, existingName, existing),
       })]}) : null,
     ]);
     refreshSave();

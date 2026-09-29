@@ -543,13 +543,13 @@ export async function voiceProviderEditPage(context) {
         ],
       }),
       useIt ? el('div', {class: 'page__footer page__footer--stack'}, [useIt]) : null,
-      existingName ? group({rows: [row({
+      // The configuration in use cannot be deleted, so it gets no delete row.
+      existingName && existingName !== current ? group({rows: [row({
         label: msg('model.delete_config', '删除配置'),
-        labelTone: existingName === current ? null : 'danger',
-        extraClass: existingName === current ? 'ds-row--centered ds-row--muted' : 'ds-row--centered',
-        description: existingName === current ? msg('model.in_use_hint', '正在使用的配置不能删除，请先切换到其他提供商。') : null,
+        labelTone: 'danger',
+        extraClass: 'ds-row--centered',
         action: 'delete-provider',
-        onPress: existingName === current ? null : () => deleteRecord(context, saver, {schema, snapshot, kind, mode, name: existingName}),
+        onPress: () => deleteRecord(context, saver, {schema, snapshot, kind, mode, name: existingName}),
       })]}) : null,
     ]);
     saver.refreshChrome();
