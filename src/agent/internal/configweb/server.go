@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/backup"
@@ -50,6 +51,10 @@ type Server struct {
 	wifiOpMu                 sync.Mutex
 	wifiMu                   sync.Mutex
 	wifiJob                  *wifiConnectionJob
+	wifiRegionMu             sync.Mutex
+	wifiRegionVotes          map[string]int
+	wifiRegionVotesAt        time.Time
+	wifiRegionDriver         wifiRegionDriver
 	maintenance              *maintenanceController
 	maintenanceSessions      *maintenanceSessionStore
 	backupJobs               *backupJobStore
@@ -89,8 +94,9 @@ func NewServer(options Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		options: options,
-		sttTest: agent.NewSTTConfigTestAPI(options.AgentConfigPath),
+		options:          options,
+		sttTest:          agent.NewSTTConfigTestAPI(options.AgentConfigPath),
+		wifiRegionDriver: systemWiFiRegionDriver{},
 	}
 	s.services = &systemdServiceController{binary: options.SystemctlBinary}
 	s.maintenance = newMaintenanceController(options.MaintenanceLockPath)

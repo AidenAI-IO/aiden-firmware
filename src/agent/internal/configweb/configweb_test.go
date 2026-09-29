@@ -19,6 +19,7 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/wifiproxy"
+	"aiden-agent/internal/wifiregion"
 )
 
 type fakeStorageController struct {
@@ -94,6 +95,7 @@ func testOptions(t *testing.T) Options {
 		WiFiConfigEnvironmentPath: filepath.Join(root, "wpa_supplicant-config.env"),
 		WiFiInterface:             "wlan0",
 		WiFiBackend:               "legacy",
+		WiFiRegionStatePath:       filepath.Join(root, "wifi-region.json"),
 		OTAStatePath:              filepath.Join(root, "ota-state.json"),
 		CmdlinePath:               filepath.Join(root, "cmdline"),
 		SystemEnvPath:             filepath.Join(root, "system.env"),
@@ -803,6 +805,7 @@ func TestWiFiConnectionRunsAsBoundedBackgroundTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	server.wifiRegionDriver = &fakeWiFiRegionDriver{country: "CN"}
 	startedAt := time.Now()
 	resp := httptest.NewRecorder()
 	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/network/wifi/connection", strings.NewReader(`{"ssid":"test-network","psk":"secret"}`)))
@@ -874,6 +877,7 @@ set -eu
 	if err != nil {
 		t.Fatal(err)
 	}
+	server.wifiRegionDriver = &fakeWiFiRegionDriver{country: "CN"}
 	psk := "secret"
 	result := server.runWiFiConnection(context.Background(), wifiConnectionRequest{SSID: "qtum", PSK: &psk})
 	if result["ok"] != true {
@@ -1647,7 +1651,7 @@ func TestParseWiFiScanOutputDecodesEscapedUTF8SSID(t *testing.T) {
 		ESSID:"\xe9\xa3\x9e\xe5\x88\xa9\xe7\x8c\xab\xe5\x93\x81\xe7\x89\x8cWiFi"
 	`
 	want := []string{"飞利猫品牌WiFi"}
-	if got := parseWiFiScanOutput(text); len(got) != len(want) || got[0] != want[0] {
+	if got := parseWiFiScanOutput(text).SSIDs; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("parseWiFiScanOutput()=%q, want %q", got, want)
 	}
 }
@@ -1755,19 +1759,31 @@ func TestWiFiForgetRemovesProxyMapping(t *testing.T) {
 }
 
 func TestWiFiCountryValidation(t *testing.T) {
+	// An unusable code must be reported as such. Substituting a default here is
+	// how a device ends up transmitting under rules nobody chose, so the parser
+	// reports no country and callers resolve one explicitly.
 	for input, want := range map[string]string{
 		"us":            "US",
 		" CN ":          "CN",
-		"USA":           "CN",
-		"U1":            "CN",
-		"US\nnetwork={": "CN",
+		"USA":           "",
+		"U1":            "",
+		"ZZ":            "",
+		"US\nnetwork={": "",
 	} {
-		if got := normalizeWiFiCountry(input); got != want {
-			t.Errorf("normalizeWiFiCountry(%q)=%q, want %q", input, got, want)
+		got, ok := wifiregion.Normalize(input)
+		if got != want || ok != (want != "") {
+			t.Errorf("wifiregion.Normalize(%q)=(%q,%v), want (%q,%v)", input, got, ok, want, want != "")
 		}
 	}
-	if rendered := renderWiFiConfig(wiFiConfig{Country: "US\nnetwork={"}); !strings.Contains(rendered, "country=CN\n") {
-		t.Fatalf("rendered invalid country: %q", rendered)
+	if _, err := renderWiFiConfig(wiFiConfig{Country: "US\nnetwork={"}); err == nil {
+		t.Fatal("renderWiFiConfig accepted an invalid country")
+	}
+	rendered, err := renderWiFiConfig(wiFiConfig{Country: "us"})
+	if err != nil {
+		t.Fatalf("renderWiFiConfig: %v", err)
+	}
+	if !strings.Contains(rendered, "country=US\n") {
+		t.Fatalf("rendered country not normalized: %q", rendered)
 	}
 }
 
