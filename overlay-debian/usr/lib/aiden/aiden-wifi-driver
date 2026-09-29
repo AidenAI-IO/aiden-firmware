@@ -24,7 +24,7 @@ sleep 1
 # loader initially omitted: AIC8800DC can associate and acquire DHCP over HE
 # but subsequently lose IPv4 connectivity with some APs. Keep HT/VHT enabled.
 # This parameter takes effect at module load.
-insert_if_present aic8800_fdrv.ko he_on="${he_on}"
+insert_if_present aic8800_fdrv.ko he_on="${he_on}" custregd=1
 sleep 2
 insert_if_present aic8800_btlpm.ko
 
@@ -32,3 +32,14 @@ insert_if_present aic8800_btlpm.ko
     echo "AIC8800 modules loaded but wlan0 did not appear" >&2
     exit 1
 }
+
+# The AIC8800 wiphy manages its own regulatory domain. The standard
+# wpa_supplicant country hint does not reach it; apply the configured country
+# before wpa_supplicant can bring the interface online.
+[ "$(cat /sys/module/aic8800_fdrv/parameters/custregd)" = Y ] || {
+    echo "AIC8800 self-managed regulatory mode is required" >&2
+    exit 1
+}
+/usr/lib/aiden/agent wifi-region-apply \
+    --config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf \
+    --interface=wlan0
