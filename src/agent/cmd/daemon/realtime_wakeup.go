@@ -818,7 +818,7 @@ func realtimeVoiceToolDefinitionsWithTools(cfg agent.Config, runtime *agent.Runt
 		),
 		realtimeVoiceToolDefinition(
 			realtimeEndConversationTool,
-			"End the conversation and go back to standby when the user is done talking, for example when they say goodbye, tell you to stop listening, or say they do not need anything else. Say a short farewell in the same response; the microphone stays open until you finish speaking. The user can start a new conversation at any time, and you keep your memory and history. Work you are already handling continues, and when it finishes the device comes back on its own to report the outcome, so you may briefly say that you will let them know.",
+			"End the voice conversation and return to standby when the user is done or asks to stop the voice interaction. Use this for goodbye, stop listening, stop the service, go idle, standby, sleep, or wait for the next wakeup; these are conversation-control requests, not device or backend service-operation requests. Say a short farewell in the same response; the microphone stays open until you finish speaking. The user can start a new conversation at any time, and you keep your memory and history. Work you are already handling continues, and when it finishes the device comes back on its own to report the outcome, so you may briefly say that you will let them know.",
 			map[string]any{"type": "object", "properties": map[string]any{}},
 		),
 	}
