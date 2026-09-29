@@ -70,8 +70,11 @@ load boundary; Config Web writes only the grouped paths below.
    exposed as product settings in Config Web.
 
 9. **About**:
-   - Firmware Version: Displayed through Config Web
+   - Firmware Version: Read from OTA state; before the first OTA transaction,
+     read from the factory baseline in `/userdata/debian/ota/config.json`
    - Component Versions: Boot and RootFS versions for the running slot
+   - Version information refreshes with device status without initializing or
+     modifying OTA state
 
 The group tables are the canonical on-disk configuration schema. New options
 should be added to the closest existing group and its section rather than
