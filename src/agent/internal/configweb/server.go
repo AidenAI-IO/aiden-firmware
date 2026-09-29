@@ -232,22 +232,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	relative := ""
 	entry := false
-	switch r.URL.Path {
-	case "/":
+	switch {
+	case r.URL.Path == "/":
 		relative, entry = "index.html", true
-	case "/llm-logs":
+	case r.URL.Path == "/legacy":
+		// The pre-refactor settings page, kept reachable while sections are
+		// migrated to the routed layout. Removed once the last section lands.
+		relative, entry = "legacy.html", true
+	case r.URL.Path == "/llm-logs":
 		relative, entry = "llm-logs.html", true
-	default:
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
-			decoded, ok := safeAssetPath(strings.TrimPrefix(r.URL.EscapedPath(), "/assets/"))
-			if !ok {
-				http.Error(w, "Not Found", http.StatusNotFound)
-				return true
-			}
-			relative = filepath.Join("assets", decoded)
-		} else {
-			return false
+	case strings.HasPrefix(r.URL.Path, "/assets/"):
+		decoded, ok := safeAssetPath(strings.TrimPrefix(r.URL.EscapedPath(), "/assets/"))
+		if !ok {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return true
 		}
+		relative = filepath.Join("assets", decoded)
+	case isSettingsRoute(r.URL.Path):
+		// Sub-routes such as /wifi and /wifi/<ssid> belong to the client router,
+		// which needs the same document the root serves.
+		relative, entry = "index.html", true
+	default:
+		return false
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -271,6 +277,18 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Content-Length", fmt.Sprint(info.Size()))
 	_, _ = io.Copy(w, file)
 	return true
+}
+
+// isSettingsRoute reports whether a request path belongs to the client-side
+// settings router rather than to a file on disk. Extension-less paths are
+// treated as routes so the settings surface can be deep-linked, while a request
+// that names an extension still 404s instead of quietly returning HTML.
+func isSettingsRoute(path string) bool {
+	if path == "" || strings.HasSuffix(path, "/") {
+		return false
+	}
+	last := path[strings.LastIndex(path, "/")+1:]
+	return !strings.Contains(last, ".")
 }
 
 func staticContentType(path string) string {

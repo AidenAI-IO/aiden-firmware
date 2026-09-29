@@ -145,6 +145,45 @@ func TestOptionsAcceptsValidLocalProxyAddress(t *testing.T) {
 	}
 }
 
+func TestWiFiWrongKeyEventOnlyMatchesTheAttemptedSSID(t *testing.T) {
+	wrongKey := `<3>CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="Office" auth_failures=1 duration=10 reason=WRONG_KEY`
+	if !wifiWrongKeyEvent(wrongKey, "Office") {
+		t.Fatal("WRONG_KEY event was not classified as a password failure")
+	}
+	if wifiWrongKeyEvent(wrongKey, "Guest") {
+		t.Fatal("WRONG_KEY event for another SSID was classified as this attempt")
+	}
+	if wifiWrongKeyEvent(`<3>CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="Office" reason=AUTH_FAILED`, "Office") {
+		t.Fatal("a non-WRONG_KEY event was classified as a password failure")
+	}
+	if !wifiWrongKeyEvent(`<3>CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="Alice's WiFi" reason=WRONG_KEY`, "Alice's WiFi") {
+		t.Fatal("apostrophe in SSID was not matched")
+	}
+}
+
+func TestWiFiConnectionFailureReasons(t *testing.T) {
+	status := map[string]any{"connected": false, "ssid": "", "ip_address": ""}
+	tests := []struct {
+		name          string
+		apply         commandResult
+		wrongPassword bool
+		contextError  error
+		want          string
+	}{
+		{name: "wrong password", apply: commandResult{ExitCode: 1}, wrongPassword: true, want: wifiFailureWrongPassword},
+		{name: "association", apply: commandResult{ExitCode: 1, FailureReason: wifiFailureAssociation}, want: wifiFailureAssociation},
+		{name: "timeout", apply: commandResult{ExitCode: -1, TimedOut: true}, want: wifiFailureTimeout},
+		{name: "unconfirmed", apply: commandResult{ExitCode: 0}, want: wifiFailureUnconfirmed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := wifiConnectionFailureReason(test.apply, status, "Office", test.wrongPassword, test.contextError); got != test.want {
+				t.Fatalf("reason=%q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestServerServesStaticAssetsAndRejectsTraversal(t *testing.T) {
 	options := testOptions(t)
 	server, err := NewServer(options)
@@ -1656,6 +1695,32 @@ func TestParseWiFiScanOutputDecodesEscapedUTF8SSID(t *testing.T) {
 	}
 }
 
+func TestParseWiFiScanDetailsIncludesSecurityAndSignal(t *testing.T) {
+	text := `BSS aa:bb:cc:dd:ee:ff(on wlan0)
+	capability: ESS Privacy (0x0411)
+	signal: -48.00 dBm
+	SSID: Office
+BSS aa:bb:cc:dd:ee:01(on wlan0)
+	capability: ESS Privacy (0x0411)
+	signal: -78.00 dBm
+	SSID: Office
+Cell 02 - Address: 11:22:33:44:55:66
+		Quality=70/70  Signal level=-39 dBm
+		Encryption key:off
+		ESSID:"Guest"
+`
+	details := parseWiFiScanDetails(text)
+	if len(details) != 2 {
+		t.Fatalf("details=%#v", details)
+	}
+	if details[0].SSID != "Office" || !details[0].Secured || details[0].SignalDBM == nil || *details[0].SignalDBM != -48 {
+		t.Fatalf("Office details=%#v", details[0])
+	}
+	if details[1].SSID != "Guest" || details[1].Secured || details[1].SignalDBM == nil || *details[1].SignalDBM != -39 {
+		t.Fatalf("Guest details=%#v", details[1])
+	}
+}
+
 func TestDecodeWiFiSSIDPreservesInvalidEscapes(t *testing.T) {
 	for _, value := range []string{`Office\xZZ`, `Office\xE9`, `Office\x41\xZZ`} {
 		if got := decodeWiFiSSID(value); got != value {
@@ -2002,5 +2067,50 @@ func TestConfigApplicationDropsReloadErrorAfterAgentRestart(t *testing.T) {
 	// The error stays cleared for subsequent polls.
 	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) {
 		t.Fatalf("cleared status: %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestConfigPlanRunsDryRunAndReportsApplyLevel(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	argsPath := filepath.Join(t.TempDir(), "args")
+	t.Setenv("AIDEN_TEST_CONFIG_ARGS", argsPath)
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' "$@" > "$AIDEN_TEST_CONFIG_ARGS"
+printf '%s\n' '{"ok":true,"config":{},"changed_paths":["basic_settings.device.hid.keyboard_layout"],"reboot_required":true,"persisted":false,"apply":"reboot","apply_reasons":["keyboard_layout"]}'
+`
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.AgentBinary = fakeAgent
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/config/plan", strings.NewReader(`{"config":{"hid":{"keyboard_layout":"azerty"}}}`)))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["apply"] != "reboot" || body["reboot_required"] != true {
+		t.Fatalf("plan body = %v", body)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "--dry-run") {
+		t.Fatalf("plan must not persist; config-update args were:\n%s", args)
+	}
+
+	bad := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/api/config/plan", strings.NewReader(`{"patch":{}}`)))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("a malformed plan request must be rejected, status=%d", bad.Code)
 	}
 }

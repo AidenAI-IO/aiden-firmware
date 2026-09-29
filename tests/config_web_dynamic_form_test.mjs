@@ -643,7 +643,9 @@ document.getElementById('model_model').value = 'custom-model';
 configMetaModule.namespace.applyFieldVisibility(false, 'model.provider');
 assert.equal(document.getElementById('model_temperature').dataset.configDefaultPlaceholder, '0.2', 'non-Gemini models retain the global fallback');
 
-const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
+// The schema-driven form now lives on the classic page at /legacy; the root
+// document is the routed settings shell, which holds no hand-maintained fields.
+const indexHtml = await fs.readFile(path.join(webRoot, 'legacy.html'), 'utf8');
 assert.match(indexHtml, /data-config-section="agent"/);
 assert.match(indexHtml, /data-config-section="quick_capture"/);
 assert.match(indexHtml, /id="section-voice_model"/);

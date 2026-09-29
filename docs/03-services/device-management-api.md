@@ -19,6 +19,7 @@ All public endpoints use the `/api` root without an additional version prefix:
 | --- | --- | --- |
 | Configuration | `GET /api/config` | Read the resolved `agent.toml` configuration |
 | Configuration | `PATCH /api/config` | Persist a merge patch and queue application |
+| Configuration | `POST /api/config/plan` | Validate a merge patch without saving and report its apply level |
 | Configuration | `GET /api/config/application` | Read pending, applied, failed, or reboot-required state |
 | Configuration | `GET /api/config/schema` | Read field types, defaults, choices, secret markers, and restart hints |
 | Configuration | `PUT /api/config/locale` | Update the page language |
@@ -26,6 +27,7 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Configuration | `GET /api/config/backup` | Download the persisted grouped `agent.toml` backup |
 | Configuration | `PUT /api/config/backup` | Validate, atomically restore, and apply a grouped TOML backup |
 | Memory | `POST /api/memory/reset` | Clear conversation history and persisted memory, then restart the Agent |
+| Conversation | `POST /api/conversation/reset` | Clear the current conversation history only; memory is kept and the Agent keeps running |
 | Models | `GET /api/models?provider=...&locale=...` | Return the localized model catalog |
 | STT test | `POST /api/config-test/stt/start` | Start a microphone recording test using the submitted unsaved settings |
 | STT test | `POST /api/config-test/stt/stop` | Stop recording and return the transcription result |
@@ -35,6 +37,7 @@ All public endpoints use the `/api` root without an additional version prefix:
 | Device | `GET /api/device/snapshot` | Read the aggregated initial-page model: configuration, Wi-Fi, device, firmware/component versions, and storage summaries |
 | Device | `GET /api/device/status` | Read the device, firmware/component versions, Agent process, USB/HID, and capability summary |
 | Device | `POST /api/device/reboot` | Reboot the device |
+| Agent | `POST /api/agent/restart` | Restart the Agent process; Config Web and the USB link stay up |
 | Device | `POST /api/device/usb/reenumerate` | Re-enumerate USB HID/ECM |
 | Network | `POST /api/network/wifi/scan` | Scan for nearby Wi-Fi networks |
 | Network | `PUT /api/network/wifi/connection` | Start a bounded asynchronous connect-and-save task |
@@ -53,6 +56,13 @@ All endpoints above are served by Config Web on port 80. The page uses only
 same-origin management requests. Agent port mappings therefore do not affect
 the configuration portal, and the Agent does not expose duplicate models, STT
 test, or storage-management handlers on port 8080.
+
+`POST /api/network/wifi/scan` keeps the legacy `networks` string array and also
+returns `network_details`. Each detail contains `ssid`, `secured`, and, when
+the driver reports them, `signal_dbm` and `signal_percent`. The current
+connection in `wifi_status` likewise includes `signal_dbm` when `iw link`
+reports it. Signal values are observations from the scan/link operation and
+may be absent on drivers that do not expose them.
 
 `GET /api/config` and `GET /api/device/snapshot` include `config_valid` and a
 `config_errors` array of `{field, message}` objects. Semantic validation errors
@@ -111,6 +121,8 @@ A successful `PATCH /api/config` persists the file and queues runtime applicatio
   "changed_paths": ["model.model"],
   "reboot_required": false,
   "reboot_reasons": [],
+  "apply": "live",
+  "apply_reasons": [],
   "agent_restart_scheduled": false
 }
 ```
@@ -146,8 +158,49 @@ require a successful service retry.
 keeps the current USB settings until reboot. A boot-ID-scoped cache at
 `<config-dir>/cache/usb-boot.json` and the bound USB descriptor preserve the
 exception across subsequent saves and Agent-only restarts; reverting those settings clears it. Reboot is an explicit
-user action and is never triggered by saving. CLI `--device-type` continues to
+user action and is never triggered by saving; see Apply Levels for how pages ask for it. CLI `--device-type` continues to
 override the file for the current process.
+
+## Apply Levels
+
+Every saved change has one apply level, defined in the Agent
+(`agent.ApplyLevel`, `src/agent/internal/agent/apply_level.go`) so that Config
+Web, the settings pages, and the companion app never keep their own lists:
+
+| `apply` | Meaning | Carried out by |
+| --- | --- | --- |
+| `live` | Hot-reloaded by the running Agent | Nothing further |
+| `agent_restart` | Read only at Agent start (the system environment file) | `POST /api/agent/restart`; the page and USB link stay up |
+| `reboot` | Changes the USB gadget the phone enumerated (`apply_reasons`: `pointer_mode`, `keyboard_layout`) | `POST /api/device/reboot`; every connection to the device drops |
+
+A reboot subsumes an Agent restart. The level depends on the resulting values,
+not on which field was edited: moving the device type between iOS, macOS,
+Windows and Linux is `live`, while moving to or from Android is `reboot`.
+
+`POST /api/config/plan` takes the same `{"config":{...}}` body as
+`PATCH /api/config`, runs `agent config-update --dry-run`, and writes nothing:
+
+```json
+{"ok": true, "apply": "reboot", "apply_reasons": ["keyboard_layout"], "changed_paths": ["basic_settings.device.hid.keyboard_layout"], "reboot_required": true}
+```
+
+Settings pages call it as the user edits. A `live` change is saved as soon as
+it is committed and the page shows no save button; a change at either restart
+level is staged, and the page offers "保存并重启" for everything staged. Tapping "保存并重启" opens a
+confirmation that names the restart; only after the user confirms does the page
+save and then call the restart endpoint, so a restart remains an explicit user
+action and `PATCH /api/config` itself never restarts anything. The `apply` in
+the save response is authoritative. `GET/PUT /api/system/environment` report
+`apply` too.
+
+Inside the companion app the page reports the level to the native navigation
+bar with `aiden_config_save_state` `{title, dirty, apply, action_label}`
+(`title` and `action_label` already translated into the device's language, since
+the app keeps no catalogue for them), and announces a
+restart with `aiden_config_restart` `{apply, phase}` (`started`, `finished`,
+`failed`). During a `reboot` the app on Android re-binds the USB network until
+the page reports the restart finished, because the process otherwise stays
+bound to the network that disappeared.
 
 ## Agent Restart Lifecycle
 
@@ -177,6 +230,14 @@ The task has a 120-second total deadline covering candidate application,
 verification, persistence, and rollback. Clients poll the GET form until the
 status is `succeeded` or `failed`; failure responses distinguish the candidate
 apply result from the rollback result.
+
+Failed connection task responses include a stable `failure_reason` string. The
+value is `wrong_password` only when `wpa_supplicant` reports a `WRONG_KEY`
+control event for the requested SSID. Other values are `association_failed`,
+`ip_unavailable`, `apply_failed`, `persistence_failed`, `timeout`,
+`connection_unconfirmed`, or `configuration_error`. Clients must use this
+field for user-facing error states instead of treating every `ok: false` as a
+bad password.
 
 The PUT body can include `proxy_mode` with `system`, `direct`, or `proxy`.
 `proxy` also requires `proxy_url` using HTTP, HTTPS, or SOCKS5. On success the

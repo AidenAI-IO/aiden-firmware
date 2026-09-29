@@ -252,7 +252,9 @@ assert.doesNotMatch(source, /MutationObserver/);
 assert.doesNotMatch(source, /translateDynamicText/);
 assert.doesNotMatch(source, /const\s+zhText\s*=/);
 
-const indexHtml = await fs.readFile(path.join(webRoot, 'index.html'), 'utf8');
+// The classic page moved to /legacy when the root document became the routed
+// settings shell; its controls and message hooks are unchanged.
+const indexHtml = await fs.readFile(path.join(webRoot, 'legacy.html'), 'utf8');
 assert.match(indexHtml, /data-i18n="page\.title"/);
 assert.match(indexHtml, /data-i18n="action\.ready"/);
 assert.match(indexHtml, /data-i18n-placeholder="wifi\.password_optional"/);

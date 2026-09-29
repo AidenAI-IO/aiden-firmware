@@ -15,49 +15,7 @@ import (
 // the request to the Agent's existing clear-all endpoint and returns its result
 // without exposing the Agent service topology to the browser.
 func (s *Server) handleMemoryReset(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !isSameOriginBrowserRequest(r) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	base, err := s.agentBaseURL()
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
-		return
-	}
-	target, err := url.Parse(strings.TrimRight(base.String(), "/") + "/api/clear-all")
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "agent memory reset endpoint is invalid")
-		return
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), nil)
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "create agent memory reset request: "+err.Error())
-		return
-	}
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("agent memory reset request failed: %v", err))
-		return
-	}
-	defer response.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxRequestBodySize+1))
-	if readErr != nil || len(body) > maxRequestBodySize || !json.Valid(body) {
-		writeJSONError(w, http.StatusBadGateway, "agent memory reset returned invalid JSON")
-		return
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		var payload map[string]any
-		_ = json.Unmarshal(body, &payload)
-		message, _ := payload["error"].(string)
-		if message == "" {
-			message = fmt.Sprintf("agent memory reset failed (HTTP %d)", response.StatusCode)
-		}
-		writeJSONError(w, response.StatusCode, message)
+	if !s.proxyAgentReset(w, r, "/api/clear-all", "memory reset") {
 		return
 	}
 	if err := s.scheduleAgentRestart(); err != nil {
@@ -66,6 +24,66 @@ func (s *Server) handleMemoryReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agent_restart_scheduled": true})
+}
+
+// handleConversationReset clears the current conversation history only, via
+// the Agent's /api/clear. Memory is kept and the Agent keeps running.
+func (s *Server) handleConversationReset(w http.ResponseWriter, r *http.Request) {
+	if !s.proxyAgentReset(w, r, "/api/clear", "conversation reset") {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// proxyAgentReset POSTs to an Agent clear endpoint. It writes the error
+// response itself and reports whether the Agent accepted the request.
+func (s *Server) proxyAgentReset(w http.ResponseWriter, r *http.Request, agentPath, action string) bool {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if !isSameOriginBrowserRequest(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return false
+	}
+
+	base, err := s.agentBaseURL()
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return false
+	}
+	target, err := url.Parse(strings.TrimRight(base.String(), "/") + agentPath)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "agent "+action+" endpoint is invalid")
+		return false
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), nil)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "create agent "+action+" request: "+err.Error())
+		return false
+	}
+	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("agent %s request failed: %v", action, err))
+		return false
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxRequestBodySize+1))
+	if readErr != nil || len(body) > maxRequestBodySize || !json.Valid(body) {
+		writeJSONError(w, http.StatusBadGateway, "agent "+action+" returned invalid JSON")
+		return false
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		message, _ := payload["error"].(string)
+		if message == "" {
+			message = fmt.Sprintf("agent %s failed (HTTP %d)", action, response.StatusCode)
+		}
+		writeJSONError(w, response.StatusCode, message)
+		return false
+	}
+	return true
 }
 
 func isSameOriginBrowserRequest(r *http.Request) bool {

@@ -24,7 +24,8 @@ test('HTTP SHA-256 fallback matches native hashes at padding and chunk boundarie
 });
 
 test('backup and restore wizards have no component, mode, SD strategy or password inputs', async () => {
-  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  // The classic page, which owns this wizard, is served at /legacy.
+  const html = await readFile(new URL('../legacy.html', import.meta.url), 'utf8');
   for (const id of ['dataBackupMode', 'dataBackupComponents', 'dataBackupPassphrase', 'dataBackupPassphraseConfirm', 'dataRestorePassphrase', 'dataRestoreComponents', 'dataRestoreSDStrategy', 'dataBackupStep-restore-confirm', 'dataRestoreConfirmInput', 'dataRestoreApplyBtn', 'dataBackupCancelBtn', 'dataBackupStep-restore-plan', 'dataRestorePlanBtn', 'dataBackupCardProgress', 'dataBackupCardProgressBar', 'dataBackupModalProgressBar']) {
     assert.ok(!html.includes(`id="${id}"`), `unexpected control ${id}`);
   }

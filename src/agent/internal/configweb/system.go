@@ -27,6 +27,16 @@ func (s *Server) handleReboot(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "reboot scheduled", "reboot_scheduled": true})
 }
 
+// handleAgentRestart carries out the agent_restart apply level. Config Web is a
+// separate process, so the page that asked stays up while the Agent restarts.
+func (s *Server) handleAgentRestart(w http.ResponseWriter, _ *http.Request) {
+	if err := s.scheduleAgentRestart(); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "agent_restart_scheduled": true})
+}
+
 const usbReenumerateScript = `set -eu
 UDC="$(ls /sys/class/udc 2>/dev/null | head -n 1)"
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid

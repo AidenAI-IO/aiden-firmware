@@ -158,12 +158,15 @@ func (s *Server) handleConfigMeta(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, metadata)
 }
 
-func (s *Server) updateConfig(config json.RawMessage) (map[string]any, int, error) {
+// updateConfig runs `agent config-update` on a patch. Extra flags such as
+// `--dry-run` are passed through.
+func (s *Server) updateConfig(config json.RawMessage, flags ...string) (map[string]any, int, error) {
 	body, err := json.Marshal(map[string]json.RawMessage{"config": config})
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
-	result := s.runAgentCLI(10*time.Second, body, "config-update", "--config="+s.options.AgentConfigPath, "--stdin", "--format=json")
+	args := append([]string{"config-update", "--config=" + s.options.AgentConfigPath, "--stdin", "--format=json"}, flags...)
+	result := s.runAgentCLI(10*time.Second, body, args...)
 	if result.TimedOut {
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("agent config update timed out")
 	}
@@ -190,29 +193,64 @@ func (s *Server) updateConfig(config json.RawMessage) (map[string]any, int, erro
 	return response, http.StatusOK, nil
 }
 
-func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
+// readConfigPatch reads a `{"config": {...}}` request body shared by the save
+// and plan endpoints.
+func readConfigPatch(w http.ResponseWriter, r *http.Request) (json.RawMessage, map[string]json.RawMessage, bool) {
 	var request map[string]json.RawMessage
 	if !readJSONBody(w, r, &request) {
-		return
+		return nil, nil, false
 	}
 	if request == nil {
 		writeJSONError(w, http.StatusBadRequest, "request body must be an object")
-		return
+		return nil, nil, false
 	}
 	for key := range request {
 		if key != "config" {
 			writeJSONError(w, http.StatusBadRequest, "only the 'config' field is accepted")
-			return
+			return nil, nil, false
 		}
 	}
 	config, present := request["config"]
 	if !present {
 		writeJSONError(w, http.StatusBadRequest, "missing config object")
-		return
+		return nil, nil, false
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(config, &object); err != nil || object == nil {
 		writeJSONError(w, http.StatusBadRequest, "config patch must be an object")
+		return nil, nil, false
+	}
+	return config, object, true
+}
+
+// handlePlanConfig reports what saving a patch would need before it takes
+// effect, without persisting anything, so a page can label its save button.
+func (s *Server) handlePlanConfig(w http.ResponseWriter, r *http.Request) {
+	config, _, ok := readConfigPatch(w, r)
+	if !ok {
+		return
+	}
+	plan, status, err := s.updateConfig(config, "--dry-run")
+	if err != nil {
+		writeJSONError(w, status, err.Error())
+		return
+	}
+	apply, _ := plan["apply"].(string)
+	if apply == "" {
+		apply = string(agent.ApplyLive)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"apply":           apply,
+		"apply_reasons":   plan["apply_reasons"],
+		"changed_paths":   stringSlice(plan["changed_paths"]),
+		"reboot_required": apply == string(agent.ApplyReboot),
+	})
+}
+
+func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
+	config, object, ok := readConfigPatch(w, r)
+	if !ok {
 		return
 	}
 	s.configSaveMu.Lock()
@@ -273,8 +311,13 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		rebootRequired = required
 	}
 	message := "config saved"
+	apply, _ := update["apply"].(string)
+	if apply == "" {
+		apply = string(agent.ApplyLive)
+	}
 	if rebootRequired {
 		message = "config saved; USB HID configuration changed; reboot required"
+		apply = string(agent.ApplyReboot)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                              true,
@@ -287,6 +330,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		"changed_paths":                   changed,
 		"reboot_required":                 rebootRequired,
 		"reboot_reasons":                  update["reboot_reasons"],
+		"apply":                           apply,
+		"apply_reasons":                   update["apply_reasons"],
 		"agent_restart_scheduled":         false,
 		"frame_service_restart_scheduled": frameServiceChanged,
 		"message":                         message,

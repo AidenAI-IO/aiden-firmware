@@ -164,7 +164,8 @@ func (r *Runtime) logConfigApply(revision uint64, applyErr error, elapsed time.D
 }
 
 func configRequiresReboot(current, next Config) bool {
-	return current.PointerModeOrDefault() != next.PointerModeOrDefault() || current.HID.KeyboardLayoutOrDefault() != next.HID.KeyboardLayoutOrDefault()
+	level, _ := ConfigApplyLevel(current, next)
+	return level == ApplyReboot
 }
 
 // ApplyConfigSnapshot is synchronous for embedders. HTTP callers use QueueConfig.
