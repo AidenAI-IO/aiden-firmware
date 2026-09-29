@@ -43,7 +43,7 @@ func Run(args []string) int {
 	fs.StringVar(&options.USBSubnet, "usb-subnet", options.USBSubnet, "USB ECM client subnet")
 	fs.StringVar(&options.USBInterface, "usb-interface", options.USBInterface, "USB ECM ingress interface for maintenance")
 	fs.StringVar(&options.HardwareIDPath, "hardware-id-path", options.HardwareIDPath, "immutable hardware identifier path")
-	fs.StringVar(&options.OTAConfigPath, "ota-config", options.OTAConfigPath, "OTA configuration path used for identity provisioning after restore")
+	fs.StringVar(&options.OTAConfigPath, "ota-config", options.OTAConfigPath, "OTA configuration path for factory version information and identity provisioning after restore")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0

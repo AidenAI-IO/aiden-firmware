@@ -10,8 +10,9 @@ const moduleRoot = path.join(repositoryRoot, 'src/config_web/web/assets/js/confi
 // ota.js reads the OTA log file and reports the supervisor's exit marker. The
 // marker lost its inner spaces, so the parser must keep recognising the spaced
 // form that earlier agent builds wrote into logs still present on a device.
+const elements = new Map();
 const document = {
-  getElementById() { return null; },
+  getElementById(id) { return elements.get(id) || null; },
   addEventListener() {},
 };
 const context = vm.createContext({document, console});
@@ -81,4 +82,27 @@ assert.equal(extractOtaExitCode('update finished with no marker'), null, 'absent
 assert.equal(extractOtaExitCode(''), null, 'empty log');
 assert.equal(extractOtaExitCode(null), null, 'missing log');
 
-console.log('config web ota exit marker checks passed');
+// Device polling must replace the initially unavailable About values when OTA
+// metadata appears, and keep both the rendered values and locale cache current.
+for (const id of ['aboutFirmwareVersion', 'aboutFirmwareBuildTime', 'aboutComponentBoot', 'aboutComponentRootFS',
+  'agentProcessStatus', 'agentPortStatus', 'agentProcessDetail', 'agentPortDetail', 'agentStartupError', 'agentStartupErrorText']) {
+  elements.set(id, {textContent: '', style: {}});
+}
+const agentStatusModule = await loadModule(path.join(moduleRoot, 'agent-status.js'));
+await agentStatusModule.evaluate();
+otaModule.namespace.renderFirmwareInfo({});
+assert.equal(elements.get('aboutFirmwareVersion').textContent, 'about.unavailable');
+const firmware = {version: 'dev-v0.0.10', build_time: '2026-09-29T01:00:00Z', components: {boot: 'boot-v10', rootfs: 'rootfs-v10'}};
+stateModule.namespace.runtime.request = async (url) => {
+  assert.equal(url, '/api/device/status');
+  return {agent_status: {state: 'stopped'}, firmware};
+};
+stateModule.namespace.runtime.t = (key, params) => key === 'about.build_time' ? params.time : key;
+await agentStatusModule.namespace.refreshAgentStatus(false);
+assert.equal(elements.get('aboutFirmwareVersion').textContent, firmware.version);
+assert.equal(elements.get('aboutFirmwareBuildTime').textContent, firmware.build_time);
+assert.equal(elements.get('aboutComponentBoot').textContent, 'boot-v10');
+assert.equal(elements.get('aboutComponentRootFS').textContent, 'rootfs-v10');
+assert.equal(stateModule.namespace.appState.firmware, firmware);
+
+console.log('config web ota checks passed');
