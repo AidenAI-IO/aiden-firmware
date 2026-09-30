@@ -45,6 +45,8 @@ export const color = {
   success: '#34C759',
   /** Error text and error field border. */
   danger: '#FF3B30',
+  /** Warning text, e.g. WARN lines in the Agent log: amber dark enough to read on the canvas. */
+  warning: '#B86E00',
   /** Primary action pill fill. */
   primaryFill: '#000000',
   /** Primary action fill while its form is incomplete. */

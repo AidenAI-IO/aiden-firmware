@@ -168,6 +168,11 @@ globalThis.document = {
   documentElement: new Element('html'),
   createElement: tag => new Element(tag),
   createElementNS: (namespace, tag) => new Element(tag, namespace),
+  createTextNode: value => {
+    const node = new Element('#text');
+    node.textContent = value;
+    return node;
+  },
   // Counted, so a component that leaves a document listener behind shows up.
   listeners: new Map(),
   addEventListener(type, handler) {
@@ -434,6 +439,30 @@ const countByClass = (node, className) => {
   // The tile's glyph is the supplied filled 27x18 mark, centred on the plate.
   assert.equal(countByClass(tile, 'ds-tile__glyph-stroke'), 0);
   assert.equal(countByClass(tile, 'ds-tile__glyph-fill'), 1, 'the plate carries the supplied Wi-Fi glyph');
+}
+
+/* --------------------------------------------------------- agent log --- */
+
+{
+  globalThis.window = globalThis.window || {addEventListener() {}, location: {href: 'http://board.local/'}};
+  const {agentLogLines} = await import(pathToFileURL(path.join(uiRoot, '../app/pages/advanced.js')).href);
+  const lines = agentLogLines([
+    '2026-09-30T08:34:41Z [INFO][agent][server] log_message message="ok"',
+    '2026-09-30T08:34:42Z [WARN][agent][phone_bridge] fallback to HTTP',
+    '2026-09-30T08:34:43Z [ERROR][agent][voice] stt failed',
+    '  wrapped detail of the error',
+    '2026-09-30T08:34:44Z [DEBUG][agent][hid] report sent',
+    'panic: runtime error',
+  ].join('\n'));
+  const severities = lines.map(line => [...line._classes].find(name => name.startsWith('ds-log__line--')));
+  assert.deepEqual(severities, [
+    'ds-log__line--info', 'ds-log__line--warn', 'ds-log__line--error',
+    'ds-log__line--error', 'ds-log__line--debug', 'ds-log__line--error',
+  ], 'continuation lines keep the severity of the record above; a panic reads as an error');
+  assert.equal(lines[0].querySelector('.ds-log__time').textContent, '2026-09-30T08:34:41Z');
+  assert.equal(lines[0].querySelector('.ds-log__level').textContent, '[INFO]');
+  assert.equal(lines[0].querySelector('.ds-log__scope').textContent, '[agent][server]');
+  assert.equal(lines[1].textContent, '2026-09-30T08:34:42Z [WARN][agent][phone_bridge] fallback to HTTP', 'the text is unchanged');
 }
 
 process.stdout.write('config web UI component tests passed\n');

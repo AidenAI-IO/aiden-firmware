@@ -216,6 +216,32 @@ export async function logsPage(context) {
   return screen([body]);
 }
 
+/** `2026-09-30T08:34:41Z [INFO][agent][server] message`, the Agent's compact record. */
+const AGENT_LOG_RECORD = /^(\S+Z) \[(DEBUG|INFO|WARN|ERROR)\]((?:\[[^\]]*\])*)(.*)$/;
+
+/**
+ * Agent log text as coloured lines. A line that is not a record (a wrapped
+ * message, a stack trace) keeps the severity of the record above it.
+ */
+export function agentLogLines(logText) {
+  let severity = 'info';
+  return String(logText).split(/\r?\n/).map(line => {
+    const record = line.match(AGENT_LOG_RECORD);
+    if (!record) {
+      if (/\bpanic\b|^goroutine \d+/.test(line)) severity = 'error';
+      return el('span', {class: `ds-log__line ds-log__line--${severity}`}, [line]);
+    }
+    severity = record[2].toLowerCase();
+    return el('span', {class: `ds-log__line ds-log__line--${severity}`}, [
+      el('span', {class: 'ds-log__time'}, [record[1]]),
+      ' ',
+      el('span', {class: `ds-log__level ds-log__level--${severity}`}, [`[${record[2]}]`]),
+      el('span', {class: 'ds-log__scope'}, [record[3]]),
+      record[4],
+    ]);
+  });
+}
+
 /** The Agent's run state from `GET /api/device/status`, as one row. */
 function agentStatusRow(status) {
   const running = Boolean(status.process_running);
@@ -235,12 +261,19 @@ export async function agentLogPage(context) {
   const statusGroup = el('div');
   const pre = el('pre', {class: 'ds-log', data: {action: 'agent-log'}});
   let timer = null;
+  let shown = null;
 
   // Replacing the text would drop a selection the user is making to copy it.
   const selecting = () => {
     const selection = window.getSelection ? window.getSelection() : null;
     return Boolean(selection && !selection.isCollapsed && pre.contains(selection.anchorNode));
   };
+
+  // The page is attached a few frames after it renders; wait for a laid-out box.
+  function toBottom(frames = 60) {
+    if (pre.isConnected && pre.clientHeight) pre.scrollTop = pre.scrollHeight;
+    else if (frames > 0) requestAnimationFrame(() => toBottom(frames - 1));
+  }
 
   async function loadStatus() {
     const payload = await request('/api/device/status').catch(() => null);
@@ -251,10 +284,14 @@ export async function agentLogPage(context) {
     clearTimeout(timer);
     try {
       const snapshot = (await request('/api/logs/agent')).agent_log || {};
-      if (!selecting()) {
-        const stick = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 16;
-        pre.textContent = (snapshot.log || '').trim() || snapshot.error || resolve(msg('advanced.agent_log_empty', '暂无日志'));
-        if (stick) pre.scrollTop = pre.scrollHeight;
+      const logText = (snapshot.log || '').trim();
+      if (logText !== shown && !selecting()) {
+        // Nothing is measurable before the first render: open on the newest line.
+        const stick = shown === null || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 16;
+        if (logText) replace(pre, agentLogLines(logText));
+        else pre.textContent = snapshot.error || resolve(msg('advanced.agent_log_empty', '暂无日志'));
+        shown = logText;
+        if (stick) toBottom();
       }
     } catch (error) {
       if (!pre.textContent) pre.textContent = error && error.message ? error.message : resolve(msg('advanced.agent_log_failed', '读取日志失败'));
@@ -262,10 +299,9 @@ export async function agentLogPage(context) {
     timer = setTimeout(() => { if (body.isConnected) load(); }, AGENT_LOG_POLL_MS);
   }
 
-  replace(body, [statusGroup, el('div', {class: 'ds-group ds-group--fill'}, [el('div', {class: 'ds-log-frame'}, [pre])])]);
+  replace(body, [statusGroup, el('div', {class: 'ds-group'}, [el('div', {class: 'ds-log-frame ds-log-frame--bounded'}, [pre])])]);
   saver.refreshChrome();
   await Promise.all([loadStatus(), load()]);
-  pre.scrollTop = pre.scrollHeight;
   return screen([body], 'ds-screen--sticky');
 }
 
