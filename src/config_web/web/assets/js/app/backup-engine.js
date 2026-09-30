@@ -25,6 +25,12 @@ const RESTORE_SD_STRATEGY = 'allow_different';
  * only be cancelled and started again.
  */
 const NEEDS_UPLOAD = ['created', 'restore_ingest', 'reading_manifest', 'awaiting_plan', 'uploading_and_staging'];
+/**
+ * How long an attached restore must sit in `validating` before the page sends
+ * /validate itself; a validation the previous page started finishes well
+ * within this, ms.
+ */
+const RESUME_VALIDATE_AFTER_MS = 8000;
 /** Once restore reaches these, the device commits regardless; cancelling is refused. */
 const UNCANCELLABLE = ['committing', 'post_processing', 'resuming_services', 'rolling_back'];
 
@@ -324,13 +330,88 @@ export function createBackupEngine(onChange) {
     // The upload finished before the refresh; the device is waiting for the
     // same requests the uninterrupted flow would have sent next. The user
     // confirmed the restore before it started, so it simply goes on.
-    const resume = kind !== 'restore' ? null
-      : state === 'validating' ? () => validateAndApply(current.job_id)
-        : state === 'prepared' && job.plan_digest ? () => applyRestore(current.job_id, job.plan_digest)
-          : null;
-    if (resume) resume().catch(error => fail(error));
-    else poll(kind, current.job_id).catch(error => fail(error));
+    if (kind === 'restore' && (state === 'validating' || state === 'prepared')) {
+      resumeRestore(current.job_id).catch(error => fail(error));
+    } else {
+      poll(kind, current.job_id).catch(error => fail(error));
+    }
     return true;
+  }
+
+  /**
+   * Carry an attached, fully uploaded restore through validate and apply.
+   *
+   * `validating` means both "waiting for /validate" and "/validate running",
+   * and the server does not serialise a second call; the request the old page
+   * sent may still be in flight. So the job is watched first, and /validate is
+   * sent only once it has sat in `validating` long enough that nobody is
+   * running it. Any failure is reconciled against the job's real state before
+   * it is reported, so a lost response does not abandon a job the device is
+   * still holding.
+   */
+  async function resumeRestore(jobId) {
+    let validateSent = false;
+    const quietSince = Date.now();
+    try {
+      for (;;) {
+        if (!job || job.job_id !== jobId) return;
+        const payload = await jobRequest(jobPath('restore', jobId));
+        job = {...job, ...payload};
+        if (payload.state === 'prepared' && payload.plan_digest) {
+          await applyRestore(jobId, payload.plan_digest);
+          return;
+        }
+        if (payload.state !== 'validating') {
+          if (TERMINAL.has(payload.state)) finish(payload);
+          else await poll('restore', jobId);
+          return;
+        }
+        if (!validateSent && Date.now() - quietSince >= RESUME_VALIDATE_AFTER_MS) {
+          validateSent = true;
+          emit({phase: t('backup.phase.validating'), done: 0, total: 0});
+          const validated = await maintenance(jobPath('restore', jobId, '/validate'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+          job = {...job, ...validated};
+          continue;
+        }
+        await delay(1000);
+      }
+    } catch (error) {
+      await reconcileRestore(jobId, error);
+    }
+  }
+
+  /** After a failed resume step: continue, report the device's outcome, or cancel. */
+  async function reconcileRestore(jobId, original) {
+    let payload;
+    try {
+      payload = await jobRequest(jobPath('restore', jobId));
+    } catch (_unreadable) {
+      fail(original);
+      return;
+    }
+    job = {...job, ...payload};
+    if (TERMINAL.has(payload.state)) {
+      finish(payload);
+      return;
+    }
+    if (payload.state === 'prepared' && payload.plan_digest) {
+      try {
+        await applyRestore(jobId, payload.plan_digest);
+        return;
+      } catch (_applyFailed) {
+        // Fall through to the cancel below with the first error.
+      }
+    } else if (UNCANCELLABLE.includes(payload.state)) {
+      // Committing on the device already; it finishes on its own.
+      await poll('restore', jobId);
+      return;
+    }
+    try {
+      await maintenance(jobPath('restore', jobId), {method: 'DELETE'});
+    } catch (_ignored) {
+      // Already finished on the device.
+    }
+    fail(original);
   }
 
   return {capabilities, createBackup, chooseRestore, startRestore, cancel, attach, fileName: () => (file ? file.name : '')};
