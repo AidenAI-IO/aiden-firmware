@@ -1,21 +1,7 @@
 /**
- * Firmware update route: `/firmware`, with the raw log at `/firmware/log`.
- *
- * This is the device's own maintenance tool, not the product "system update"
- * the companion app may offer later: it has no release notes or download size
- * to show, because the updater decides on its own whether a release is newer.
- *
- * It keeps the classic page's OTA update (`POST /api/ota/updates`, which runs
- * `/usr/lib/aiden/ota update`: check the release, download, verify, write the
- * inactive A/B slot, switch and reboot) and its "About" versions, and adds
- * what the classic page only had as raw log text: the current stage and its
- * progress, read from the updater's log by `ota-progress.js`.
- *
- * The updater decides whether a release is newer; there is no separate check
- * endpoint, so "检查更新" and "更新" are one action that ends either in a
- * reboot or in "已是最新版本". While it runs the page polls the status every
- * two seconds; once the updater requests its reboot the page waits for the
- * device to come back and reloads, as a settings reboot does.
+ * Firmware and business updates share the existing /api/ota/updates job.
+ * The systemd worker checks GitHub firmware first, then the signed business
+ * APT source. Package-only updates can restart Config Web without a reboot.
  */
 
 import {request, t} from '../data.js';
@@ -37,6 +23,9 @@ const STAGE_LABEL = {
   check: msg('ota.stage_check', '正在检查更新'),
   download: msg('ota.stage_download', '正在下载'),
   install: msg('ota.stage_install', '正在安装'),
+  'package-check': msg('ota.stage_package_check', '正在检查业务包更新'),
+  'package-install': msg('ota.stage_package_install', '正在升级业务包'),
+  health: msg('ota.stage_health', '正在确认新固件启动状态'),
   reboot: msg('ota.stage_reboot', '即将重启'),
 };
 
@@ -57,7 +46,7 @@ function localTime(value) {
 
 async function readStatus() {
   const [ota, snapshot] = await Promise.all([
-    request('/api/ota/status').catch(() => ({})),
+    request('/api/ota/status'),
     request('/api/device/snapshot').catch(() => ({})),
   ]);
   return {ota, firmware: (snapshot && snapshot.firmware) || {}};
@@ -66,11 +55,17 @@ async function readStatus() {
 export async function otaPage(context) {
   const body = el('div');
   const saver = createSaver(context, {title: msg('ui.nav_firmware', '固件更新'), back: '/', root: body});
-  let status = await readStatus();
+  let status = await readStatus().catch(() => ({ota: {}, firmware: {}}));
   let timer = null;
   let rebooting = false;
 
-  const progress = () => parseOtaLog((status.ota.ota_log || {}).log);
+  const progress = () => {
+    const parsed = parseOtaLog((status.ota.ota_log || {}).log);
+    // Config Web is available before the boot health service finishes. Avoid
+    // following the previous boot's reboot log again during that interval.
+    if (status.ota.hybrid_update_phase === 'waiting-health') return {...parsed, state: 'running', stage: 'health', percent: null};
+    return parsed;
+  };
   // The backend's lock flag is the truth; the log only supplies detail, and a
   // run that died without writing its exit line must not look alive forever.
   const running = () => Boolean(status.ota.ota_update_running);
@@ -84,7 +79,10 @@ export async function otaPage(context) {
     if (!running() || rebooting) return;
     timer = setTimeout(async () => {
       if (!body.isConnected) return;
-      status = await readStatus();
+      try { status = await readStatus(); } catch (_error) {
+        // aiden-business stops and restores Config Web during unpack/configure.
+        // Keep polling through that temporary loss of the status endpoint.
+      }
       render();
       schedule();
     }, POLL_MS);
@@ -110,8 +108,8 @@ export async function otaPage(context) {
   async function start() {
     const confirmed = await confirmSheet({
       title: msg('ota.confirm_title', '检查并安装更新？'),
-      body: msg('ota.confirm_body', '发现新版本后会自动下载安装并重启设备，期间与手机的连接会断开。更新失败时会自动回退到当前版本。'),
-      confirmLabel: msg('ota.update', '检查更新'),
+      body: msg('ota.confirm_body', '检查 GitHub 固件和 aiden-business 业务包更新。有新固件时先安装并重启，启动确认后继续检查业务包；仅业务包更新时会短暂重启相关服务。'),
+      confirmLabel: msg('ota.update', '检查并安装更新'),
       action: 'confirm-ota',
     });
     if (!confirmed) return;
@@ -119,10 +117,11 @@ export async function otaPage(context) {
       await request('/api/ota/updates', {method: 'POST'});
     } catch (error) {
       toast(error && error.message ? error.message : resolve(msg('ota.start_failed', '无法开始更新')), {durationMs: 5000});
+      return;
     }
     // The updater appends to the log; give it a moment to write its first line.
     watching = true;
-    status = await readStatus();
+    status = await readStatus().catch(() => status);
     status.ota.ota_update_running = true;
     render();
     schedule();
@@ -133,6 +132,7 @@ export async function otaPage(context) {
       running: [msg('ota.pill_running', '更新中'), 'accent'],
       rebooting: [msg('ota.pill_rebooting', '重启中'), 'accent'],
       failed: [msg('ota.pill_failed', '更新失败'), 'danger'],
+      completed: [msg('ota.pill_completed', '更新完成'), 'success'],
       up_to_date: [msg('ota.pill_latest', '已是最新'), 'success'],
     };
     const entry = map[state];
@@ -164,16 +164,18 @@ export async function otaPage(context) {
     const p = progress();
     const busy = running() || rebooting;
     // Show progress for the live run only; a finished run's last line is not progress.
-    const live = busy && p.state !== 'failed' && p.state !== 'up_to_date';
+    const live = busy && p.state !== 'failed' && p.state !== 'up_to_date' && p.state !== 'completed';
     const shown = rebooting ? 'rebooting' : busy ? 'running' : p.state;
     const version = fw.current_version || fw.version || '';
 
-    const update = button({label: msg('ota.update', '检查更新'), block: true, action: 'start-ota', onPress: start});
+    const update = button({label: msg('ota.update', '检查并安装更新'), block: true, action: 'start-ota', onPress: start});
     update.disabled = busy;
 
     let result = null;
     if (!busy && p.state === 'failed') {
       result = text(t('ota.last_failed', {error: p.error || '—', defaultValue: '上次更新失败：{{error}}'}), 'ds-card__note ds-card__note--danger');
+    } else if (!busy && p.state === 'completed') {
+      result = text(msg('ota.completed', '业务包升级完成；如运行配置要求重启，请稍后重启设备。'), 'ds-card__note');
     } else if (!busy && p.state === 'up_to_date' && p.at) {
       result = text(t('ota.checked_at', {time: localTime(p.at), defaultValue: '{{time}} 检查过，已是最新版本'}), 'ds-card__note');
     }

@@ -21,6 +21,24 @@ APT/dpkg 自动停止并恢复原先运行的业务服务。用户配置和 user
 新契约的软件包不会出现在旧契约的候选版本中；先安装新 OTA 后，设备才会切换到
 新基础契约的软件源。包的 preinst 仍会校验通道、契约、底座标签和系统指纹。
 
+Config Web 的“检查并安装更新”（`POST /api/ota/updates`）触发
+`aiden-hybrid-update.service`，按以下顺序处理：
+
+1. 通过 `ota check` 检查当前通道的 GitHub Release，并验证签名清单、版本和构建时间。
+   仅发现新固件时调用 `ota update`；检查本身不下载镜像、不写分区、不修改 OTA 事务状态。
+2. 新固件切槽重启后，等待现有 OTA 健康服务完成。仅当目标版本和构建时间都已
+   `committed` 时继续；回退或健康确认失败则结束任务，不升级业务包。
+3. 没有新固件，或新固件已经确认后，只刷新 `aiden-business.sources` 的签名索引。
+   模拟 `apt-get --only-upgrade install aiden-business`，发现该包的更新才实际执行。
+   使用指定包的升级命令，避免普通 `apt-get upgrade` 顺带升级其他已安装的软件；模拟
+   结果要求更改其他包或删除包时会报错。沿用平台的软件源 pin、APT 签名验证和包契约检查。
+
+升级服务独立于 Config Web，业务包停启门户不会中断升级。任务标记存放在
+`/userdata/ota/hybrid-update.pending`，OTA 重启后自动续接；日志和进度继续由
+`GET /api/ota/status` 提供。业务包成功后不主动整机重启，运行配置是否需要后续重启
+仍以 `/run/aiden-business-reboot-required.json` 为准。APT 刷新失败或安装失败会显示
+失败，不当作“已是最新”；包安装中断后需先修复 dpkg 状态再手动重试。
+
 `/etc/apt/preferences.d/aiden-business` 将匹配源中的业务包优先级设为 990，Debian
 源的包设为 1，低于已安装包的 100。因此普通 `apt upgrade` 只升级业务，Debian
 系统包随 OTA 更新，避免基础契约未变而系统库已经改变。显式安装此前未安装的

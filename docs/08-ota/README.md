@@ -62,6 +62,11 @@ findmnt /
 
 `check-now` is still retained as a compatibility alias; new scripts and documentation should use `update`.
 
+`ota check` only checks signed release metadata and prints `available`, `version`,
+`build_time` and `current_version` as JSON. It does not install firmware. Config
+Web uses this check before triggering firmware installation, followed by scoped
+`aiden-business` APT updates. See [APT updates](apt-repository.md).
+
 ## Related Source Code
 
 | Path | Description |

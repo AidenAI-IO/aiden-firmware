@@ -164,6 +164,7 @@ suites:
       python3 scripts/test_debian_package_lifecycle.py
       python3 scripts/test_channel_release.py
       python3 scripts/test_apt_repository.py
+      python3 scripts/test_hybrid_update.py
       python3 scripts/check_normalized_coords.py
       bash scripts/test_check_normalized_coords.sh
     dependencies: [bash, sh, python3, jq, git, openssl, rg]

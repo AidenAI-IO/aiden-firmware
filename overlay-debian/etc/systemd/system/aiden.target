@@ -9,6 +9,7 @@ Wants=aiden-frame.service aiden-audio.service aiden-ble.service aiden-agent.serv
 Wants=aiden-agent-log-retention.timer
 Wants=aiden-wifi-proxy.service aiden-wifi-proxy-agent-restart.path
 Wants=aiden-config-web.service aiden-ota-health-marker.service aiden-ota-health.service
+Wants=aiden-hybrid-update.service
 Wants=aiden-ttyd.service
 Wants=aiden-adb-host.service
 Wants=aiden-wlan-guard.service

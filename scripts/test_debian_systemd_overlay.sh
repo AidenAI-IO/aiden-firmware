@@ -59,6 +59,7 @@ aiden-adb-host.service
 aiden-agent.service
 aiden-audio.service
 aiden-ota-health.service
+aiden-hybrid-update.service
 aiden-config-web.service
 aiden-ttyd.service
 '
@@ -600,6 +601,7 @@ if grep -E "${UNIT_DIR}/.*(Unknown key name|Failed to parse|Missing '=')" \
 fi
 
 "${REPO_ROOT}/scripts/test_debian_ota_health_aggregate.sh"
+python3 "${REPO_ROOT}/scripts/test_hybrid_update.py"
 "${REPO_ROOT}/scripts/test_debian_machine_id_provision.sh"
 "${REPO_ROOT}/scripts/test_debian_agent_control.sh"
 "${REPO_ROOT}/scripts/test_debian_agent_log_retention.sh"

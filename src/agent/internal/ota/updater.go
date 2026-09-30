@@ -52,6 +52,8 @@ const (
 var ErrUpdateAlreadyRunning = errors.New("ota update already running")
 
 type UpdaterConfig struct {
+	ExpectedVersion           string                       `json:"-"`
+	ExpectedBuildTime         string                       `json:"-"`
 	ConfigPath                string                       `json:"-"`
 	StateDir                  string                       `json:"state_dir,omitempty"`
 	DownloadDir               string                       `json:"download_dir,omitempty"`
@@ -332,67 +334,16 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	}
 	logging.Infof("ota", "updater", "ota check: active_slot=%s target_slot=%s", slotLogName(active), slotLogName(target))
 
-	var assetsByName map[string]string
-	var manifestBytes []byte
+	manifest, assetsByName, err := u.fetchUpdateManifest(ctx)
+	if err != nil {
+		u.recordError("manifest", err)
+		return UpdateResult{}, err
+	}
+	if (u.config.ExpectedVersion != "" && manifest.Version != u.config.ExpectedVersion) ||
+		(u.config.ExpectedBuildTime != "" && manifest.BuildTime != u.config.ExpectedBuildTime) {
+		return UpdateResult{}, fmt.Errorf("OTA release changed since availability check; check again")
+	}
 	token := u.githubToken()
-
-	if u.config.ManifestURL != "" {
-		logging.Infof("ota", "updater", "ota manifest: downloading from direct URL %s", sanitizeURLForLog(u.config.ManifestURL))
-		directToken := ""
-		if isGitHubURL(u.config.ManifestURL) {
-			directToken = token
-		}
-		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, u.config.ManifestURL, directToken, MaxRemoteManifestBytes)
-		if err != nil {
-			u.recordError("manifest", err)
-			return UpdateResult{}, err
-		}
-	} else {
-		releaseURL, endpointErr := releaseEndpoint(u.config)
-		if endpointErr != nil {
-			u.recordError("release", endpointErr)
-			return UpdateResult{}, endpointErr
-		}
-		logging.Infof("ota", "updater", "ota release: fetching %s", releaseURL)
-		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
-		if err != nil {
-			u.recordError("release", err)
-			return UpdateResult{}, err
-		}
-		logging.Infof("ota", "updater", "ota release: found %d assets", len(assetsByName))
-		manifestURL, err := requiredAssetURL(assetsByName, "manifest.json")
-		if err != nil {
-			u.recordError("manifest", err)
-			return UpdateResult{}, err
-		}
-		logging.Infof("ota", "updater", "ota manifest: downloading manifest.json from %s", manifestURL)
-		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
-		if err != nil {
-			u.recordError("manifest", err)
-			return UpdateResult{}, err
-		}
-	}
-	publicKey, err := u.publicKey()
-	if err != nil {
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
-	}
-	manifest, err := VerifyManifestJSON(manifestBytes, publicKey)
-	if err != nil {
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
-	}
-	if err := requireManifestChannel(u.config.Channel, manifest); err != nil {
-		u.recordError("manifest", err)
-		return UpdateResult{}, err
-	}
-	if u.config.DebianMode {
-		if err := requireAtomicProductionManifest(manifest); err != nil {
-			u.recordError("manifest", err)
-			return UpdateResult{}, err
-		}
-	}
-	logging.Infof("ota", "updater", "ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
 	if err := state.RejectDowngrade(manifest); err != nil {
 		u.recordError("policy", err)
 		return UpdateResult{}, err
@@ -1722,4 +1673,63 @@ func currentBootID() string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// fetchUpdateManifest is shared by availability checks and installation. Only
+// signed, channel-compatible manifests may influence an update decision.
+func (u *Updater) fetchUpdateManifest(ctx context.Context) (Manifest, map[string]string, error) {
+	var assetsByName map[string]string
+	var manifestBytes []byte
+	token := u.githubToken()
+	var err error
+
+	if u.config.ManifestURL != "" {
+		logging.Infof("ota", "updater", "ota manifest: downloading from direct URL %s", sanitizeURLForLog(u.config.ManifestURL))
+		directToken := ""
+		if isGitHubURL(u.config.ManifestURL) {
+			directToken = token
+		}
+		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, u.config.ManifestURL, directToken, MaxRemoteManifestBytes)
+		if err != nil {
+			return Manifest{}, nil, err
+		}
+	} else {
+		releaseURL, endpointErr := releaseEndpoint(u.config)
+		if endpointErr != nil {
+			return Manifest{}, nil, endpointErr
+		}
+		logging.Infof("ota", "updater", "ota release: fetching %s", releaseURL)
+		assetsByName, err = u.fetchLatestReleaseAssets(ctx, releaseURL, token)
+		if err != nil {
+			return Manifest{}, nil, err
+		}
+		logging.Infof("ota", "updater", "ota release: found %d assets", len(assetsByName))
+		manifestURL, err := requiredAssetURL(assetsByName, "manifest.json")
+		if err != nil {
+			return Manifest{}, nil, err
+		}
+		logging.Infof("ota", "updater", "ota manifest: downloading manifest.json from %s", manifestURL)
+		manifestBytes, err = u.fetchBytesWithTokenLimit(ctx, manifestURL, token, MaxRemoteManifestBytes)
+		if err != nil {
+			return Manifest{}, nil, err
+		}
+	}
+	publicKey, err := u.publicKey()
+	if err != nil {
+		return Manifest{}, nil, err
+	}
+	manifest, err := VerifyManifestJSON(manifestBytes, publicKey)
+	if err != nil {
+		return Manifest{}, nil, err
+	}
+	if err := requireManifestChannel(u.config.Channel, manifest); err != nil {
+		return Manifest{}, nil, err
+	}
+	if u.config.DebianMode {
+		if err := requireAtomicProductionManifest(manifest); err != nil {
+			return Manifest{}, nil, err
+		}
+	}
+	logging.Infof("ota", "updater", "ota manifest: verified version=%s channel=%s build_time=%s parts=%d", manifest.Version, logValue(manifest.Channel, "<unset>"), manifest.BuildTime, len(manifest.Parts))
+	return manifest, assetsByName, nil
 }

@@ -35,23 +35,30 @@ const STAGE_OF = {
 
 const MESSAGE = /message="(?:ota )?([a-z]+):\s*([^"]*)"/;
 const PROGRESS = /(\S+)(?:\s+->\s+\S+)?\s+(?:progress|complete)\s+([\d.]+\s*[KMG]iB)\/([\d.]+\s*[KMG]iB)(?:\s+\((\d+)%\))?/;
-const EXIT = /update_exited exit_code=(\d+)/;
+const EXIT = /update_exited exit_code=(-?\d+)/;
 
 /**
  * @param {string} log - the log tail.
  * @returns {{
- *   state: 'idle'|'running'|'rebooting'|'updated'|'up_to_date'|'failed',
+ *   state: 'idle'|'running'|'rebooting'|'updated'|'completed'|'up_to_date'|'failed',
  *   stage: string|null, percent: number|null, item: string, done: string, total: string,
  *   version: string, error: string, at: string,
  * }}
  */
 export function parseOtaLog(log) {
   const lines = String(log || '').split('\n');
-  // The newest run starts at the last "check: start".
+  // Hybrid runs span firmware checks and a reboot. Nested OTA check lines
+  // belong to that same run; legacy logs still start at "check: start".
   let start = -1;
+  let hybrid = false;
   lines.forEach((line, index) => {
-    if (/message="(?:ota )?check: start"/.test(line)) start = index;
+    if (/message="hybrid: start"/.test(line)) { start = index; hybrid = true; }
+    else if (!hybrid && /message="(?:ota )?check: start"/.test(line)) start = index;
   });
+  if (start < 0) {
+    start = lines.findIndex(line => /message="hybrid:/.test(line));
+    hybrid = start >= 0;
+  }
   const result = {state: 'idle', stage: null, percent: null, item: '', done: '', total: '', version: '', error: '', at: ''};
   if (start < 0) {
     // A run can fail before its first step (for example a GitHub 403).
@@ -70,6 +77,22 @@ export function parseOtaLog(log) {
   for (const line of run) {
     const message = MESSAGE.exec(line);
     if (message) {
+      if (message[1] === 'hybrid') {
+        const phase = message[2];
+        const stages = {'start': 'check', 'ota-check': 'check', 'ota-install': 'install',
+          'waiting-reboot': 'reboot', 'ota-committed': 'package-check',
+          'package-check': 'package-check', 'package-install': 'package-install'};
+        if (stages[phase]) {
+          result.stage = stages[phase];
+          result.state = phase === 'waiting-reboot' ? 'rebooting' : 'running';
+          result.percent = null;
+          result.item = '';
+        }
+        if (phase === 'completed') result.state = 'completed';
+        if (phase === 'up-to-date') result.state = 'up_to_date';
+        continue;
+      }
+      if (/\[ERROR\]/.test(line)) lastPlain = message[2];
       const stage = STAGE_OF[message[1]];
       // The newest step wins: an image has several parts, and each part is
       // downloaded and then written, so the stage moves back and forth.
@@ -94,7 +117,7 @@ export function parseOtaLog(log) {
     if (trimmed.startsWith('{')) {
       try {
         const summary = JSON.parse(trimmed);
-        if (summary.NoUpdate) result.state = 'up_to_date';
+        if (!hybrid && summary.NoUpdate) result.state = 'up_to_date';
         if (summary.Version) result.version = summary.Version;
       } catch (_error) {
         // Not the summary line.
