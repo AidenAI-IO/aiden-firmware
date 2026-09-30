@@ -7,8 +7,10 @@ sidebar_position: 0
 
 This project's production OTA uses A/B partitioning, signed manifests, and boot health confirmation mechanisms. During runtime, devices only write to the inactive slot. After reboot, Rockchip SPL selects the new slot; if the new system does not confirm success within the health window, SPL automatically rolls back to the previous successful slot.
 
-此版本取消 OEM 分区和 `/oem`，仅支持完整强刷安装；不提供旧布局 OTA 迁移。
-新布局使用 boot/rootfs A/B，rootfs 每槽 1792 MiB，OTA manifest schema 为 2。
+This version removes the OEM partition and `/oem`, supports full-image
+flashing only, and does not provide OTA migration from the old layout.
+The new layout uses boot/rootfs A/B slots, with 1792 MiB per rootfs slot and
+OTA manifest schema version 2.
 
 ## Scope
 
@@ -23,6 +25,7 @@ This project's production OTA uses A/B partitioning, signed manifests, and boot 
 ## Documentation Index
 
 - [OTA Architecture and Runtime](architecture.md)
+- [Health Checks, Data Compatibility, and A/B Rollback](health-check-rollback-design.md)
 - [OTA Key Management](key-management.md)
 - [Device Acceptance Process](device-acceptance.md)
 - [A/B and `abctl` Verification](verification.md)

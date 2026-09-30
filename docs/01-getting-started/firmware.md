@@ -4,8 +4,10 @@ sidebar_position: 4
 
 # Firmware Build and Flashing
 
-此版本取消 OEM 分区和 `/oem`，仅支持完整强刷安装；不提供旧布局 OTA 迁移。
-新布局使用 boot/rootfs A/B，rootfs 每槽 1792 MiB，OTA manifest schema 为 2。
+This version removes the OEM partition and `/oem`, supports full-image
+flashing only, and does not provide OTA migration from the old layout.
+The new layout uses boot/rootfs A/B slots, with 1792 MiB per rootfs slot and
+OTA manifest schema version 2.
 
 ## Getting Firmware
 

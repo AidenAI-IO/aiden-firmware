@@ -17,6 +17,7 @@ import {connect, forget, otherNetworks, proxyChangeRequest, scan, wifiSignalLeve
 import {el, replace} from '../../ui/dom.js';
 import {group, row, screen} from '../../ui/list.js';
 import {button} from '../../ui/button.js';
+import {confirmSheet} from '../../ui/confirm.js';
 import {setChecked, switchControl} from '../../ui/switch.js';
 import {icon, wifiTile} from '../../ui/icon.js';
 import {msg, resolve, text} from '../../ui/text.js';
@@ -240,6 +241,8 @@ export async function wifiPage(context) {
   /** Discovered networks, filled in by the scan that runs on entry. */
   let discovered = [];
   let scanning = false;
+  /** SSID of the saved network being joined from the list, if any. */
+  let switching = '';
 
   const listHost = el('div');
   const rescanButton = button({
@@ -283,13 +286,14 @@ export async function wifiPage(context) {
                     }
                   : {...network, ...(discoveredBySsid.get(network.ssid) || {})},
               ),
+              // As on iOS: tapping a saved network joins it, and the ⓘ opens
+              // its details. The connected one has nothing to join.
               action: `wifi-open-${network.ssid}`,
-              onPress: () => context.navigate(`/wifi/${encodeURIComponent(network.ssid)}`),
-              accessory:
-                network.ssid === connected
-                  ? icon('checkCircle', {class: 'ds-row__icon ds-row__icon--success', size: 22})
-                  : null,
-              value: network.ssid === connected ? null : disabledLabel(network),
+              onPress: network.ssid === connected
+                ? () => openDetails(network.ssid)
+                : () => switchTo(network.ssid, connected),
+              accessory: savedAccessory(network, connected),
+              value: network.ssid === connected || network.ssid === switching ? null : disabledLabel(network),
             }),
           ),
         ],
@@ -325,6 +329,65 @@ export async function wifiPage(context) {
 
     replace(listHost, sections);
     rescanButton.disabled = scanning;
+  }
+
+  function openDetails(ssid) {
+    context.navigate(`/wifi/${encodeURIComponent(ssid)}`);
+  }
+
+  /** Connected check or joining spinner, then the details button. */
+  function savedAccessory(network, connected) {
+    const info = el('button', {
+      class: 'ds-row__info',
+      attrs: {type: 'button', 'aria-label': resolve(msg('wifi.details', '网络详情'))},
+      data: {action: `wifi-info-${network.ssid}`},
+      on: {click: event => {
+        // The row itself joins the network; this button only opens details.
+        event.stopPropagation();
+        openDetails(network.ssid);
+      }},
+    }, [icon('info', {size: 22})]);
+    let state = null;
+    if (network.ssid === switching) state = el('span', {class: 'ds-row__spinner', attrs: {role: 'status', 'aria-label': resolve(msg('wifi.joining', '正在连接…'))}});
+    else if (network.ssid === connected) state = icon('checkCircle', {class: 'ds-row__icon ds-row__icon--success', size: 22});
+    return el('span', {class: 'ds-row__accessory-group'}, [state, info]);
+  }
+
+  /** Join a saved network with its stored password and proxy setting. */
+  async function switchTo(ssid, connected) {
+    if (switching) return;
+    // Reached over the board's own Wi-Fi address, this page loses its
+    // connection the moment the board leaves that network.
+    const status = (snapshot && snapshot.wifi_status) || {};
+    if (connected && status.ip_address && status.ip_address === window.location.hostname) {
+      const confirmed = await confirmSheet({
+        title: t('wifi.switch_confirm_title', {ssid, defaultValue: '切换到“{{ssid}}”？'}),
+        body: msg('wifi.switch_confirm_body', '本页面正通过当前 Wi-Fi 访问设备，切换后连接会断开。请通过 USB 或新网络中的设备地址重新打开。'),
+        confirmLabel: msg('wifi.switch', '切换'),
+        action: 'confirm-wifi-switch',
+      });
+      if (!confirmed) return;
+    }
+    switching = ssid;
+    render();
+    try {
+      const result = await connect({ssid, keepProxy: true});
+      if (result.ok) {
+        toast(t('wifi.connected_to', {ssid, defaultValue: '已连接到“{{ssid}}”。'}));
+      } else if (result.failureReason === 'wrong_password') {
+        // The stored password no longer works; ask for a new one.
+        toast(msg('ui.wifi_password_invalid', '密码错误'));
+        switching = '';
+        openJoinSheet(ssid, true, refresh);
+      } else {
+        toast(t('wifi.switch_failed', {ssid, defaultValue: '无法连接到“{{ssid}}”，已保持原来的网络。'}), {durationMs: 5000});
+      }
+    } catch (error) {
+      toast(error && error.message ? error.message : resolve(msg('ui.connect_failed', '连接失败')), {durationMs: 5000});
+    } finally {
+      switching = '';
+      await refresh();
+    }
   }
 
   /** A saved profile that is disabled shows as such instead of as connected. */
