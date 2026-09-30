@@ -3,7 +3,7 @@ services:
     image: ${AIDEN_DAEMON_IMAGE:-aiden-agent-daemon:local}
     build:
       context: ../..
-      dockerfile: benchmark/docker/Dockerfile.agent-daemon
+      dockerfile: ${DAEMON_DOCKERFILE:-benchmark/docker/Dockerfile.agent-daemon}
       target: agent-daemon-runtime
     ports:
       - "127.0.0.1:${AIDEN_DAEMON_HOST_PORT:-8080}:8080"

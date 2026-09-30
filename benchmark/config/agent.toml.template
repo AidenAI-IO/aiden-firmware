@@ -1,6 +1,3 @@
-[voice_settings.mode]
-input_mode = "text"
-
 [model_settings.providers.benchmark]
 type = "{{AIDEN_BENCHMARK_AGENT_PROVIDER}}"
 base_url = "{{AIDEN_BENCHMARK_AGENT_BASE_URL}}"
