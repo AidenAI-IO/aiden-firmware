@@ -8,7 +8,7 @@ ARG UV_VERSION=0.8.14
 ARG NODE_VERSION=v22.23.2
 ARG NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
 
-COPY scripts/debian-apps/debian.sources /etc/apt/sources.list.d/debian.sources
+COPY docker/test/debian.sources /etc/apt/sources.list.d/debian.sources
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

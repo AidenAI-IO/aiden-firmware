@@ -11,6 +11,11 @@ bridge_pid=""
 bridge_log=""
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
+if grep -q 'scripts/debian-apps/debian.sources' "$script_dir/../docker/test/Dockerfile"; then
+    echo "docker test image must not depend on the regional Debian apps mirror" >&2
+    exit 1
+fi
+
 compose() {
     AIDEN_CONFIG_WEB_PORT="$config_port" \
     AIDEN_AGENT_WEB_PORT="$agent_port" \
