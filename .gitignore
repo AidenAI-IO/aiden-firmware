@@ -7,7 +7,6 @@
 .worktrees/
 .claude/
 CLAUDE.md
-AGENTS.md
 *.pcm
 /pico-sdk/
 .env
