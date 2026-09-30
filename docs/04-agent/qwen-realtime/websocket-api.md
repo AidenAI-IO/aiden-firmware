@@ -1,216 +1,216 @@
-Qwen-Audio Realtime API 通过 WebSocket 协议提供实时语音对话能力。客户端通过发送和接收 JSON 事件与服务端交互，支持语音输入、文本输入、语音活动检测（VAD）、流式语音和文本输出等功能。
+The Qwen-Audio Realtime API provides real-time voice conversations over WebSocket. Clients interact with the server by sending and receiving JSON events, with support for audio input, text input, voice activity detection (VAD), and streaming audio and text output.
 
-**用户指南**：[实时语音对话（Qwen-Audio-Realtime）](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime)。客户端事件和服务端事件的详细说明，请参见[客户端事件](https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events)和[服务端事件](https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events)。
+**User guide**: [Real-time voice conversations (Qwen-Audio-Realtime)](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime). For details about client and server events, see [Client events](https://help.aliyun.com/zh/model-studio/fun-audiochat-client-events) and [Server events](https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-server-events).
 
-**重要**
+**Important**
 
-阿里云百炼为华北2（北京）、新加坡地域推出了业务空间专属域名，能够为推理请求提供卓越的性能和更高的稳定性，建议迁移至新域名：
+Alibaba Cloud Model Studio provides workspace-specific domains in the China (Beijing) and Singapore regions for improved inference performance and stability. Migration to the new domains is recommended:
 
--   华北2（北京）地域：从 `dashscope.aliyuncs.com` 迁移至 `{WorkspaceId}.cn-beijing.maas.aliyuncs.com`
+-   China (Beijing) region: Migrate from `dashscope.aliyuncs.com` to `{WorkspaceId}.cn-beijing.maas.aliyuncs.com`
 
--   新加坡地域：从 `dashscope-intl.aliyuncs.com` 迁移至 `{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`
+-   Singapore region: Migrate from `dashscope-intl.aliyuncs.com` to `{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`
 
 
-`{WorkspaceId}`需要替换为真实的[Workspace ID](https://help.aliyun.com/zh/model-studio/obtain-the-app-id-and-workspace-id#d3eb3cd37b7fu)。现有域名仍可正常使用。
+Replace `{WorkspaceId}` with your actual [Workspace ID](https://help.aliyun.com/zh/model-studio/obtain-the-app-id-and-workspace-id#d3eb3cd37b7fu). Existing domains remain available.
 
-## **接口地址**
+## **API endpoints**
 
-WebSocket URL 固定如下，通过查询参数 `model` 指定要调用的模型名称（将 `<model_name>` 替换为实际的模型）：
+Use the following WebSocket URLs, specifying the model with the `model` query parameter (replace `<model_name>` with the actual model):
 
-## 华北2（北京）
+## China (Beijing)
 
 `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=<model_name>`
 
-调用时请将`{WorkspaceId}`替换为真实的[Workspace ID](https://help.aliyun.com/zh/model-studio/obtain-the-app-id-and-workspace-id#d3eb3cd37b7fu)。
+Replace `{WorkspaceId}` with your actual [Workspace ID](https://help.aliyun.com/zh/model-studio/obtain-the-app-id-and-workspace-id#d3eb3cd37b7fu) when making requests.
 
-## 新加坡
+## Singapore
 
 `wss://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime?model=<model_name>`
 
-调用时请将`{WorkspaceId}`替换为真实的[Workspace ID](https://help.aliyun.com/zh/model-studio/obtain-the-app-id-and-workspace-id#d3eb3cd37b7fu)。
+Replace `{WorkspaceId}` with your actual [Workspace ID](https://help.aliyun.com/zh/model-studio/obtain-the-app-id-and-workspace-id#d3eb3cd37b7fu) when making requests.
 
-**重要**
+**Important**
 
-URL 必须使用 `wss://` 协议。Authorization 在请求头中设置，模型通过 URL 查询参数 `model` 指定。
+The URL must use `wss://`. Set Authorization in the request headers and specify the model with the URL query parameter `model`.
 
-## **请求头**
+## **Request headers**
 
-请求头中需添加如下信息：
+Include the following information in the request headers:
 
-| **参数** | **类型** | **是否必选** | **说明** |
+| **Parameter** | **Type** | **Required** | **Description** |
 | --- | --- | --- | --- |
-| Authorization | string | 是   | 鉴权令牌，格式为 `Bearer <your_api_key>`，将 `<your_api_key>` 替换为实际的 API Key。 |
-| user-agent | string | 否   | 客户端标识，便于服务端追踪来源。 |
-| X-DashScope-WorkSpace | string | 否   | 阿里云百炼业务空间 ID。 |
+| Authorization | string | Yes   | Authentication token in the format `Bearer <your_api_key>`. Replace `<your_api_key>` with your actual API key. |
+| user-agent | string | No   | Client identifier for server-side source tracking. |
+| X-DashScope-WorkSpace | string | No   | Alibaba Cloud Model Studio workspace ID. |
 
-**重要**
+**Important**
 
-Authorization 鉴权在 WebSocket 握手阶段验证。如果 API Key 无效或缺失，握手将失败并返回 HTTP 401/403 错误。
+Authorization is validated during the WebSocket handshake. If the API key is invalid or missing, the handshake fails with an HTTP 401/403 error.
 
-## **核心概念**
+## **Core concepts**
 
--   **Session（会话）**：一次 WebSocket 连接对应一个会话，会话内维护配置和对话上下文。
+-   **Session**: Each WebSocket connection corresponds to one session, which maintains configuration and conversation context.
 
--   **Conversation Item（对话项）**：对话中的每条消息，按链表顺序组织。
+-   **Conversation Item**: A message in the conversation, organized in linked-list order.
 
--   **Response（响应）**：一次模型推理产生的输出，包含一个或多个输出项，输出项可以是助手消息，也可以是函数调用。
+-   **Response**: Output produced by one model inference, containing one or more output items. Items can be assistant messages or function calls.
 
--   **Function Call（函数调用）**：模型请求客户端执行工具函数时产生的输出项。客户端执行完成后通过 `function_call_output` 写回结果，再用 `response.create` 触发下一轮推理。
+-   **Function Call**: An output item requesting that the client execute a tool function. After execution, the client submits the result with `function_call_output`, then triggers the next inference with `response.create`.
 
--   **Turn Detection（轮次检测）**：控制何时触发推理。
+-   **Turn Detection**: Controls when inference is triggered.
 
 
-## **交互模式**
+## **Interaction modes**
 
-Qwen-Audio Realtime API 支持三种交互模式，通过 `session.update` 事件的 `turn_detection.type` 参数配置：
+The Qwen-Audio Realtime API supports three interaction modes, configured through the `turn_detection.type` parameter in the `session.update` event:
 
-| **模式** | **turn\\_detection.type** | **描述** | **适用场景** |
+| **Mode** | **turn\\_detection.type** | **Description** | **Use cases** |
 | --- | --- | --- | --- |
-| **server\\_vad** | `server_vad` | 服务端 VAD 检测语音起止，自动触发推理。 | 免提对话、语音助手 |
-| **smart\\_turn** | `smart_turn` | 融合声学感知与语义理解判断轮次边界，而非仅依赖人声信号。无语义的声音（如”嗯”、”啊”）不会触发对话轮或打断模型播报。 | 低延迟自然对话、高质量打断 |
-| **push-to-talk** | `null` | 客户端手动提交音频、手动触发推理。 | 按键说话、精确控制 |
+| **server\\_vad** | `server_vad` | Server-side VAD detects speech boundaries and automatically triggers inference. | Hands-free conversations, voice assistants |
+| **smart\\_turn** | `smart_turn` | Combines acoustic perception and semantic understanding to identify turn boundaries rather than relying solely on voice signals. Sounds without semantic meaning (such as "um" or "ah") do not trigger a conversation turn or interrupt model speech. | Low-latency natural conversations, high-quality interruption handling |
+| **push-to-talk** | `null` | The client manually submits audio and triggers inference. | Push-to-talk, precise control |
 
-## **交互流程**
+## **Interaction flows**
 
-客户端事件和服务端事件的详细说明，请参见客户端事件和服务端事件。
+For details about client and server events, see Client events and Server events.
 
-### **server\_vad 模式**
+### **server\_vad mode**
 
-服务端对传入的音频进行语音活动检测，检测到语音结束后自动触发推理。
+The server performs voice activity detection on incoming audio and automatically triggers inference when speech ends.
 
-**启用方式：**配置 `session.update` 事件的 `turn_detection.type` 为 `server_vad`。
+**To enable:** Set `turn_detection.type` to `server_vad` in the `session.update` event.
 
-## **一轮完整对话**
+## **A complete conversation turn**
 
-下图展示了 server\_vad 模式下的典型交互时序：
+The following diagram shows a typical interaction sequence in server\_vad mode:
 
 ![111](https://help-static-aliyun-doc.aliyuncs.com/assets/img/zh-CN/7268354871/p1088432.svg)
 
-按时间顺序，客户端与服务端的交互流程如下：
+The client and server interact in the following order:
 
-1.  客户端建立 WebSocket 连接，服务端返回 `session.created` 事件。
+1.  The client establishes a WebSocket connection, and the server returns a `session.created` event.
 
-2.  客户端发送 `session.update` 配置会话参数，服务端返回 `session.updated`。
+2.  The client sends `session.update` to configure session parameters, and the server returns `session.updated`.
 
-3.  客户端持续发送 `input_audio_buffer.append` 追加音频数据。
+3.  The client continuously sends `input_audio_buffer.append` to append audio data.
 
-4.  服务端检测到语音开始，返回 `input_audio_buffer.speech_started`，同时流式返回 ASR 转写增量 `conversation.item.input_audio_transcription.delta`。
+4.  The server detects speech start, returns `input_audio_buffer.speech_started`, and streams ASR transcription deltas through `conversation.item.input_audio_transcription.delta`.
 
-5.  服务端检测到语音结束，返回 `input_audio_buffer.speech_stopped`、`input_audio_buffer.committed` 和 `conversation.item.created`。
+5.  The server detects speech end and returns `input_audio_buffer.speech_stopped`, `input_audio_buffer.committed`, and `conversation.item.created`.
 
-6.  服务端自动生成响应，流式返回文本和音频增量（`response.audio_transcript.delta`、`response.audio.delta`），最终返回 `response.done`。
+6.  The server automatically generates a response, streams text and audio deltas (`response.audio_transcript.delta`, `response.audio.delta`), and finally returns `response.done`.
 
 
-## **用户打断**
+## **User interruption**
 
-模型播报期间，若 VAD 检测到用户开始说话，服务端会取消当前响应（返回 `response.done`，状态为 `cancelled`），随后开始新一轮语音输入和响应。下图展示了用户打断的交互时序：
+If VAD detects the user speaking during model audio playback, the server cancels the current response (returning `response.done` with status `cancelled`), then starts a new turn of audio input and response. The following diagram shows the user interruption sequence:
 
 ![111](https://help-static-aliyun-doc.aliyuncs.com/assets/img/zh-CN/7268354871/p1088435.svg)
 
-### **smart\_turn 模式**
+### **smart\_turn mode**
 
-融合声学感知与语义理解检测语音结束，可过滤回应语、背景音等无意义声音。无语义的声音通过 `conversation.item.ambient_audio_transcription.delta` 事件透传，不触发对话轮。
+Combines acoustic perception and semantic understanding to detect speech end, filtering out non-semantic sounds such as backchannels and background audio. Sounds without semantic meaning are passed through in `conversation.item.ambient_audio_transcription.delta` events without triggering a conversation turn.
 
-**启用方式：**配置 `session.update` 事件的 `turn_detection.type` 为 `smart_turn`。
+**To enable:** Set `turn_detection.type` to `smart_turn` in the `session.update` event.
 
-## **一轮完整对话**
+## **A complete conversation turn**
 
-下图展示了 smart\_turn 模式下的典型交互时序：
+The following diagram shows a typical interaction sequence in smart\_turn mode:
 
 ![111](https://help-static-aliyun-doc.aliyuncs.com/assets/img/zh-CN/7268354871/p1088441.svg)
 
-与 server\_vad 模式的主要区别：
+Key differences from server\_vad mode:
 
--   无语义声音（“嗯”、“啊”等）不会触发推理，而是通过 `ambient_audio_transcription` 事件返回。
+-   Sounds without semantic meaning ("um", "ah", etc.) do not trigger inference; they are returned through `ambient_audio_transcription` events instead.
 
--   已判定有效的语音可能被撤回（`input_audio_buffer.speech_stopped` 返回 `reason=turn_invalid`），此时不触发推理。
+-   Speech initially deemed valid may be invalidated (`input_audio_buffer.speech_stopped` returns `reason=turn_invalid`), in which case inference is not triggered.
 
--   在等待用户下一轮输入时，客户端可显式发送 `response.create` 触发推理。
+-   While waiting for the user's next input, the client can explicitly send `response.create` to trigger inference.
 
 
-## **用户打断**
+## **User interruption**
 
-与 server\_vad 模式的打断处理基本一致。下图展示了用户打断的交互时序：
+Interruption handling is essentially the same as in server\_vad mode. The following diagram shows the user interruption sequence:
 
 ![111](https://help-static-aliyun-doc.aliyuncs.com/assets/img/zh-CN/7268354871/p1088443.svg)
 
-## **无效轮次**
+## **Invalid turns**
 
-已判定有效的语音可能被撤回（`input_audio_buffer.speech_stopped` 返回 `reason=turn_invalid`），此时不触发推理，客户端应继续发送音频等待下一轮有效语音。下图展示了无效轮次的交互时序：
+Speech initially deemed valid may be invalidated (`input_audio_buffer.speech_stopped` returns `reason=turn_invalid`). Inference is not triggered, and the client should continue sending audio while waiting for the next valid speech turn. The following diagram shows the sequence for an invalid turn:
 
 ![111](https://help-static-aliyun-doc.aliyuncs.com/assets/img/zh-CN/7268354871/p1088444.svg)
 
-### **说话人增强配置流程**
+### **Speaker enhancement configuration flow**
 
-在 smart\_turn 模式下，首次 `session.update` 中传入 `voiceprint_audio_urls` 时，服务端将异步执行声纹注册（加载目标说话人音频特征），并通过事件通知注册进度。声纹注册失败不阻塞正常对话流程。
+In smart\_turn mode, providing `voiceprint_audio_urls` in the first `session.update` causes the server to register voiceprints asynchronously (loading the target speaker's audio features) and report progress through events. Voiceprint registration failure does not block normal conversations.
 
-按时间顺序，声纹注册的交互流程如下：
+Voiceprint registration proceeds in the following order:
 
-1.  客户端发送 `session.update`，在 `turn_detection.voiceprint_audio_urls` 中传入声纹音频 URL，服务端返回 `session.created`。
+1.  The client sends `session.update` with voiceprint audio URLs in `turn_detection.voiceprint_audio_urls`, and the server returns `session.created`.
 
-2.  服务端立即异步启动声纹注册，在 `session.updated` 返回**之前**先推送 `voiceprint_audio_list.in_progress` 事件，携带本次注册任务的唯一标识 `item_id`。
+2.  The server immediately starts asynchronous voiceprint registration and sends a `voiceprint_audio_list.in_progress` event **before** returning `session.updated`. The event contains `item_id`, the unique identifier of this registration task.
 
-3.  服务端返回 `session.updated`，确认会话配置已生效。
+3.  The server returns `session.updated`, confirming that the session configuration has taken effect.
 
-4.  声纹注册完成后，服务端推送终态事件（`item_id` 与步骤 2 一致）：
+4.  When voiceprint registration finishes, the server sends a terminal event (with the same `item_id` as in step 2):
 
-    -   注册成功：`voiceprint_audio_list.completed`。
+    -   Registration successful: `voiceprint_audio_list.completed`.
 
-    -   注册失败：`voiceprint_audio_list.failed`，附带 `reason` 字段说明失败原因（如音频 URL 无法下载）。
-
-
-**说明**
-
-`voiceprint_audio_urls` 仅在**第一次** `session.update` 时生效，后续传入该字段将被忽略。
-
-### **push-to-talk 模式**
-
-客户端手动控制音频提交和推理触发，适用于按键说话场景。
-
-**启用方式：**配置 `session.update` 事件的 `turn_detection` 为 `null`。
-
-## **一轮完整对话**
-
-下图展示了 push-to-talk 模式下的典型交互时序：
-
-![111](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=)
-
-按时间顺序，客户端与服务端的交互流程如下：
-
-1.  客户端持续发送 `input_audio_buffer.append` 追加音频数据。
-
-2.  用户说完话后，客户端发送 `input_audio_buffer.commit` 提交缓冲区。
-
-3.  客户端发送 `response.create` 手动触发推理。
-
-4.  服务端生成响应，流式返回文本和音频。
+    -   Registration failed: `voiceprint_audio_list.failed`, with a `reason` field explaining the failure (for example, the audio URL could not be downloaded).
 
 
-## **用户打断**
+**Note**
 
-客户端发送 `response.cancel` 取消当前响应，服务端返回 `response.done`（状态为 `cancelled`，原因为 `client_cancelled`）。下图展示了用户打断的交互时序：
+`voiceprint_audio_urls` only takes effect in the **first** `session.update`; subsequent values are ignored.
+
+### **push-to-talk mode**
+
+The client manually controls audio submission and inference triggering, suitable for push-to-talk scenarios.
+
+**To enable:** Set `turn_detection` to `null` in the `session.update` event.
+
+## **A complete conversation turn**
+
+The following diagram shows a typical interaction sequence in push-to-talk mode:
 
 ![111](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=)
 
-## **各模式操作约束**
+The client and server interact in the following order:
 
-| **操作** | **push-to-talk** | **server\\_vad** | **smart\\_turn** |
+1.  The client continuously sends `input_audio_buffer.append` to append audio data.
+
+2.  When the user finishes speaking, the client sends `input_audio_buffer.commit` to commit the buffer.
+
+3.  The client sends `response.create` to trigger inference manually.
+
+4.  The server generates a response and streams text and audio.
+
+
+## **User interruption**
+
+The client sends `response.cancel` to cancel the current response, and the server returns `response.done` (with status `cancelled` and reason `client_cancelled`). The following diagram shows the user interruption sequence:
+
+![111](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=)
+
+## **Operation constraints by mode**
+
+| **Operation** | **push-to-talk** | **server\\_vad** | **smart\\_turn** |
 | --- | --- | --- | --- |
-| session.update | IDLE 时全部可改；非 IDLE 时部分受限 | IDLE 时全部可改；非 IDLE 时部分受限 | IDLE 时全部可改；非 IDLE 时部分受限 |
-| input\\_audio\\_buffer.append | 允许  | 允许  | 允许  |
-| input\\_audio\\_buffer.commit | 允许  | 忽略  | 忽略  |
-| input\\_audio\\_buffer.clear | 允许  | 忽略  | 忽略  |
-| response.create | 允许（需先通过 `input_audio_buffer.commit` 提交缓冲区音频；当前有响应正在生成时不允许重复触发） | 当前无响应正在生成时允许；有响应正在生成时不允许重复触发 | 等待用户下一轮输入时允许；当前处于一个 turn 内时（收到 `input_audio_buffer.speech_started` 到 `response.done` 期间）不允许重复触发 |
-| response.cancel | 允许（推理中） | 允许（推理中） | 允许（推理中） |
-| conversation.item.create/delete/retrieve | 允许  | 允许  | 允许  |
+| session.update | All fields editable in IDLE; some restricted outside IDLE | All fields editable in IDLE; some restricted outside IDLE | All fields editable in IDLE; some restricted outside IDLE |
+| input\\_audio\\_buffer.append | Allowed  | Allowed  | Allowed  |
+| input\\_audio\\_buffer.commit | Allowed  | Ignored  | Ignored  |
+| input\\_audio\\_buffer.clear | Allowed  | Ignored  | Ignored  |
+| response.create | Allowed (first commit buffered audio with `input_audio_buffer.commit`; cannot retrigger while a response is being generated) | Allowed when no response is being generated; cannot retrigger while a response is being generated | Allowed while waiting for the user's next input; cannot retrigger during an active turn (between receiving `input_audio_buffer.speech_started` and `response.done`) |
+| response.cancel | Allowed (during inference) | Allowed (during inference) | Allowed (during inference) |
+| conversation.item.create/delete/retrieve | Allowed  | Allowed  | Allowed  |
 
-**说明**
+**Note**
 
-`turn_detection` 和 `input_audio_format` 仅在首次发送音频之前（IDLE 状态）允许修改。
+`turn_detection` and `input_audio_format` can only be changed before audio is first sent (in the IDLE state).
 
-## **错误处理**
+## **Error handling**
 
-| **类型** | **行为** | **示例** |
+| **Type** | **Behavior** | **Examples** |
 | --- | --- | --- |
-| 客户端错误（`invalid_request_error`） | 连接保持，仅通知 | 参数不合法、状态不允许、item\\_id 重复 |
-| 服务端错误（`server_error`） | 连接终止 | LLM 连接失败、存储故障 |
+| Client error (`invalid_request_error`) | Connection remains open; notification only | Invalid parameters, disallowed state, duplicate item\\_id |
+| Server error (`server_error`) | Connection terminated | LLM connection failure, storage failure |

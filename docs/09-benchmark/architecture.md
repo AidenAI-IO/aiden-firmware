@@ -65,6 +65,30 @@ releases its env.
 
 ## Scoring
 
+### Offline metrics
+
+Each attempt records `success`, `agent_eligible`, `failure_class`, and
+`quality_score` in the machine-readable run artifacts. Setup failures,
+unavailable providers, judge failures, and deliberate skips remain in raw
+results and coverage counts but do not enter Agent success or efficiency
+denominators. Missing telemetry is represented as `null`, not zero.
+
+For a fixed planned repeat count `k` (the common planned prefix, normally the
+smallest repeat count requested by the tasks), the runner considers only tasks
+whose first `k` planned attempts are all present and eligible. It reports:
+
+- `pass@1`: the fraction of eligible tasks whose first attempt succeeds;
+- `pass@k`: the fraction with at least one success among those first `k`
+  planned attempts;
+- `pass^k`: the fraction whose first `k` planned attempts are all successful;
+- `oracle_best_score@k`: the maximum offline quality score in the first `k`
+  attempts; and
+- first-success attempt and cumulative cost-to-first-success.
+
+Success rates include 95% Wilson confidence intervals, and eligible-task
+coverage is reported separately. The metrics are recomputable from the raw
+attempt results and are written to `metrics.json` alongside `summary.md`.
+
 ### Hard Assertions
 
 Hard assertions run before LLM judge and are deterministic. They cover checks
