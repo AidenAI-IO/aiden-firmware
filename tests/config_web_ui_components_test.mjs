@@ -501,22 +501,26 @@ const countByClass = (node, className) => {
     const page = await Promise.race([agentLogPage({header() {}, navigate() {}}), settle().then(settle).then(() => null)]);
     assert.ok(page, 'the page is returned while the status request is still pending');
     const body = page.childNodes[0];
+    // The shell attaches the returned page synchronously.
+    body.isConnected = true;
     await settle();
     assert.equal(timers.length, 1, 'the log read finished and scheduled the next poll');
-
-    await tick();
-    assert.equal(calls.filter(url => url === '/api/logs/agent').length, 1, 'no poll runs before the page is attached');
-    assert.equal(timers.length, 1, 'polling waits for the page instead of stopping');
-
-    body.isConnected = true;
     releaseStatus();
     for (let i = 0; i < 5; i += 1) await tick();
-    assert.equal(calls.filter(url => url === '/api/logs/agent').length, 6, 'the log is polled once attached');
+    assert.equal(calls.filter(url => url === '/api/logs/agent').length, 6, 'the log is polled while the page is shown');
     assert.equal(calls.filter(url => url === '/api/device/status').length, 2, 'the status is refreshed every fifth poll');
 
     body.isConnected = false;
     await tick();
     assert.equal(timers.length, 0, 'polling stops once the page is left');
+
+    // Left before its first tick, e.g. a quick back: no timer outlives the page.
+    const left = await agentLogPage({header() {}, navigate() {}});
+    await settle();
+    assert.equal(timers.length, 1);
+    assert.ok(!left.childNodes[0].isConnected);
+    await tick();
+    assert.equal(timers.length, 0, 'a page that was never shown does not keep rescheduling');
   } finally {
     globalThis.fetch = realFetch;
     globalThis.setTimeout = realSetTimeout;

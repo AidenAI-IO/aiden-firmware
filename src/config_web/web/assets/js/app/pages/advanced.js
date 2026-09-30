@@ -269,7 +269,6 @@ export async function agentLogPage(context) {
   const pre = el('pre', {class: 'ds-log', data: {action: 'agent-log'}});
   let timer = null;
   let shown = null;
-  let attached = false;
   let polls = 0;
   let statusInFlight = false;
 
@@ -294,19 +293,14 @@ export async function agentLogPage(context) {
     if (payload) replace(statusGroup, [group({rows: [agentStatusRow(payload.agent_status || {})]})]);
   }
 
-  // Polling stops once the page has been shown and then left. Before the
-  // shell attaches it, keep waiting instead of stopping for good.
+  // The shell attaches the page as soon as this function returns, so by the
+  // first tick a detached page has been left (or was never shown): stop.
   function schedule() {
     timer = setTimeout(() => {
-      if (body.isConnected) attached = true;
-      else if (attached) return;
-      if (attached) {
-        polls += 1;
-        if (polls % AGENT_STATUS_EVERY_POLLS === 0) loadStatus();
-        load();
-      } else {
-        schedule();
-      }
+      if (!body.isConnected) return;
+      polls += 1;
+      if (polls % AGENT_STATUS_EVERY_POLLS === 0) loadStatus();
+      load();
     }, AGENT_LOG_POLL_MS);
   }
 
