@@ -38,7 +38,10 @@ Production images use A/B layout:
    the Config Web recovery portal, then `aiden-ota-health.service` processes
    pending OTA state once. Agent startup is optional during this confirmation.
    The OTA command controls the health-marker wait through `health_timeout_seconds`
-   (five minutes by default); systemd does not impose an earlier startup timeout.
+   (five minutes by default). The health service has a ten-minute outer startup
+   timeout for interruptible stalls. If increasing the health wait beyond that
+   budget, also increase `TimeoutStartSec` in a systemd drop-in, leaving time for
+   the metadata commit.
 
 ## Update Process
 
@@ -72,9 +75,20 @@ After the new slot boots, the Go daemon calls OTA health write logic after runti
 
 When `ota` sees a matching marker:
 
-1. Call `abctl`/slot logic to mark successful.
+1. Durably save the current CRC-protected `misc` metadata to
+   `/userdata/ota/ab-commit.pending`, then mark the slot successful, sync `misc`,
+   and verify the metadata readback.
 2. Update committed version/build time and per-slot partition hashes in `/userdata/ota/state.json`.
-3. Delete `pending_boot.json` and `health.ok`.
+3. Durably delete `pending_boot.json`, then retire the metadata backup.
+
+Health processing, early boot recovery, and manual rollback recover an interrupted
+health commit before using `misc`. Valid metadata is preserved and synced;
+CRC-invalid metadata is restored from the backup. If committed state was already
+published, recovery finishes the pending-marker cleanup. This permits retrying a
+process interrupted during the write, sync, or state publication. Recovery runs
+in Linux; it does not add redundant metadata support to SPL or guarantee slot
+selection after power loss before Linux can start. A systemd timeout also cannot
+terminate a process stuck in uninterruptible kernel I/O.
 
 If the health window times out, `ota health` actively reboots, allowing SPL to consume tries. When tries are exhausted and the target slot is not successful, SPL falls back to the previous successful slot. When `ota health` observes a rollback in the old slot, it cleans up pending state and marks the state phase as `rolled-back`.
 

@@ -446,7 +446,7 @@ grep -q 'Requires=aiden-ota-health-marker.service' \
     "${UNIT_DIR}/aiden-ota-health.service"
 grep -q '/userdata/debian/ota/config.json' \
     "${UNIT_DIR}/aiden-ota-health.service"
-grep -qx 'TimeoutStartSec=infinity' \
+grep -qx 'TimeoutStartSec=10min' \
     "${UNIT_DIR}/aiden-ota-health.service"
 if rg -n 'WriteHealthMarkerIfPending' "${REPO_ROOT}/src/agent/cmd/daemon"; then
     fail "Agent daemon still writes an early OTA health marker"

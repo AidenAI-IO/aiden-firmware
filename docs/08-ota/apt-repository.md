@@ -51,6 +51,12 @@ reboot; `GET /api/ota/status` continues to provide logs and progress. A successf
 business package upgrade does not actively reboot the device. Any later reboot required
 by runtime configuration is still indicated by `/run/aiden-business-reboot-required.json`.
 APT refresh or installation failures are reported as failures, not as "up to date".
+The worker limits each OTA metadata check, APT index refresh, and APT simulation
+to 600 seconds. APT index refresh is attempted up to three times, with 15- and
+30-second delays so association, DHCP, or the package source can become available
+after an OTA reboot. Exhausted retries and metadata timeouts release the update
+locks and clear the request marker. Firmware flashing and package installation
+are not subject to this metadata timeout.
 After an interrupted package installation, repair the dpkg state before retrying manually.
 
 `/etc/apt/preferences.d/aiden-business` assigns business packages from the matching

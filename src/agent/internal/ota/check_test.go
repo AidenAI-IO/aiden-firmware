@@ -83,6 +83,13 @@ func TestUpdateRejectsReleaseChangedSinceCheck(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "changed since availability check") {
 		t.Fatalf("err=%v", err)
 	}
+	state, loadErr := LoadState(filepath.Join(env.stateDir, "state.json"))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if state.Phase != "manifest" || state.LastError != err.Error() {
+		t.Fatalf("mismatch not recorded in status: %+v", state)
+	}
 	assertFileContent(t, filepath.Join(env.blockDir, "boot_a"), "old-boot-a")
 	if env.reboots != 0 {
 		t.Fatal("mismatched release rebooted")

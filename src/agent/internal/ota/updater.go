@@ -341,7 +341,9 @@ func (u *Updater) checkOnceLocked(ctx context.Context) (UpdateResult, error) {
 	}
 	if (u.config.ExpectedVersion != "" && manifest.Version != u.config.ExpectedVersion) ||
 		(u.config.ExpectedBuildTime != "" && manifest.BuildTime != u.config.ExpectedBuildTime) {
-		return UpdateResult{}, fmt.Errorf("OTA release changed since availability check; check again")
+		err := fmt.Errorf("OTA release changed since availability check; check again")
+		u.recordError("manifest", err)
+		return UpdateResult{}, err
 	}
 	token := u.githubToken()
 	if err := state.RejectDowngrade(manifest); err != nil {
@@ -752,6 +754,9 @@ func (u *Updater) verifyDownloadedImage(path string, asset ManifestAsset) error 
 }
 
 func (u *Updater) ProcessPendingHealth(ctx context.Context) error {
+	if err := u.recoverABCommit(); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(u.pendingPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -860,10 +865,16 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 	if err != nil {
 		return err
 	}
+	if err := u.prepareABCommit(ab); err != nil {
+		return err
+	}
 	if err := ab.MarkSuccessful(slot); err != nil {
 		return err
 	}
 	if err := u.writeABData(ab); err != nil {
+		return err
+	}
+	if err := u.verifyABCommit(ab); err != nil {
 		return err
 	}
 	state, err := u.loadState()
@@ -906,7 +917,13 @@ func (u *Updater) commitPendingHealth(pending PendingBoot) error {
 	if err := SaveState(u.statePath(), state); err != nil {
 		return err
 	}
-	return os.Remove(u.pendingPath())
+	if err := os.Remove(u.pendingPath()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := fsyncDirFor(u.pendingPath()); err != nil {
+		return err
+	}
+	return u.clearABCommit()
 }
 
 func (u *Updater) ProcessPendingHealthOnce(ctx context.Context) error {
@@ -961,6 +978,9 @@ func (u *Updater) Rollback(reason string) error {
 		return err
 	}
 	defer unlock()
+	if err := u.recoverABCommit(); err != nil {
+		return err
+	}
 	state, err := u.loadState()
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -1023,6 +1043,9 @@ func (u *Updater) RecoverPendingData() error {
 		return err
 	}
 	defer unlock()
+	if err := u.recoverABCommit(); err != nil {
+		return err
+	}
 	// First boot must not require a factory baseline or identity migration.
 	// There is nothing to recover until a transaction state has been saved.
 	state, err := LoadState(u.statePath())

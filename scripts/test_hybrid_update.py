@@ -6,13 +6,14 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKER = ROOT / "overlay-debian/usr/lib/aiden/aiden-hybrid-update"
 MOCK = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 root = Path(os.environ["HYBRID_TEST_ROOT"])
 args = sys.argv[1:]
@@ -20,12 +21,19 @@ name = Path(sys.argv[0]).name
 with (root / "events").open("a") as stream:
     stream.write(json.dumps([name, *args])+"\\n")
 config = json.loads((root / "scenario").read_text())
+if config.get("delay_command") in args:
+    time.sleep(config.get("delay_seconds", 5))
+if name == "apt-get" and args[-1] == "update":
+    attempts = sum(1 for line in (root / "events").read_text().splitlines()
+                   if json.loads(line)[0] == "apt-get" and json.loads(line)[-1] == "update")
+    if attempts <= config.get("fail_update_attempts", 0):
+        sys.exit(4)
 if config.get("fail") == name or config.get("fail") in args:
     print("test command failure", file=sys.stderr)
     sys.exit(4)
 if name == "ota":
     if "check" in args:
-        print(json.dumps({"available":config["ota"], "version":"dev-v0.0.2", "build_time":"2026-09-30T01:00:00Z"}))
+        print(json.dumps(config.get("response", {"available":config["ota"], "version":"dev-v0.0.2", "build_time":"2026-09-30T01:00:00Z"})))
     else:
         (root / "state.json").write_text(json.dumps({"phase":"pending-reboot"}))
         print('{"Updated":true}')
@@ -58,13 +66,22 @@ class HybridUpdateTests(unittest.TestCase):
                         AIDEN_MAINTENANCE_LOCK=str(self.root / "maintenance.lock"),
                         AIDEN_OTA_BIN=str(self.root / "ota"),
                         AIDEN_APT_GET_BIN=str(self.root / "apt-get"))
+        # Exercise real subprocess timeouts without waiting for the production
+        # ten-minute budget or DHCP backoff in each failure test.
+        self.command = [sys.executable, "-c", """
+import runpy, sys
+worker = runpy.run_path(sys.argv[1])
+worker["main"].__globals__.update(METADATA_TIMEOUT=1, APT_UPDATE_RETRY_BACKOFF=0.01)
+sys.argv = [sys.argv[1]]
+sys.exit(worker["main"]())
+""", str(WORKER)]
         self.scenario(ota=False, package=False)
 
     def scenario(self, **scenario):
         (self.root / "scenario").write_text(json.dumps(scenario))
 
     def run_worker(self, code=0):
-        result = subprocess.run([str(WORKER)], env=self.env, text=True, capture_output=True, timeout=10)
+        result = subprocess.run(self.command, env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, code, result.stdout+result.stderr)
         return result.stdout
 
@@ -135,6 +152,66 @@ class HybridUpdateTests(unittest.TestCase):
                 self.assertNotIn("hybrid: up-to-date", log)
                 self.assertFalse(self.marker.exists())
 
+    def test_metadata_timeouts_fail_and_release_all_locks(self):
+        for command in ("check", "update", "--simulate"):
+            with self.subTest(command=command):
+                self.marker.write_text('{"phase":"requested"}')
+                self.scenario(ota=False, package=True, delay_command=command)
+                log = self.run_worker(code=1)
+                self.assertIn("timed out", log)
+                self.assertIn("update_exited exit_code=1", log)
+                self.assertFalse(self.marker.exists())
+                self.assertFalse(any("-y" in event for event in self.events()))
+                for name in ("lock", "maintenance.lock", "update.lock"):
+                    with (self.root / name).open("a") as lock:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_installation_commands_are_not_subject_to_metadata_timeout(self):
+        self.scenario(ota=True, package=False, delay_command="update", delay_seconds=1.2)
+        self.assertIn("waiting-reboot", self.run_worker())
+        self.marker.write_text('{"phase":"requested"}')
+        self.scenario(ota=False, package=True, delay_command="-y", delay_seconds=1.2)
+        self.assertIn("hybrid: completed", self.run_worker())
+
+    def test_post_ota_waits_for_apt_source_before_installing(self):
+        self.marker.write_text(json.dumps({"phase":"post-ota", "boot_id":"other-boot",
+                                          "version":"dev-v0.0.2", "build_time":"2026-09-30T01:00:00Z"}))
+        (self.root / "state.json").write_text(json.dumps({"phase":"committed",
+                "current_version":"dev-v0.0.2", "current_build_time":"2026-09-30T01:00:00Z"}))
+        self.scenario(ota=False, package=True, fail_update_attempts=2)
+        log = self.run_worker()
+        self.assertEqual(log.count("apt metadata retry"), 2)
+        self.assertEqual(sum(event[-1] == "update" for event in self.events()), 3)
+        self.assertEqual(self.events()[-1][-2:], ["install", "aiden-business"])
+        self.assertIn("hybrid: completed", log)
+
+    def test_apt_retries_are_bounded_and_never_install_after_failure(self):
+        self.scenario(ota=False, package=True, fail_update_attempts=100)
+        self.run_worker(code=1)
+        self.assertEqual(sum(event[-1] == "update" for event in self.events()), 3)
+        self.assertFalse(any("--simulate" in event or "-y" in event for event in self.events()))
+        self.assertFalse(self.marker.exists())
+
+    def test_invalid_marker_fields_fail_with_context_before_commands(self):
+        for marker, error in [(None, "expected an object"),
+                              ({}, "phase must be a non-empty string"),
+                              ({"phase":"post-ota", "boot_id":"other-boot"}, "version must be a non-empty string"),
+                              ({"phase":"post-ota", "boot_id":"other-boot", "version":"v2", "build_time":42}, "build_time must be a non-empty string")]:
+            with self.subTest(marker=marker):
+                self.marker.write_text(json.dumps(marker))
+                self.assertIn(error, self.run_worker(code=1))
+                self.assertEqual(self.events(), [])
+                self.assertFalse(self.marker.exists())
+
+    def test_invalid_ota_release_fields_never_reach_install(self):
+        for response in (None, {"available":True}, {"available":True, "version":"v2", "build_time":False}):
+            with self.subTest(response=response):
+                self.marker.write_text('{"phase":"requested"}')
+                self.scenario(ota=True, package=True, response=response)
+                self.assertIn("Invalid OTA check response", self.run_worker(code=1))
+                self.assertTrue(all(event[-1] == "check" for event in self.events()))
+                self.assertFalse(self.marker.exists())
+
     def test_no_marker_is_idle_and_interrupted_package_does_not_auto_retry(self):
         self.marker.unlink()
         self.run_worker()
@@ -146,7 +223,7 @@ class HybridUpdateTests(unittest.TestCase):
     def test_worker_waits_for_api_lock_then_consumes_marker(self):
         with (self.root / "lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            worker = subprocess.Popen([str(WORKER)], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            worker = subprocess.Popen(self.command, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
                 with self.assertRaises(subprocess.TimeoutExpired):
                     worker.wait(timeout=0.15)
