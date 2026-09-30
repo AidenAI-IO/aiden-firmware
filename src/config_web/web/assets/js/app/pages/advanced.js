@@ -2,7 +2,8 @@
  * Advanced routes.
  *
  *   /advanced             entries: logs, manual configuration
- *   /advanced/logs        raw model HTTP logging, log level, retention, export
+ *   /advanced/logs        live logs, raw model HTTP logging, log level, retention, export
+ *   /advanced/logs/agent  the Agent log, tailed live, with the Agent's run state
  *   /advanced/logs/level  log level choice
  *   /advanced/config      the whole grouped Agent TOML, edited in place
  *
@@ -49,6 +50,16 @@ function adoptSaved(snapshot, after) {
     if (after) after();
   };
 }
+
+/** How often the live Agent log is re-read while its page is open. */
+const AGENT_LOG_POLL_MS = 2000;
+
+/**
+ * The Agent status is re-read every this many log polls (about ten seconds):
+ * `/api/device/status` runs the Agent init script's `status` on the board, which
+ * is too heavy to repeat every two seconds.
+ */
+const AGENT_STATUS_EVERY_POLLS = 5;
 
 /** A card followed by a footnote, the pattern the log settings use. */
 function noted(card, note) {
@@ -168,6 +179,21 @@ export async function logsPage(context) {
       [text(msg('advanced.export_logs', '导出日志'))]);
 
     replace(body, [
+      group({rows: [
+        row({
+          label: msg('advanced.agent_log', '实时 Agent 日志'),
+          chevron: true,
+          action: 'open-agent-log',
+          onPress: () => context.navigate('/advanced/logs/agent'),
+        }),
+        row({
+          label: msg('advanced.llm_logs', '模型请求日志'),
+          chevron: true,
+          action: 'open-llm-logs',
+          // A standalone page outside the settings shell, as on the classic page.
+          onPress: () => { window.location.href = '/llm-logs'; },
+        }),
+      ]}),
       noted(group({rows: [row({label: msg('advanced.raw_http', '记录详细模型请求'), accessory: toggle})]}),
         msg('advanced.raw_http_help', '将模型原始 HTTP 请求和响应写入 Agent 日志目录，仅建议排查问题时启用。')),
       noted(group({rows: [row({
@@ -195,6 +221,115 @@ export async function logsPage(context) {
 
   render();
   return screen([body]);
+}
+
+/** `2026-09-30T08:34:41Z [INFO][agent][server] message`, the Agent's compact record. */
+const AGENT_LOG_RECORD = /^(\S+Z) \[(DEBUG|INFO|WARN|ERROR)\]((?:\[[^\]]*\])*)(.*)$/;
+
+/**
+ * Agent log text as coloured lines. A line that is not a record (a wrapped
+ * message, a stack trace) keeps the severity of the record above it.
+ */
+export function agentLogLines(logText) {
+  let severity = 'info';
+  return String(logText).split(/\r?\n/).map(line => {
+    const record = line.match(AGENT_LOG_RECORD);
+    if (!record) {
+      if (/\bpanic\b|^goroutine \d+/.test(line)) severity = 'error';
+      return el('span', {class: `ds-log__line ds-log__line--${severity}`}, [line]);
+    }
+    severity = record[2].toLowerCase();
+    return el('span', {class: `ds-log__line ds-log__line--${severity}`}, [
+      el('span', {class: 'ds-log__time'}, [record[1]]),
+      ' ',
+      el('span', {class: `ds-log__level ds-log__level--${severity}`}, [`[${record[2]}]`]),
+      el('span', {class: 'ds-log__scope'}, [record[3]]),
+      record[4],
+    ]);
+  });
+}
+
+/** The Agent's run state from `GET /api/device/status`, as one row. */
+function agentStatusRow(status) {
+  const running = Boolean(status.process_running);
+  const detail = status.startup_error || (running && !status.port_reachable ? status.port_detail : '');
+  return row({
+    label: msg('advanced.agent_status', 'Agent 状态'),
+    value: running ? msg('advanced.agent_running', '运行中') : msg('advanced.agent_stopped', '未运行'),
+    tone: running ? 'success' : 'danger',
+    description: detail || (running && status.pid ? `PID ${status.pid}` : null),
+    descriptionTone: detail ? 'code' : undefined,
+  });
+}
+
+export async function agentLogPage(context) {
+  const body = el('div', {class: 'page__fill'});
+  const saver = createSaver(context, {title: msg('advanced.agent_log', '实时 Agent 日志'), back: '/advanced/logs', root: body});
+  const statusGroup = el('div');
+  const pre = el('pre', {class: 'ds-log', data: {action: 'agent-log'}});
+  let timer = null;
+  let shown = null;
+  let polls = 0;
+  let statusInFlight = false;
+
+  // Replacing the text would drop a selection the user is making to copy it.
+  const selecting = () => {
+    const selection = window.getSelection ? window.getSelection() : null;
+    return Boolean(selection && !selection.isCollapsed && pre.contains(selection.anchorNode));
+  };
+
+  // The page is attached a few frames after it renders; wait for a laid-out box.
+  function toBottom(frames = 60) {
+    if (pre.isConnected && pre.clientHeight) pre.scrollTop = pre.scrollHeight;
+    else if (frames > 0) requestAnimationFrame(() => toBottom(frames - 1));
+  }
+
+  async function loadStatus() {
+    if (statusInFlight) return;
+    statusInFlight = true;
+    const payload = await request('/api/device/status').catch(() => null);
+    statusInFlight = false;
+    // A failed refresh keeps the last known state rather than blanking the row.
+    if (payload) replace(statusGroup, [group({rows: [agentStatusRow(payload.agent_status || {})]})]);
+  }
+
+  // The shell attaches the page as soon as this function returns, so by the
+  // first tick a detached page has been left (or was never shown): stop.
+  function schedule() {
+    timer = setTimeout(() => {
+      if (!body.isConnected) return;
+      polls += 1;
+      if (polls % AGENT_STATUS_EVERY_POLLS === 0) loadStatus();
+      load();
+    }, AGENT_LOG_POLL_MS);
+  }
+
+  async function load() {
+    clearTimeout(timer);
+    try {
+      const snapshot = (await request('/api/logs/agent')).agent_log || {};
+      const logText = (snapshot.log || '').trim();
+      if (logText !== shown && !selecting()) {
+        // Nothing is measurable before the first render: open on the newest line.
+        const stick = shown === null || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 16;
+        if (logText) replace(pre, agentLogLines(logText));
+        else pre.textContent = snapshot.error || resolve(msg('advanced.agent_log_empty', '暂无日志'));
+        shown = logText;
+        if (stick) toBottom();
+      }
+    } catch (error) {
+      if (!pre.textContent) pre.textContent = error && error.message ? error.message : resolve(msg('advanced.agent_log_failed', '读取日志失败'));
+    }
+    schedule();
+  }
+
+  replace(body, [statusGroup, el('div', {class: 'ds-group'}, [el('div', {class: 'ds-log-frame ds-log-frame--bounded'}, [pre])])]);
+  saver.refreshChrome();
+  // Mount first: waiting here would hold the page off screen for as long as
+  // the slower of the two requests takes.
+  loadStatus();
+  load();
+  return screen([body], 'ds-screen--sticky');
 }
 
 export async function logLevelPage(context) {
