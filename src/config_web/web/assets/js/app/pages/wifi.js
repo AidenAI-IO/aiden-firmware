@@ -379,8 +379,11 @@ export async function wifiPage(context) {
         toast(msg('ui.wifi_password_invalid', '密码错误'));
         switching = '';
         openJoinSheet(ssid, true, refresh);
-      } else {
+      } else if (connected) {
         toast(t('wifi.switch_failed', {ssid, defaultValue: '无法连接到“{{ssid}}”，已保持原来的网络。'}), {durationMs: 5000});
+      } else {
+        // Nothing was connected, so there is no previous network to keep.
+        toast(t('wifi.join_failed', {ssid, defaultValue: '无法连接到“{{ssid}}”。'}), {durationMs: 5000});
       }
     } catch (error) {
       toast(error && error.message ? error.message : resolve(msg('ui.connect_failed', '连接失败')), {durationMs: 5000});
@@ -556,6 +559,11 @@ export async function wifiDetailPage(context) {
   }
 
   const infoRows = [row({label: msg('ui.network_name', '网络名称'), value: ssid, tone: 'strong'})];
+  // Only the connected profile has an address; a saved one out of range has none.
+  const ipAddress = connected ? ((snapshot && snapshot.wifi_status) || {}).ip_address : '';
+  if (ipAddress) {
+    infoRows.push(row({label: msg('ui.ip_address', 'IP 地址'), value: ipAddress}));
+  }
   if (profile.has_psk) {
     infoRows.push(row({label: msg('wifi.password', '密码'), value: '••••••••'}));
   }
@@ -565,7 +573,15 @@ export async function wifiDetailPage(context) {
     labelTone: 'accent',
     action: 'wifi-forget',
     onPress: async () => {
-      if (!window.confirm(resolve(msg('wifi.forget_confirm', '确定忘记该网络吗？')))) return;
+      // The title names the network, so it needs `t` with the SSID; `msg`
+      // resolves without parameters and left the quotes empty.
+      const confirmed = await confirmSheet({
+        title: t('wifi.forget_confirm', {ssid, defaultValue: '忘记“{{ssid}}”？'}),
+        confirmLabel: msg('action.forget', '忘记'),
+        danger: true,
+        action: 'confirm-wifi-forget',
+      });
+      if (!confirmed) return;
       try {
         await forget(ssid);
         context.navigate('/wifi', {replace: true});
