@@ -209,6 +209,7 @@ class PlannerTests(GitFixture):
         self.assertEqual(record["previous_commit"], previous["source_commit"])
         self.assertEqual(record["platform"]["contract"], 2)
         self.assertEqual(record["changes"]["system"], ["overlay-debian/etc/config"])
+        self.assertEqual(record["ota_requirement"], {"commit": record["source_commit"], "more": False})
         release.assert_current(record, self.history)
 
     def test_rebased_release_with_only_docs_changes_does_not_release(self):
@@ -328,6 +329,96 @@ class PlannerTests(GitFixture):
         stage = self.make("staging")
         self.assertEqual(stage["kind"], "ota")
         self.assertEqual(stage["platform"]["contract"], 4)
+
+
+class ReleaseNotesTests(GitFixture):
+    def assert_notice(self, record, commit, more=False):
+        suffix = " (and more)" if more else ""
+        text = release.notes(record)
+        self.assertIn(f"Commit [`{commit[:8]}`](https://github.com/{REPO}/commit/{commit})"
+                      f"{suffix} requires OTA update.\n", text)
+        self.assertEqual(text.count("requires OTA update."), 1)
+        self.assertEqual("(and more)" in text, more)
+
+    def test_notes_keep_commits_and_comparison_without_file_lists(self):
+        previous = self.publish()
+        self.commit({"src/agent/main.go": "business", "overlay-debian/etc/aiden/new.conf": "config",
+                     "docs/readme.md": "docs"})
+        business = self.publish()
+        self.commit({"overlay-debian/etc/config": "system"})
+        ota = self.publish()
+        for record in (business, ota, self.make()):
+            with self.subTest(kind=record["kind"]):
+                text = release.notes(record)
+                for paths in record["changes"].values():
+                    for path in paths:
+                        self.assertNotIn(path, text)
+                for kind in record["changes"]:
+                    self.assertNotIn(f"## {kind.title()}", text)
+                for commit in record["commits"]:
+                    self.assertIn(f"- {commit}\n", text)
+                if record["kind"] != "ota":
+                    self.assertNotIn("requires OTA update", text)
+        self.assertIn(f"/compare/{previous['tag']}..{business['tag']})", release.notes(business))
+        self.assert_notice(ota, ota["source_commit"])
+
+    def test_first_system_commit_with_more_ignores_business_config_and_docs(self):
+        self.publish()
+        self.commit({"src/agent/main.go": "business", "overlay-debian/etc/aiden/new.conf": "config"})
+        self.commit({"overlay-debian/etc/config": "system one"})
+        first = self.git("rev-parse", "HEAD")
+        self.commit({"overlay-debian/etc/config": "system two"})
+        self.commit({"docs/readme.md": "docs"})
+        self.assert_notice(self.make(), first, more=True)
+
+    def test_system_commit_outside_displayed_log_is_still_reported(self):
+        self.publish()
+        self.commit({"overlay-debian/etc/config": "system"})
+        first = self.git("rev-parse", "HEAD")
+        for _ in range(101):
+            self.git("commit", "--allow-empty", "-qm", "docs: no runtime changes")
+        record = self.make()
+        self.assertEqual(len(record["commits"]), 100)
+        self.assertFalse(any(c.startswith(first[:7]) for c in record["commits"]))
+        self.assert_notice(record, first)
+
+    def test_rename_from_system_to_business_is_reported(self):
+        self.publish()
+        self.git("mv", "overlay-debian/etc/config", "src/moved")
+        self.git("commit", "-qm", "refactor: move system file")
+        first = self.git("rev-parse", "HEAD")
+        self.commit({"src/agent/main.go": "business"})
+        self.assert_notice(self.make(), first)
+
+    def test_reverted_system_path_does_not_count_as_an_ota_reason(self):
+        self.publish()
+        self.commit({"temporary-system-file": "temporary"})
+        self.commit({"temporary-system-file": None})
+        self.commit({"overlay-debian/etc/config": "system"})
+        self.assert_notice(self.make(), self.git("rev-parse", "HEAD"))
+
+    def test_merge_commit_with_system_resolution_is_reported(self):
+        self.publish()
+        main = self.git("branch", "--show-current")
+        self.git("checkout", "-qb", "business-branch")
+        self.commit({"src/agent/main.go": "business"})
+        self.git("checkout", main)
+        self.commit({"docs/readme.md": "docs"})
+        self.git("merge", "--no-ff", "--no-commit", "business-branch")
+        self.commit({"overlay-debian/etc/config": "merge system change"})
+        self.assert_notice(self.make(), self.git("rev-parse", "HEAD"))
+
+    def test_first_release_and_forced_or_migration_ota_have_a_notice(self):
+        first = self.publish()
+        self.assert_notice(first, first["source_commit"])
+        self.assert_notice(self.make(force_ota=True), first["source_commit"])
+        del first["runtime_config"]
+        self.assert_notice(self.make(), first["source_commit"])
+
+    def test_older_plan_without_ota_attribution_can_still_render(self):
+        record = self.make()
+        del record["ota_requirement"]
+        self.assert_notice(record, record["source_commit"])
 
 
 class ContractTests(unittest.TestCase):

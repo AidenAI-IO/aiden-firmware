@@ -32,6 +32,12 @@ SDK gitlink 提交。草稿、失败构建和 workflow artifact 不推进基线�
 分类和文件列表直接比较前次发布与当前源码两端的 Git 树，不从共同祖先计算差异。
 因此相同内容的 squash 不会触发发布，系统内容变化仍必须建立新 OTA 契约。
 变更说明中的 Full comparison 链接也使用两端比较；提交摘要保留新历史里的提交信息。
+GitHub release note 不再列出具体文件。仅 OTA 发布增加提示：
+`Commit <sha> (and more) requires OTA update.`，其中 SHA 链接到本次发布范围内按
+祖先顺序从旧到新找到的首个系统变更提交；只有多个相关提交时才显示 `(and more)`。
+查找不受提交摘要的 100 条上限影响，忽略最终已还原的文件和与已发布系统树相同的
+squash/rebase 提交。强制 OTA、首次建底座或配置归属迁移若没有可归因的系统提交，
+使用本次发布的源码提交。具体文件分类仍保留在计划和 `release.json` 中供排查。
 
 外部 Debian 仓库、签名密钥、Actions secret 和浮动下载内容不在 Git 比较范围内。
 这些输入更新时使用 `force_ota`；无法通过源码差异自动识别它们。

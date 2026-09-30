@@ -161,6 +161,27 @@ def source_fingerprints(root, commit, policy):
     return {kind: digest(entries) for kind, entries in groups.items()}
 
 
+def ota_requirement(root, source_commit, log_range, system_paths, previous, policy):
+    """Find the first system change and whether more follow, beyond the log limit."""
+    first = None
+    if not system_paths:
+        return {"commit": source_commit, "more": False}
+    for commit in command("git", "rev-list", "--reverse", "--topo-order", log_range, cwd=root).splitlines():
+        raw = subprocess.check_output([
+            "git", "diff-tree", "--root", "-m", "--first-parent", "--no-commit-id",
+            "--name-only", "--no-renames", "-r", "-z", commit, "--",
+        ], cwd=root)
+        if not system_paths.intersection(p.decode() for p in raw.split(b"\0") if p):
+            continue
+        # A squash/rebase may repeat the already published system tree.
+        if previous and source_fingerprints(root, commit, policy)["system"] == previous["fingerprints"]["system"]:
+            continue
+        if first:
+            return {"commit": first, "more": True}
+        first = commit
+    return {"commit": first or source_commit, "more": False}
+
+
 def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=False):
     if channel not in CHANNELS:
         raise ValueError("Choose dev, staging or prod")
@@ -228,6 +249,9 @@ def make_plan(root, repo, channel, records, ref="HEAD", version=None, force_ota=
                     for k in ("business", "config", "system", "ignore")},
         "commits": commits,
     }
+    if kind == "ota":
+        plan["ota_requirement"] = ota_requirement(
+            root, commit, log_range, set(plan["changes"]["system"]), previous, policy)
     validate_record(plan)
     return plan
 
