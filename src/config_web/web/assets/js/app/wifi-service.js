@@ -94,6 +94,8 @@ export function parseSecuredSsids(output) {
  * @param {object} profile
  * @param {string} profile.ssid
  * @param {string} [profile.psk] - omit to keep the stored key.
+ * @param {boolean} [profile.keepProxy] - leave the saved network's proxy
+ *   setting as it is (switching to a saved network changes nothing else).
  * @param {'system'|'direct'|'proxy'} [profile.proxyMode]
  * @param {string} [profile.proxyUrl]
  * @param {string} [profile.noProxy]
@@ -102,7 +104,8 @@ export function parseSecuredSsids(output) {
  *   and (on failure) the protocol's `failure_reason`.
  */
 export async function connect(profile) {
-  const body = {ssid: profile.ssid, proxy_mode: profile.proxyMode || 'system'};
+  // An absent proxy_mode tells the device to keep the saved proxy setting.
+  const body = profile.keepProxy ? {ssid: profile.ssid} : {ssid: profile.ssid, proxy_mode: profile.proxyMode || 'system'};
   if (profile.psk !== undefined) body.psk = profile.psk;
   if (body.proxy_mode === 'proxy') {
     if (profile.proxyUrl) body.proxy_url = profile.proxyUrl;
