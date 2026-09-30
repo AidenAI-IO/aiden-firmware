@@ -70,6 +70,7 @@ type Options struct {
 	OTAUpdateLockPath      string
 	OTAUpdateLogPath       string
 	OTAHealthLogPath       string
+	DmesgBinary            string
 }
 
 func DefaultOptions() Options {
@@ -125,6 +126,7 @@ func DefaultOptions() Options {
 		OTAUpdateLockPath: envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", "/tmp/config_web_ota_update.lock"),
 		OTAUpdateLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", "/userdata/ota/config_web_ota_update.log"),
 		OTAHealthLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", "/var/log/ota/ota.log"),
+		DmesgBinary:       envOrDefault("AIDEN_CONFIG_WEB_DMESG_BIN", "dmesg"),
 	}
 }
 

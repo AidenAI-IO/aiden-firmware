@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import signal
 import shutil
 import socket
 import subprocess
@@ -34,6 +33,7 @@ from runner.platform import (
     read_environment_health,
     resolve_environment_platform,
 )
+from runner.process import terminate_process_tree
 from runner.preflight import (
     MOBILEGYM_PREFLIGHT_COMPLETE_ENV,
     preflight_mobilegym_environment,
@@ -95,6 +95,7 @@ AGENT_DAEMON_COMPOSE_FILE = BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.
 DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
+DOCKER_DIAGNOSTIC_TIMEOUT_SEC = 5
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
 DEFAULT_JUDGE_BASE_URL = JudgeConfig().base_url
 WEBUI_SETTINGS_FILE = "webui-settings.json"
@@ -2006,6 +2007,54 @@ def docker_published_port(container_name: str, container_port: int) -> int:
     raise RuntimeError(f"could not determine published port for {container_name}:{container_port}")
 
 
+def container_boot_failure_detail(container_name: str) -> str:
+    """Best-effort summary of why a container stopped before publishing a port.
+
+    The docker CLI answers ``docker port`` with "No public port ... published"
+    for a container that has already exited, which hides the real startup
+    failure. This collects the container state and the tail of its logs so the
+    caller can surface the actual cause. Returns "" when nothing could be
+    gathered.
+    """
+    detail: list[str] = []
+    try:
+        state = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.State.Status}} (exit {{.State.ExitCode}})",
+                container_name,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DOCKER_DIAGNOSTIC_TIMEOUT_SEC,
+        ).stdout.strip()
+        if state:
+            detail.append(f"container state: {state}")
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        pass
+    try:
+        logs = subprocess.run(
+            ["docker", "logs", "--tail", "40", container_name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DOCKER_DIAGNOSTIC_TIMEOUT_SEC,
+        )
+        tail_lines = (logs.stdout + logs.stderr).strip().splitlines()
+        if tail_lines:
+            detail.append("last container logs:\n" + "\n".join(tail_lines[-40:]))
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        pass
+    return "\n".join(detail)
+
+
 def build_mobilegym_environment_command(
     *,
     image: str,
@@ -2209,6 +2258,9 @@ def daemon_compose_env(
     bridge_enabled = bool(environment_bridge_endpoint) if environment_bridge_mode is None else bool(environment_bridge_mode)
     env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] = "1" if bridge_enabled else "0"
     if host_port is not None:
+        # Callers use 0 for auto-selection; start_daemon_compose resolves it
+        # to a concrete free port before invoking Compose. Explicit positive
+        # ports remain stable for local callers that need a predictable endpoint.
         env["AIDEN_DAEMON_HOST_PORT"] = str(host_port)
     if config_dir is not None:
         env["AIDEN_CONFIG_DIR"] = str(config_dir.resolve())
@@ -2239,6 +2291,9 @@ def start_daemon_compose(
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
     project = daemon_compose_project(job)
+    # Port 0 is passed through to Docker so the bind and allocation are atomic.
+    # Reserving a port with a short-lived socket leaves a race before Compose
+    # starts the container, especially when benchmark workers start together.
     env = daemon_compose_env(
         image=image,
         host_port=host_port,
@@ -2728,46 +2783,6 @@ def update_state_status(path: Path, status: str, *, run_id: str = "") -> None:
     if run_id and not payload.get("run_id"):
         payload["run_id"] = run_id
     write_state(path, payload)
-
-
-def terminate_process_tree(proc: subprocess.Popen | None, timeout_sec: float = 3.0) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:
-            proc.terminate()
-    except ProcessLookupError:
-        return
-    except Exception:
-        try:
-            proc.terminate()
-        except Exception:
-            return
-    try:
-        proc.wait(timeout=timeout_sec)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    except Exception:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-    except ProcessLookupError:
-        return
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            return
-    try:
-        proc.wait(timeout=1)
-    except Exception:
-        return
 
 
 def tail_text(path: Path, max_bytes: int) -> str:

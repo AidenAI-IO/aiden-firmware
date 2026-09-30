@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -34,11 +36,16 @@ def test_publish_langfuse_cli_reports_experiment_url(monkeypatch, capsys):
         dataset_run_url="http://langfuse.local/run-1",
         item_count=15,
     )
-    monkeypatch.setattr(langfuse_reporter, "publish_run", lambda *args, **kwargs: published)
+    def publish(*args, **kwargs):
+        kwargs["progress"]("verification complete: dataset_run_id=run-1 items=15")
+        return published
+
+    monkeypatch.setattr(langfuse_reporter, "publish_run", publish)
 
     assert main.cli(["publish-langfuse", "--run-dir", "runs/ci-123"]) == 0
 
     output = capsys.readouterr().out
+    assert "Langfuse publish: verification complete" in output
     assert "dataset=aiden-benchmark:memory_v1" in output
     assert "View experiment: http://langfuse.local/run-1" in output
 
@@ -51,6 +58,45 @@ def test_publish_langfuse_cli_returns_failure(monkeypatch, capsys):
 
     assert main.cli(["publish-langfuse", "--run-dir", "runs/ci-123"]) == 2
     assert "score storage unavailable" in capsys.readouterr().err
+
+
+def test_runner_module_propagates_cli_exit_code(tmp_path):
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "runner",
+            "publish-langfuse",
+            "--run-dir",
+            str(tmp_path / "missing-run"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "benchmark run directory does not exist" in completed.stderr
+
+
+@pytest.mark.parametrize("error_status", ["judge_error", "timeout"])
+def test_run_exit_code_allows_any_complete_task_result(error_status):
+    benchmark_failure = {
+        "tasks": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "judge_error": 0,
+        "timeout": 0,
+    }
+    execution_error = {
+        **benchmark_failure,
+        "failed": 0,
+        error_status: 1,
+    }
+
+    assert main._run_exit_code(benchmark_failure) == 0
+    assert main._run_exit_code(execution_error) == 1
 
 
 @pytest.mark.parametrize("target_platform", ["windows", "linux"])
@@ -651,7 +697,7 @@ def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
         ]
     )
 
-    assert rc == 1
+    assert rc == 0
     assert observed_before_second_task["completed"] == 1
     assert observed_before_second_task["totals"] == {
         "tasks": 2,
@@ -1271,6 +1317,98 @@ def test_auto_agent_setup_runs_memory_suite_without_environment_bridge(monkeypat
     assert captured["daemon_kwargs"]["environment_bridge_mode"] is False
     assert captured["task_kwargs"]["environment_url"] is None
     assert captured["benchmark_token"] == "memory-token"
+
+
+def test_auto_agent_setup_surfaces_daemon_boot_failure(monkeypatch, tmp_path):
+    # A daemon container that exits at startup makes `docker port` fail with
+    # the misleading "no public port published" message. The skip reason must
+    # carry the container state and logs instead of the raw docker error, and
+    # daemon logs must start streaming before the port probe.
+    suite_path = tmp_path / "memory-suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "memory_suite",
+                "tasks": [
+                    {
+                        "id": "recall_memory",
+                        "category": "memory",
+                        "prompt": "recall memory",
+                        "description_for_judge": "recall memory",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "control_token").write_text("memory-token", encoding="utf-8")
+
+    def fake_start_daemon_compose(job, **kwargs):
+        return "container-id"
+
+    def failing_docker_published_port(container_id, container_port):
+        calls.append("port-probe")
+        raise subprocess.CalledProcessError(1, ["docker", "port", container_id, "8080/tcp"])
+
+    def fake_start_daemon_logs(*args, **kwargs):
+        calls.append("logs-stream")
+        return None
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
+    monkeypatch.setattr(webui, "docker_published_port", failing_docker_published_port)
+    monkeypatch.setattr(webui, "container_boot_failure_detail", lambda container_id: (
+        "container state: exited (exit 1)\n"
+        "last container logs:\n"
+        "config_load_failed invalid input_mode"
+    ))
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(webui, "start_daemon_logs", fake_start_daemon_logs)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "memory-run",
+            "--auto-agent-setup",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert calls == ["logs-stream", "port-probe"]
+    results = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / "memory-run" / "results.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert len(results) == 1
+    assert results[0]["status"] == "skipped"
+    error = results[0]["metrics"]["error"]
+    assert "container state: exited (exit 1)" in error
+    assert "config_load_failed invalid input_mode" in error
 
 
 def test_run_rejects_external_daemon_platform_mismatch(monkeypatch, tmp_path, capsys):

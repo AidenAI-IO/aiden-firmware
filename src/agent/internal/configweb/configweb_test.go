@@ -1,10 +1,13 @@
 package configweb
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1407,6 +1410,77 @@ func TestLLMLogImportRejectsOversizedBody(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(server.llmLogDir(), "llm-http-oversized.log")); !os.IsNotExist(err) {
 		t.Fatalf("oversized target exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestSupportLogsExportIncludesServiceLogsAndDmesg(t *testing.T) {
+	options := testOptions(t)
+	root := filepath.Dir(options.AgentConfigPath)
+	dmesg := filepath.Join(root, "dmesg")
+	if err := os.WriteFile(dmesg, []byte("#!/bin/sh\nprintf 'kernel message\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.DmesgBinary = dmesg
+	options.OTAHealthLogPath = filepath.Join(root, "ota.log")
+	if err := os.MkdirAll(filepath.Dir(options.OTAHealthLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.OTAHealthLogPath, []byte("ota health\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/logs/support", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(resp.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gz)
+	files := map[string]string{}
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[header.Name] = string(data)
+	}
+	if files["dmesg.log"] != "kernel message\n" {
+		t.Fatalf("dmesg.log=%q", files["dmesg.log"])
+	}
+	if files["services/frame_service.log"] == "" {
+		t.Fatal("frame service log was not included")
+	}
+	if files["services/ota.log"] != "ota health\n" {
+		t.Fatalf("services/ota.log=%q", files["services/ota.log"])
+	}
+}
+
+func TestRunDmesgCommandTimeoutKillsWrapperAndChild(t *testing.T) {
+	wrapper := filepath.Join(t.TempDir(), "dmesg-wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nsleep 30 &\nwait\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	result := runDmesgCommand(50*time.Millisecond, wrapper)
+	if !result.TimedOut {
+		t.Fatalf("TimedOut=%t ExitCode=%d Output=%q, want timeout", result.TimedOut, result.ExitCode, result.Output)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("dmesg wrapper shutdown took %s after timeout", elapsed)
 	}
 }
 

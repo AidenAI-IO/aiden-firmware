@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,20 @@ def test_endpoint_for_docker_rewrites_localhost():
     assert webui.endpoint_for_docker("http://localhost:8080") == "http://host.docker.internal:8080"
     assert webui.endpoint_for_docker("http://127.0.0.1:9090/api") == "http://host.docker.internal:9090/api"
     assert webui.endpoint_for_docker("http://192.168.1.20:8080") == "http://192.168.1.20:8080"
+
+
+def test_container_boot_failure_detail_ignores_timed_out_diagnostics(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(webui.subprocess, "run", fake_run)
+
+    assert webui.container_boot_failure_detail("container-id") == ""
+    assert len(calls) == 2
+    assert all(call[1]["timeout"] == webui.DOCKER_DIAGNOSTIC_TIMEOUT_SEC for call in calls)
 
 
 def test_webui_task_screen_url_points_at_webui_viewer():
@@ -2277,6 +2292,42 @@ def test_daemon_compose_command_and_env_use_environment_bridge_providers(tmp_pat
     assert '--environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT"' in entrypoint_text
     assert "environment-bridge-tools" not in entrypoint_text
     assert '--device-type "$AIDEN_DEVICE_TYPE"' in entrypoint_text
+
+
+def test_start_daemon_compose_leaves_auto_host_port_for_docker(tmp_path: Path, monkeypatch):
+    captured = {}
+    job = webui.Job(
+        id="auto-port-job",
+        endpoint="",
+        docker_endpoint="",
+        suites=[],
+    )
+
+    monkeypatch.setattr(
+        webui,
+        "reserve_free_port",
+        lambda: pytest.fail("Docker should allocate an ephemeral host port"),
+    )
+
+    def fake_run_logged_command(command, log_path, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+
+    monkeypatch.setattr(webui, "run_logged_command", fake_run_logged_command)
+    monkeypatch.setattr(webui.subprocess, "check_output", lambda *args, **kwargs: "container-id\n")
+
+    container_id = webui.start_daemon_compose(
+        job,
+        image="aiden-agent-daemon:test",
+        host_port=0,
+        config_dir=tmp_path / "config",
+        environment_bridge_endpoint="",
+        log_path=tmp_path / "daemon.log",
+    )
+
+    assert container_id == "container-id"
+    assert captured["env"]["AIDEN_DAEMON_HOST_PORT"] == "0"
+    assert captured["command"][-1] == "daemon"
 
 
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):
