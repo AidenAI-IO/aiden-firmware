@@ -186,7 +186,7 @@ Windows and Linux is `live`, while moving to or from Android is `reboot`.
 
 Settings pages call it as the user edits. A `live` change is saved as soon as
 it is committed and the page shows no save button; a change at either restart
-level is staged, and the page offers "保存并重启" for everything staged. Tapping "保存并重启" opens a
+level is staged, and the page offers "Save & Restart" (`apply.save_restart`) for everything staged. Tapping it opens a
 confirmation that names the restart; only after the user confirms does the page
 save and then call the restart endpoint, so a restart remains an explicit user
 action and `PATCH /api/config` itself never restarts anything. The `apply` in

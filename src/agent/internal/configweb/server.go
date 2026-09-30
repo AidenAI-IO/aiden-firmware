@@ -235,10 +235,6 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	switch {
 	case r.URL.Path == "/":
 		relative, entry = "index.html", true
-	case r.URL.Path == "/legacy":
-		// The pre-refactor settings page, kept reachable while sections are
-		// migrated to the routed layout. Removed once the last section lands.
-		relative, entry = "legacy.html", true
 	case r.URL.Path == "/llm-logs":
 		relative, entry = "llm-logs.html", true
 	case strings.HasPrefix(r.URL.Path, "/assets/"):

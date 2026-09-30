@@ -309,7 +309,7 @@ overlay-debian/etc/systemd/system/aiden-backup-recover.service
 overlay-debian/usr/lib/aiden/aiden-backup-recover   调用 /oem/usr/bin/agent backup-recover
 overlay-debian/etc/systemd/system/aiden-agent.service   After=aiden-backup-recover.service，恢复失败标记存在时不启动
 
-src/config_web/web/assets/js/config/backup.js / backup-modal.js / host-transfer.js
+src/config_web/web/assets/js/app/backup-engine.js / app/pages/storage.js / config/host-transfer.js
 ```
 
 `internal/backup` 不依赖 HTTP。Config Web 的提交/回滚与启动恢复服务共用 `transaction.go`，避免两套实现对事务日志的解释不一致。
@@ -1054,11 +1054,11 @@ accept=".aiden-backup,application/vnd.aiden.backup,application/octet-stream"
 
 ### 14.2 前端代码组织
 
-现有 `storage.js` 继续负责容量、SD 格式化和弹出。新增：
+设置页 `/storage`（`app/pages/storage.js`）负责容量、SD 格式化和弹出，以及备份与还原卡片。相关文件：
 
 ```text
-src/config_web/web/assets/js/config/backup.js
-src/config_web/web/assets/js/config/backup-modal.js
+src/config_web/web/assets/js/app/backup-engine.js
+src/config_web/web/assets/js/app/pages/storage.js
 src/config_web/web/assets/js/config/host-transfer.js
 src/config_web/web/assets/js/config/backup-session.js
 src/config_web/web/assets/js/config/backup-checksum.js
@@ -1068,14 +1068,13 @@ src/config_web/web/assets/js/config/backup-checksum.js
 
 | 文件 | 职责 |
 | --- | --- |
-| `backup.js` | capability、任务创建、轮询、取消、validate、apply |
-| `backup-modal.js` | 备份和恢复向导、manifest 摘要、确认、进度和错误展示 |
-| `host-transfer.js` | 浏览器传输与 React Native WebView 传输适配 |
+| `backup-engine.js` | 维护会话、capability、任务创建、轮询、取消、分块上传、plan/validate/apply；不操作 DOM，通过 `onChange` 回调报告状态 |
+| `pages/storage.js` | 备份与还原卡片、确认弹窗、进度和结果展示，以及 TOML 配置导入导出 |
+| `host-transfer.js` | 浏览器下载、归档头读取和分块上传 |
 | `backup-session.js` | HTTP 环境下的 UUID v4 请求 ID |
 | `backup-checksum.js` | HTTP 环境下有界 SHA-256 后备计算 |
-| `storage.js` | 保留 storage status、format/eject 和 TOML 配置导入导出 |
 
-`app.js` 注册新的 data-action，并在页面初始化时查询当前维护任务。如果页面在任务进行期间刷新，应重新绑定任务状态，不能创建重复任务。
+页面加载时查询当前维护任务（`GET /api/maintenance/current`）。如果页面在任务进行期间刷新，会重新绑定任务状态，不会创建重复任务。
 
 ### 14.3 创建备份向导
 

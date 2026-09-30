@@ -9,14 +9,12 @@
  * the output: instead of writing into the classic modal, every change is
  * reported to one `onChange` listener, so the new storage page can draw it.
  *
- * The chunk, header and request-ID helpers are imported from the classic
- * modules rather than copied, so both pages hash and frame archives the same
- * way. The classic page stays as it is at /legacy.
+ * The chunk, header and request-ID helpers live in `config/` next to the
+ * checksum code they share.
  */
 
 import {request, t} from './data.js';
 import {createMaintenanceRequestID} from '../config/backup-session.js';
-import {formatBytes} from '../config/backup-modal.js';
 import {readArchiveHeader, triggerBrowserDownload, uploadBrowserChunks} from '../config/host-transfer.js';
 
 export const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'reboot_required', 'rollback_failed']);
@@ -26,7 +24,19 @@ const UNCANCELLABLE = ['committing', 'post_processing', 'resuming_services', 'ro
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export {formatBytes};
+/** `1536` → `1.5 KB`. */
+export function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let index = 0;
+  let amount = bytes;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
 
 /** A translated message for a backup error code, falling back to its text. */
 export function errorText(error) {

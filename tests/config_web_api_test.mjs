@@ -102,26 +102,4 @@ await assert.rejects(request('/api/config/backup', {method: 'PUT', body: '[agent
 assert.equal(savedStatuses.at(-1).state, 'failed');
 assert.equal(savedStatuses.at(-1).error, 'VAD unavailable');
 
-// An older in-flight status read must not hide a failed TOML application.
-for (const id of ['configApplication', 'configApplicationText', 'configApplyRetry', 'configReboot']) {
-  elements.set(id, {style: {}, textContent: '', className: ''});
-}
-const applicationModule = await loadModule(path.join(moduleRoot, 'config-application.js'));
-await applicationModule.evaluate();
-let releaseStatus;
-fetchImpl = async (url) => {
-  if (url === '/api/config/application') {
-    await new Promise((resolve) => {releaseStatus = resolve;});
-    return {ok: true, status: 200, text: async () => JSON.stringify({state: 'applied', applied: true})};
-  }
-  return {ok: false, status: 503, text: async () => JSON.stringify({persisted: true, applied: false, error: 'VAD unavailable'})};
-};
-const staleStatus = applicationModule.namespace.refreshConfigApplication();
-await assert.rejects(request('/api/config/backup', {method: 'PUT', body: '[agent]'}));
-releaseStatus();
-await staleStatus;
-assert.equal(elements.get('configApplication').style.display, 'block');
-assert.ok(elements.get('configApplicationText').textContent.includes('VAD unavailable'));
-assert.equal(elements.get('configApplyRetry').style.display, '');
-
 process.stdout.write('config web api tests passed\n');

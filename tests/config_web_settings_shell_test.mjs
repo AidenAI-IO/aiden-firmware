@@ -43,7 +43,7 @@ async function listFiles(root, extension) {
 
 // 1. Documents only reference assets that exist. Client routes are served by the
 //    Go fallback, so they are checked against the route table instead.
-const documentNames = ['index.html', 'legacy.html', 'llm-logs.html'];
+const documentNames = ['index.html', 'llm-logs.html'];
 for (const name of documentNames) {
   const documentPath = path.join(webRoot, name);
   const source = await fs.readFile(documentPath, 'utf8');
