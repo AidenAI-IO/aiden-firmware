@@ -2,7 +2,8 @@
  * Advanced routes.
  *
  *   /advanced             entries: logs, manual configuration
- *   /advanced/logs        raw model HTTP logging, log level, retention, export
+ *   /advanced/logs        live logs, raw model HTTP logging, log level, retention, export
+ *   /advanced/logs/agent  the Agent log, tailed live, with the Agent's run state
  *   /advanced/logs/level  log level choice
  *   /advanced/config      the whole grouped Agent TOML, edited in place
  *
@@ -49,6 +50,9 @@ function adoptSaved(snapshot, after) {
     if (after) after();
   };
 }
+
+/** How often the live Agent log is re-read while its page is open. */
+const AGENT_LOG_POLL_MS = 2000;
 
 /** A card followed by a footnote, the pattern the log settings use. */
 function noted(card, note) {
@@ -168,6 +172,21 @@ export async function logsPage(context) {
       [text(msg('advanced.export_logs', '导出日志'))]);
 
     replace(body, [
+      group({rows: [
+        row({
+          label: msg('advanced.agent_log', '实时 Agent 日志'),
+          chevron: true,
+          action: 'open-agent-log',
+          onPress: () => context.navigate('/advanced/logs/agent'),
+        }),
+        row({
+          label: msg('advanced.llm_logs', '模型请求日志'),
+          chevron: true,
+          action: 'open-llm-logs',
+          // A standalone page outside the settings shell, as on the classic page.
+          onPress: () => { window.location.href = '/llm-logs'; },
+        }),
+      ]}),
       noted(group({rows: [row({label: msg('advanced.raw_http', '记录详细模型请求'), accessory: toggle})]}),
         msg('advanced.raw_http_help', '将模型原始 HTTP 请求和响应写入 Agent 日志目录，仅建议排查问题时启用。')),
       noted(group({rows: [row({
@@ -195,6 +214,59 @@ export async function logsPage(context) {
 
   render();
   return screen([body]);
+}
+
+/** The Agent's run state from `GET /api/device/status`, as one row. */
+function agentStatusRow(status) {
+  const running = Boolean(status.process_running);
+  const detail = status.startup_error || (running && !status.port_reachable ? status.port_detail : '');
+  return row({
+    label: msg('advanced.agent_status', 'Agent 状态'),
+    value: running ? msg('advanced.agent_running', '运行中') : msg('advanced.agent_stopped', '未运行'),
+    tone: running ? 'success' : 'danger',
+    description: detail || (running && status.pid ? `PID ${status.pid}` : null),
+    descriptionTone: detail ? 'code' : undefined,
+  });
+}
+
+export async function agentLogPage(context) {
+  const body = el('div', {class: 'page__fill'});
+  const saver = createSaver(context, {title: msg('advanced.agent_log', '实时 Agent 日志'), back: '/advanced/logs', root: body});
+  const statusGroup = el('div');
+  const pre = el('pre', {class: 'ds-log', data: {action: 'agent-log'}});
+  let timer = null;
+
+  // Replacing the text would drop a selection the user is making to copy it.
+  const selecting = () => {
+    const selection = window.getSelection ? window.getSelection() : null;
+    return Boolean(selection && !selection.isCollapsed && pre.contains(selection.anchorNode));
+  };
+
+  async function loadStatus() {
+    const payload = await request('/api/device/status').catch(() => null);
+    replace(statusGroup, payload ? [group({rows: [agentStatusRow(payload.agent_status || {})]})] : []);
+  }
+
+  async function load() {
+    clearTimeout(timer);
+    try {
+      const snapshot = (await request('/api/logs/agent')).agent_log || {};
+      if (!selecting()) {
+        const stick = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 16;
+        pre.textContent = (snapshot.log || '').trim() || snapshot.error || resolve(msg('advanced.agent_log_empty', '暂无日志'));
+        if (stick) pre.scrollTop = pre.scrollHeight;
+      }
+    } catch (error) {
+      if (!pre.textContent) pre.textContent = error && error.message ? error.message : resolve(msg('advanced.agent_log_failed', '读取日志失败'));
+    }
+    timer = setTimeout(() => { if (body.isConnected) load(); }, AGENT_LOG_POLL_MS);
+  }
+
+  replace(body, [statusGroup, el('div', {class: 'ds-group ds-group--fill'}, [el('div', {class: 'ds-log-frame'}, [pre])])]);
+  saver.refreshChrome();
+  await Promise.all([loadStatus(), load()]);
+  pre.scrollTop = pre.scrollHeight;
+  return screen([body], 'ds-screen--sticky');
 }
 
 export async function logLevelPage(context) {

@@ -18,7 +18,7 @@ import {modelPage, modelsPage, providerEditPage, providersPage} from './pages/mo
 import {voiceExtraPage, voiceModelPage, voicePage, voiceProviderEditPage, voiceProvidersPage} from './pages/voice.js';
 import {memoryPage} from './pages/memory.js';
 import {storagePage} from './pages/storage.js';
-import {advancedPage, logLevelPage, logsPage, manualConfigPage} from './pages/advanced.js';
+import {advancedPage, agentLogPage, logLevelPage, logsPage, manualConfigPage} from './pages/advanced.js';
 import {otaLogPage, otaPage} from './pages/ota.js';
 
 /** Section ids that have a real page on the new layout. */
@@ -45,6 +45,7 @@ export const routes = [
   {path: '/storage', name: 'storage', page: storagePage},
   {path: '/advanced', name: 'advanced', page: advancedPage},
   {path: '/advanced/logs', name: 'advanced-logs', page: logsPage},
+  {path: '/advanced/logs/agent', name: 'advanced-agent-log', page: agentLogPage},
   {path: '/advanced/logs/level', name: 'advanced-log-level', page: logLevelPage},
   {path: '/advanced/config', name: 'advanced-config', page: manualConfigPage},
   {path: '/firmware', name: 'firmware', page: otaPage},
