@@ -198,11 +198,27 @@ is left enabled (about 3 MB on the tested board).
 | BLE Service | `/var/log/ble_service/ble_service.log` |
 | adb host startup | `/var/log/adb/adb-startup.log` |
 | OTA health | `/var/log/ota/ota.log` |
+| OTA recovery | `/var/log/ota/ota-recovery.log` |
+| Config Web OTA update | `/userdata/ota/config_web_ota_update.log` |
 | Agent | `/userdata/agent/log/agent.log` |
+| TTYD terminal | `/var/log/ttyd/ttyd.log` |
+| Bluetooth attach | `/var/log/aiden-hciattach.log` |
+| bluetoothd | `/var/log/bluetoothd/bluetoothd.log` |
 | Wi-Fi Proxy | `/var/log/wifi_proxy/wifi_proxy.log` |
 | Wi-Fi driver | `/var/log/wifi_driver/wifi_driver.log` |
 | wpa_supplicant (wlan0) | `/var/log/wpa_supplicant/wlan0.log` |
 | WLAN guard | `/var/log/wlan_guard/wlan_guard.log` |
+| Boot timeline | `/var/log/aiden_boot_timeline.log` |
+
+The Config Web **Export logs** action (`GET /api/logs/support`) packages the
+latest diagnostic data into `aiden-logs.tar.gz`. In addition to the Agent,
+Langfuse episode, and latest LLM HTTP logs, it includes the service logs above,
+the Bluetooth helper logs (`/var/log/aiden-hciattach.log` and
+`/var/log/bluetoothd/bluetoothd.log`), OTA recovery/TTYD/boot-timeline logs,
+and the current kernel ring buffer as `dmesg.log`. Service logs and dmesg are
+limited to their most recent 1 MiB (the existing LLM HTTP export retains up to
+4 MiB); unavailable files are included as text placeholders so one missing or
+permission-restricted service log does not abort the export.
 
 Use `journalctl -u <unit>` for systemd lifecycle and helper failures. Service
 stdout/stderr that is intentionally persisted remains in the files above.

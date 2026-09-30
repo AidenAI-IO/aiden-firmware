@@ -4,16 +4,20 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 func (s *Server) llmLogDir() string {
@@ -311,25 +315,134 @@ func (s *Server) latestLLMLog() string {
 	return best
 }
 
-func (s *Server) handleSupportLogsExport(w http.ResponseWriter, _ *http.Request) {
-	type archiveFile struct {
+const (
+	supportLogTailLimit = 1024 * 1024
+	supportDmesgLimit   = 1024 * 1024
+)
+
+type supportArchiveFile struct {
+	name string
+	data []byte
+}
+
+// These are the files written by the systemd services in the device image.
+// Keep this list explicit rather than archiving /var/log wholesale: the latter
+// can contain unrelated data and can grow without a useful bound.
+func (s *Server) supportServiceLogs() []struct {
+	name string
+	path string
+} {
+	return []struct {
 		name string
-		data []byte
+		path string
+	}{
+		{"services/frame_service.log", "/var/log/frame_service/frame_service.log"},
+		{"services/audio_service.log", "/var/log/audio_service/audio_service.log"},
+		{"services/ble_service.log", "/var/log/ble_service/ble_service.log"},
+		{"services/adb-startup.log", "/var/log/adb/adb-startup.log"},
+		{"services/ota.log", s.options.OTAHealthLogPath},
+		{"services/ota-recovery.log", "/var/log/ota/ota-recovery.log"},
+		{"services/ttyd.log", "/var/log/ttyd/ttyd.log"},
+		{"services/aiden-hciattach.log", "/var/log/aiden-hciattach.log"},
+		{"services/bluetoothd.log", "/var/log/bluetoothd/bluetoothd.log"},
+		{"services/wifi-driver.log", "/var/log/wifi_driver/wifi_driver.log"},
+		{"services/wpa-supplicant.log", "/var/log/wpa_supplicant/wlan0.log"},
+		{"services/wlan-guard.log", "/var/log/wlan_guard/wlan_guard.log"},
+		{"services/wifi-proxy.log", "/var/log/wifi_proxy/wifi_proxy.log"},
+		{"services/boot-timeline.log", "/var/log/aiden_boot_timeline.log"},
+		{"services/ota-update.log", s.options.OTAUpdateLogPath},
 	}
-	files := []archiveFile{}
+}
+
+func unavailableSupportFile(name, source string, err error) supportArchiveFile {
+	message := "Log unavailable\nsource: " + source
+	if err != nil {
+		message += "\ncopy_error: " + err.Error()
+	}
+	message += "\n"
+	return supportArchiveFile{name: name, data: []byte(message)}
+}
+
+func tailBytes(data []byte, limit int64, source string) []byte {
+	if int64(len(data)) <= limit {
+		return data
+	}
+	marker := []byte(fmt.Sprintf("# truncated: copied latest %d of %d bytes from %s\n", limit, len(data), source))
+	return append(marker, data[len(data)-int(limit):]...)
+}
+
+func (s *Server) supportDmesg() supportArchiveFile {
+	binary := strings.TrimSpace(s.options.DmesgBinary)
+	if binary == "" {
+		binary = "dmesg"
+	}
+	result := runDmesgCommand(10*time.Second, binary)
+	if result.ExitCode != 0 {
+		err := fmt.Errorf("command exited with status %d", result.ExitCode)
+		if result.TimedOut {
+			err = context.DeadlineExceeded
+		}
+		if output := strings.TrimSpace(string(result.Output)); output != "" {
+			err = fmt.Errorf("%w: %s", err, output)
+		}
+		return unavailableSupportFile("dmesg.log", binary, err)
+	}
+	return supportArchiveFile{name: "dmesg.log", data: tailBytes(result.Output, supportDmesgLimit, binary)}
+}
+
+func runDmesgCommand(timeout time.Duration, binary string) commandResult {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	output, err := cmd.CombinedOutput()
+	result := commandResult{Output: output, ExitCode: 0}
+	if ctx.Err() != nil {
+		result.ExitCode = -1
+		result.TimedOut = true
+		return result
+	}
+	if err == nil {
+		return result
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.ExitCode = exitErr.ExitCode()
+	} else {
+		result.ExitCode = 127
+		if len(output) == 0 {
+			result.Output = []byte(err.Error())
+		}
+	}
+	return result
+}
+
+func (s *Server) handleSupportLogsExport(w http.ResponseWriter, _ *http.Request) {
+	files := []supportArchiveFile{}
 	episode := s.latestEpisodeYAML()
 	if episode == "" {
-		files = append(files, archiveFile{"langfuse.yaml", []byte("Langfuse episode data unavailable\nNo episode.yaml files found under " + filepath.Join(s.options.ConfigDir(), "memory", "episodes") + ".\n")})
+		files = append(files, supportArchiveFile{"langfuse.yaml", []byte("Langfuse episode data unavailable\nNo episode.yaml files found under " + filepath.Join(s.options.ConfigDir(), "memory", "episodes") + ".\n")})
 	} else if data, err := tailFile(episode, 1024*1024); err == nil {
-		files = append(files, archiveFile{"langfuse.yaml", data})
+		files = append(files, supportArchiveFile{"langfuse.yaml", data})
 	} else {
-		files = append(files, archiveFile{"langfuse.yaml", []byte("Langfuse episode data unavailable\nsource: " + episode + "\ncopy_error: " + err.Error() + "\n")})
+		files = append(files, unavailableSupportFile("langfuse.yaml", episode, err))
 	}
 	agentPath := s.agentLogPath()
 	if data, err := tailFile(agentPath, 1024*1024); err == nil {
-		files = append(files, archiveFile{"agent.log", data})
+		files = append(files, supportArchiveFile{"agent.log", data})
 	} else {
-		files = append(files, archiveFile{"agent.log", []byte("Agent log unavailable\nAgent log path not available: " + agentPath + "\n")})
+		files = append(files, unavailableSupportFile("agent.log", agentPath, err))
 	}
 	llm := s.latestLLMLog()
 	llmName := "http.log"
@@ -337,12 +450,20 @@ func (s *Server) handleSupportLogsExport(w http.ResponseWriter, _ *http.Request)
 		llmName = filepath.Base(llm)
 	}
 	if data, err := tailFile(llm, 4*1024*1024); llm != "" && err == nil {
-		files = append(files, archiveFile{llmName, data})
+		files = append(files, supportArchiveFile{llmName, data})
 	} else if llm == "" {
-		files = append(files, archiveFile{llmName, []byte("HTTP log unavailable\nNo llm-http-*.log files found under " + s.llmLogDir() + ".\n")})
+		files = append(files, unavailableSupportFile(llmName, s.llmLogDir(), fmt.Errorf("no llm-http-*.log files found")))
 	} else {
-		files = append(files, archiveFile{llmName, []byte("HTTP log unavailable\nsource: " + llm + "\ncopy_error: " + err.Error() + "\n")})
+		files = append(files, unavailableSupportFile(llmName, llm, err))
 	}
+	for _, service := range s.supportServiceLogs() {
+		if data, err := tailFile(service.path, supportLogTailLimit); err == nil {
+			files = append(files, supportArchiveFile{name: service.name, data: data})
+		} else {
+			files = append(files, unavailableSupportFile(service.name, service.path, err))
+		}
+	}
+	files = append(files, s.supportDmesg())
 	var output bytes.Buffer
 	gz := gzip.NewWriter(&output)
 	tw := tar.NewWriter(gz)
