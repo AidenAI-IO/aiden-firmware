@@ -168,6 +168,11 @@ globalThis.document = {
   documentElement: new Element('html'),
   createElement: tag => new Element(tag),
   createElementNS: (namespace, tag) => new Element(tag, namespace),
+  createTextNode: value => {
+    const node = new Element('#text');
+    node.textContent = value;
+    return node;
+  },
   // Counted, so a component that leaves a document listener behind shows up.
   listeners: new Map(),
   addEventListener(type, handler) {
@@ -440,6 +445,93 @@ const countByClass = (node, className) => {
   // The tile's glyph is the supplied filled 27x18 mark, centred on the plate.
   assert.equal(countByClass(tile, 'ds-tile__glyph-stroke'), 0);
   assert.equal(countByClass(tile, 'ds-tile__glyph-fill'), 1, 'the plate carries the supplied Wi-Fi glyph');
+}
+
+/* --------------------------------------------------------- agent log --- */
+
+{
+  globalThis.window = globalThis.window || {addEventListener() {}, location: {href: 'http://board.local/'}};
+  const {agentLogLines} = await import(pathToFileURL(path.join(uiRoot, '../app/pages/advanced.js')).href);
+  const lines = agentLogLines([
+    '2026-09-30T08:34:41Z [INFO][agent][server] log_message message="ok"',
+    '2026-09-30T08:34:42Z [WARN][agent][phone_bridge] fallback to HTTP',
+    '2026-09-30T08:34:43Z [ERROR][agent][voice] stt failed',
+    '  wrapped detail of the error',
+    '2026-09-30T08:34:44Z [DEBUG][agent][hid] report sent',
+    'panic: runtime error',
+  ].join('\n'));
+  const severities = lines.map(line => [...line._classes].find(name => name.startsWith('ds-log__line--')));
+  assert.deepEqual(severities, [
+    'ds-log__line--info', 'ds-log__line--warn', 'ds-log__line--error',
+    'ds-log__line--error', 'ds-log__line--debug', 'ds-log__line--error',
+  ], 'continuation lines keep the severity of the record above; a panic reads as an error');
+  assert.equal(lines[0].querySelector('.ds-log__time').textContent, '2026-09-30T08:34:41Z');
+  assert.equal(lines[0].querySelector('.ds-log__level').textContent, '[INFO]');
+  assert.equal(lines[0].querySelector('.ds-log__scope').textContent, '[agent][server]');
+  assert.equal(lines[1].textContent, '2026-09-30T08:34:42Z [WARN][agent][phone_bridge] fallback to HTTP', 'the text is unchanged');
+}
+
+/* --------------------------------------------------- agent log polling --- */
+
+{
+  const {agentLogPage} = await import(pathToFileURL(path.join(uiRoot, '../app/pages/advanced.js')).href);
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timers = [];
+  const calls = [];
+  let releaseStatus;
+  const statusGate = new Promise(resolve => { releaseStatus = resolve; });
+  const respond = body => ({ok: true, status: 200, text: async () => JSON.stringify(body)});
+  globalThis.fetch = async url => {
+    calls.push(url);
+    if (url === '/api/device/status') {
+      // The first status read hangs, as the init script can on a busy board.
+      if (calls.filter(entry => entry === url).length === 1) await statusGate;
+      return respond({agent_status: {process_running: true, pid: 42, port_reachable: true}});
+    }
+    return respond({agent_log: {log: '2026-09-30T08:34:41Z [INFO][agent][server] ok'}});
+  };
+  globalThis.setTimeout = callback => timers.push(callback);
+  globalThis.clearTimeout = () => {};
+  globalThis.requestAnimationFrame = () => {};
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const tick = async () => {
+    const pending = timers.splice(0);
+    pending.forEach(callback => callback());
+    await settle();
+  };
+  try {
+    // Racing a few event-loop turns: a page that waits for its requests would
+    // otherwise hang this test instead of failing it.
+    const page = await Promise.race([agentLogPage({header() {}, navigate() {}}), settle().then(settle).then(() => null)]);
+    assert.ok(page, 'the page is returned while the status request is still pending');
+    const body = page.childNodes[0];
+    // The shell attaches the returned page synchronously.
+    body.isConnected = true;
+    await settle();
+    assert.equal(timers.length, 1, 'the log read finished and scheduled the next poll');
+    releaseStatus();
+    for (let i = 0; i < 5; i += 1) await tick();
+    assert.equal(calls.filter(url => url === '/api/logs/agent').length, 6, 'the log is polled while the page is shown');
+    assert.equal(calls.filter(url => url === '/api/device/status').length, 2, 'the status is refreshed every fifth poll');
+
+    body.isConnected = false;
+    await tick();
+    assert.equal(timers.length, 0, 'polling stops once the page is left');
+
+    // Left before its first tick, e.g. a quick back: no timer outlives the page.
+    const left = await agentLogPage({header() {}, navigate() {}});
+    await settle();
+    assert.equal(timers.length, 1);
+    assert.ok(!left.childNodes[0].isConnected);
+    await tick();
+    assert.equal(timers.length, 0, 'a page that was never shown does not keep rescheduling');
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
 }
 
 process.stdout.write('config web UI component tests passed\n');

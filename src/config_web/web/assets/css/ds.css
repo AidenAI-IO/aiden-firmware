@@ -1464,6 +1464,7 @@
 
 .ds-log {
   flex: 1;
+  min-height: 0;
   margin: 0;
   padding: var(--space-md);
   overflow: auto;
@@ -1475,6 +1476,47 @@
   line-height: var(--font-line-caption);
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/*
+ * A log that scrolls inside its own box instead of stretching the page: the
+ * frame takes the viewport height left under the top bar and status row.
+ */
+.ds-log-frame--bounded {
+  flex: none;
+  height: max(320px, calc(100vh - 240px));
+  height: max(320px, calc(100dvh - 240px));
+}
+
+/* One Agent log record, coloured by its severity. */
+.ds-log__line {
+  display: block;
+  min-height: var(--font-line-caption);
+}
+
+.ds-log__time,
+.ds-log__line--debug,
+.ds-log__level--debug {
+  color: var(--color-ink-secondary);
+}
+
+.ds-log__level {
+  font-weight: var(--font-weight-semibold);
+}
+
+.ds-log__scope,
+.ds-log__level--info {
+  color: var(--color-accent);
+}
+
+.ds-log__line--warn,
+.ds-log__level--warn {
+  color: var(--color-warning);
+}
+
+.ds-log__line--error,
+.ds-log__level--error {
+  color: var(--color-danger);
 }
 
 @media (prefers-reduced-motion: reduce) {
