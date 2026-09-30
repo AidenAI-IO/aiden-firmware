@@ -35,6 +35,7 @@ from runner.report import (
 )
 from runner.recovery import (
     DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
+    recover_agent_after_timeout,
     wait_for_agent_ready,
 )
 from runner.reset import (
@@ -219,6 +220,10 @@ def cli(argv: list[str] | None = None) -> int:
             published = publish_run(
                 Path(args.run_dir),
                 dataset_prefix=args.dataset_prefix,
+                progress=lambda message: print(
+                    f"Langfuse publish: {message}",
+                    flush=True,
+                ),
             )
         except LangfusePublishError as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -346,9 +351,13 @@ def _result_totals(results: list[object], total_tasks: int | None = None) -> dic
 
 
 def _run_exit_code(totals: dict[str, int]) -> int:
-    if totals.get("failed", 0) or totals.get("judge_error", 0) or totals.get("timeout", 0):
+    if totals.get("judge_error", 0) or totals.get("timeout", 0):
         return 1
-    accounted = totals.get("passed", 0) + totals.get("skipped", 0)
+    accounted = (
+        totals.get("passed", 0)
+        + totals.get("failed", 0)
+        + totals.get("skipped", 0)
+    )
     return 0 if accounted == totals.get("tasks", 0) else 1
 
 
@@ -509,6 +518,13 @@ def _planned_metrics_k(units: list[TaskRunUnit]) -> int:
     return min(repeats, default=1)
 
 
+def _planned_task_attempts(units: list[TaskRunUnit]) -> list[dict[str, object]]:
+    return [
+        {"task_id": unit.task.id, "attempt": unit.attempt}
+        for unit in units
+    ]
+
+
 def _write_suite_snapshot(run_dir: Path, suite: Suite) -> str:
     snapshot_name = "suite.json"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -588,6 +604,7 @@ def _cmd_run_auto_agent_setup_inner(
     from runner.webui import (
         Job,
         append_log,
+        container_boot_failure_detail,
         docker_published_port,
         endpoint_for_docker,
         ensure_daemon_image,
@@ -744,11 +761,24 @@ def _cmd_run_auto_agent_setup_inner(
                 environment_bridge_mode=bool(args.environment_url),
                 log_path=runner_log,
             )
-            published_port = docker_published_port(container_id, 8080)
+            append_log(runner_log, f"container {container_id}")
+            # Stream daemon logs before probing the published port so a
+            # container that exits at startup (e.g. config validation failure)
+            # still leaves its output in daemon.log.
+            log_proc = start_daemon_logs(job, daemon_log)
+            try:
+                published_port = docker_published_port(container_id, 8080)
+            except Exception as exc:
+                boot_detail = container_boot_failure_detail(container_id)
+                append_log(runner_log, f"daemon failed to publish port 8080: {exc}")
+                if boot_detail:
+                    append_log(runner_log, boot_detail)
+                raise RuntimeError(
+                    "daemon container is not serving port 8080: "
+                    + (boot_detail or str(exc))
+                ) from exc
             job.agent_url = f"http://127.0.0.1:{published_port}"
             client = _new_agent_client(job.agent_url, benchmark_token)
-            append_log(runner_log, f"container {container_id}")
-            log_proc = start_daemon_logs(job, daemon_log)
             if not wait_for_agent_ready(client, timeout_sec=args.agent_ready_timeout_sec):
                 return skipped_task_result(
                     suite,
@@ -867,6 +897,7 @@ def _cmd_run_auto_agent_setup_inner(
         "totals": totals,
         "metrics_schema_version": "p0-v1",
         "metrics_k": _planned_metrics_k(units),
+        "planned_task_attempts": _planned_task_attempts(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
@@ -888,6 +919,10 @@ def _cmd_run_auto_agent_setup_inner(
     print(f"Passed:        {manifest['totals']['passed']}", flush=True)
     print(f"Failed:        {manifest['totals']['failed']}", flush=True)
     print(f"Skipped:       {manifest['totals']['skipped']}", flush=True)
+    if manifest["totals"]["timeout"] > 0:
+        print(f"Timeout:        {manifest['totals']['timeout']}", flush=True)
+    if manifest["totals"]["judge_error"] > 0:
+        print(f"Judge Error:    {manifest['totals']['judge_error']}", flush=True)
     print(f"Results saved to: {run_dir}", flush=True)
     print("="*60 + "\n", flush=True)
     return _run_exit_code(manifest["totals"])
@@ -1149,6 +1184,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "totals": totals,
         "metrics_schema_version": "p0-v1",
         "metrics_k": _planned_metrics_k(units),
+        "planned_task_attempts": _planned_task_attempts(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)

@@ -16,6 +16,7 @@ from runner.suite import RubricItem
 JUDGE_PROMPT_VERSION = "v1"
 DEFAULT_JUDGE_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_JUDGE_API_KEY_ENV = "AIDEN_BENCHMARK_JUDGE_API_KEY"
+JUDGE_USER_AGENT = "aiden-benchmark/1.0"
 
 @dc.dataclass
 class JudgeConfig:
@@ -159,6 +160,7 @@ def judge_task(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": JUDGE_USER_AGENT,
         },
         method="POST",
     )
