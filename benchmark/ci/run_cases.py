@@ -100,8 +100,11 @@ def run_cases(
 
     def execute(case: SuiteCase) -> CaseOutcome:
         run_id = f"{run_id_prefix}-{case.id}"
+        # Keep each case's staging directory private.  Cases execute in parallel,
+        # so sharing a parent and removing it from each worker creates a race
+        # between another worker's mkdir/open and rmdir.
         staged_log_path = (
-            BENCHMARK_ROOT / "runs" / ".ci-case-logs" / f"{run_id}.log"
+            BENCHMARK_ROOT / "runs" / ".ci-case-logs" / run_id / "ci-case.log"
         )
         final_log_path = BENCHMARK_ROOT / "runs" / run_id / "ci-case.log"
         needs_hardware = case.environment in HARDWARE_ENVIRONMENTS
@@ -140,6 +143,8 @@ def run_cases(
             except OSError as exc:
                 emit(f"WARN    {case.id}: could not archive case log: {exc}")
         try:
+            # Only remove this case's private staging directory; never remove
+            # the shared `.ci-case-logs` parent while sibling cases run.
             staged_log_path.parent.rmdir()
         except OSError:
             pass
