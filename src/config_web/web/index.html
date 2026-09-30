@@ -50,6 +50,14 @@
           <button id="scanBtn" class="button secondary" data-action="scan-wifi" data-i18n="action.rescan">Rescan</button>
         </div>
       </div>
+      <div id="wifiRegionRow" class="wifi-region-row">
+        <div>
+          <span class="wifi-region-label" data-i18n="wifi.region.label">Region</span>
+          <span id="wifiRegionValue" class="wifi-region-value">—</span>
+          <span id="wifiRegionSource" class="wifi-region-source"></span>
+        </div>
+        <button id="wifiRegionBtn" class="button ghost" data-action="open-wifi-region" data-i18n="wifi.region.change">Set region</button>
+      </div>
       <div id="wifiList" class="wifi-list"></div>
     </div>
     <div class="card">
@@ -501,6 +509,21 @@
       <div class="modal-actions">
         <button class="button ghost" data-action="close-wifi-modal" data-i18n="action.cancel">Cancel</button>
         <button id="connectWifiBtn" class="button primary" data-action="connect-selected-wifi" data-i18n="action.connect">Connect</button>
+      </div>
+    </div>
+  </div>
+  <div id="wifiRegionModal" class="modal">
+    <div class="modal-card">
+      <h3 data-i18n="wifi.region.title">Wi-Fi region</h3>
+      <p class="field-hint" data-i18n="wifi.region.intro">The region decides which channels and transmit power this device may use. Choose where the device actually is.</p>
+      <div class="field wifi-modal-field">
+        <label for="wifiRegionSelect" data-i18n="wifi.region.label">Region</label>
+        <select id="wifiRegionSelect"></select>
+      </div>
+      <p id="wifiRegionHint" class="field-hint"></p>
+      <div class="modal-actions">
+        <button class="button ghost" data-action="close-wifi-region" data-i18n="action.cancel">Cancel</button>
+        <button id="wifiRegionSaveBtn" class="button primary" data-action="save-wifi-region" data-i18n="wifi.region.confirm">Confirm region</button>
       </div>
     </div>
   </div>

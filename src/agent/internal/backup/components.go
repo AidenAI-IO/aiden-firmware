@@ -64,6 +64,7 @@ func ComponentDefinitions() []ComponentDefinition {
 			return []SourceSpec{
 				{Path: filepath.Join(r.Userdata, "debian/wifi/wpa_supplicant-wlan0.conf"), ArchivePath: "wpa_supplicant-wlan0.conf", Kind: SourceFile, Optional: true},
 				{Path: filepath.Join(r.Userdata, "system/wifi-proxies.json"), ArchivePath: "wifi-proxies.json", Kind: SourceFile, Optional: true},
+				{Path: filepath.Join(r.Userdata, "system/wifi-region.json"), ArchivePath: "wifi-region.json", Kind: SourceFile, Optional: true},
 			}
 		}},
 		{ID: ComponentOTASettings, SchemaVersion: 1, DefaultSelected: true, Sensitive: true, Sources: func(r Roots) []SourceSpec {

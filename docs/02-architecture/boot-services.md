@@ -175,6 +175,21 @@ restart the guard after changing them. Restarting the guard also resets its
 budget. `iw ... set power_save off` is not used as a fix: that operation is a
 no-op in the bundled driver's `rwnx_cfg80211_set_power_mgmt` implementation.
 
+The driver, supplicant, and guard also keep bounded persistent diagnostics:
+
+| Component | Path | Contents |
+| --- | --- | --- |
+| Driver loader | `/var/log/wifi_driver/wifi_driver.log` | Module path, load result, parameters, and `wlan0` creation; trimmed to the newest 1,000 lines when it exceeds 2,000 |
+| Supplicant | `/var/log/wpa_supplicant/wlan0.log` | Configuration parsing, association, authentication, and restart errors; trimmed to the newest 1,000 lines when it exceeds 2,000 |
+| Recovery guard | `/var/log/wlan_guard/wlan_guard.log` | Link state transitions, gateway failures, recovery attempts, and budget exhaustion |
+
+These files complement, rather than replace, journald. The driver and
+supplicant logs are trimmed at service start and once per guard monitoring
+interval to the newest 1,000 lines after exceeding 2,000 lines; the guard log
+is bounded to the newest 1,000 lines after it exceeds 2,000 lines. No Wi-Fi
+configuration contents or PSK are written. This avoids adding a continuously
+running diagnostic service while preserving evidence across reboot.
+
 Use the USB connection while investigating wireless connectivity:
 
 ```bash
@@ -215,12 +230,18 @@ protocol or the per-network `NO_PROXY` value.
 
 ## OTA
 
-`aiden-ota-health-marker.service` waits for required local services and writes
-a transaction-bound health result. `aiden-ota-health.service` then executes:
+`aiden-ota-health-marker.service` waits for the required local services and the
+Config Web recovery portal, then writes a transaction-bound health result. The
+Agent is allowed to fail during recovery; its failure does not block the portal
+or mark the OTA slot unhealthy. `aiden-ota-health.service` then executes:
 
 ```bash
 /usr/lib/aiden/ota --config /userdata/debian/ota/config.json health
 ```
+
+Pending OTA validation always checks that Config Web is active and responds over
+HTTP. An unset or disabled `ENABLE_CONFIG_WEB` does not skip these checks; without
+the recovery portal, the slot cannot be marked healthy.
 
 The persistent OTA partition is mounted at `/userdata/ota/` and contains state,
 downloads, pending-boot data, and health markers. The immutable factory

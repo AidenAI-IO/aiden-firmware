@@ -290,15 +290,23 @@ boot_timeline_capture_systemd() {
         _bt_active_state=unknown
         _bt_sub_state=unknown
         _bt_result=unknown
+        _bt_exec_code=unknown
+        _bt_exec_status=unknown
+        _bt_condition=unknown
+        _bt_assert=unknown
         _bt_show="$(
             "$BOOT_TIMELINE_SYSTEMCTL_BIN" show "$_bt_unit" \
                 --property=InactiveExitTimestampMonotonic \
                 --property=ActiveEnterTimestampMonotonic \
                 --property=ExecMainStartTimestampMonotonic \
                 --property=ExecMainExitTimestampMonotonic \
+                --property=ExecMainCode \
+                --property=ExecMainStatus \
                 --property=ActiveState \
                 --property=SubState \
-                --property=Result 2>/dev/null
+                --property=Result \
+                --property=ConditionResult \
+                --property=AssertResult 2>/dev/null
         )" || continue
         while IFS='=' read -r _bt_key _bt_value; do
             case "$_bt_key" in
@@ -309,6 +317,10 @@ boot_timeline_capture_systemd() {
                 ActiveState) _bt_active_state="${_bt_value:-unknown}" ;;
                 SubState) _bt_sub_state="${_bt_value:-unknown}" ;;
                 Result) _bt_result="${_bt_value:-unknown}" ;;
+                ExecMainCode) _bt_exec_code="${_bt_value:-unknown}" ;;
+                ExecMainStatus) _bt_exec_status="${_bt_value:-unknown}" ;;
+                ConditionResult) _bt_condition="${_bt_value:-unknown}" ;;
+                AssertResult) _bt_assert="${_bt_value:-unknown}" ;;
             esac
         done <<EOF
 $_bt_show
@@ -338,10 +350,11 @@ EOF
         fi
         _bt_event_cs=$((_bt_event_us / 10000))
         _bt_delta_cs=$(((_bt_event_us - _bt_begin_us) / 10000))
-        printf '%s %s unit:%s %s sub=%s result=%s\n' \
+        printf '%s %s unit:%s %s sub=%s result=%s code=%s status=%s condition=%s assert=%s\n' \
             "$(boot_timeline_fmt_cs "$_bt_event_cs")" \
             "$(boot_timeline_fmt_cs "$_bt_delta_cs")" \
             "$_bt_active_state" "$_bt_unit" "$_bt_sub_state" "$_bt_result" \
+            "$_bt_exec_code" "$_bt_exec_status" "$_bt_condition" "$_bt_assert" \
             >> "$_bt_units_tmp" 2>/dev/null || true
     done
 

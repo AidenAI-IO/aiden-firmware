@@ -23,6 +23,8 @@ func Run(args []string) int {
 	fs.StringVar(&options.AgentConfigPath, "config", options.AgentConfigPath, "agent TOML path")
 	fs.StringVar(&options.WiFiConfigPath, "wifi-config", options.WiFiConfigPath, "wpa_supplicant config path")
 	fs.StringVar(&options.WiFiConfigEnvironmentPath, "wifi-config-environment", options.WiFiConfigEnvironmentPath, "runtime wpa_supplicant config environment path")
+	fs.StringVar(&options.WiFiRegionStatePath, "wifi-region-state", options.WiFiRegionStatePath, "Wi-Fi regulatory domain provenance sidecar path")
+	fs.BoolVar(&options.WiFiRegionAutoApplyBeacon, "wifi-region-auto-apply-beacon", options.WiFiRegionAutoApplyBeacon, "apply a country agreed by at least three distinct access points without asking")
 	fs.StringVar(&options.WiFiInterface, "wifi-interface", options.WiFiInterface, "Wi-Fi interface")
 	fs.StringVar(&options.WiFiBackend, "wifi-backend", options.WiFiBackend, "Wi-Fi backend (legacy or systemd-networkd)")
 	fs.StringVar(&options.OTAStatePath, "ota-state", options.OTAStatePath, "OTA state JSON path")
@@ -41,7 +43,7 @@ func Run(args []string) int {
 	fs.StringVar(&options.USBSubnet, "usb-subnet", options.USBSubnet, "USB ECM client subnet")
 	fs.StringVar(&options.USBInterface, "usb-interface", options.USBInterface, "USB ECM ingress interface for maintenance")
 	fs.StringVar(&options.HardwareIDPath, "hardware-id-path", options.HardwareIDPath, "immutable hardware identifier path")
-	fs.StringVar(&options.OTAConfigPath, "ota-config", options.OTAConfigPath, "OTA configuration path used for identity provisioning after restore")
+	fs.StringVar(&options.OTAConfigPath, "ota-config", options.OTAConfigPath, "OTA configuration path for factory version information and identity provisioning after restore")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
