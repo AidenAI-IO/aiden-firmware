@@ -11,7 +11,8 @@ Type=oneshot
 EnvironmentFile=/run/aiden/system.env
 LogsDirectory=ota
 ExecStart=/usr/lib/aiden/ota --config /userdata/debian/ota/config.json health
-TimeoutStartSec=60s
+# The OTA command enforces its configured health-marker timeout.
+TimeoutStartSec=infinity
 StandardOutput=append:/var/log/ota/ota.log
 StandardError=append:/var/log/ota/ota.log
 

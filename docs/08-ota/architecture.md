@@ -37,6 +37,8 @@ Production images use A/B layout:
 8. `aiden-ota-health-marker.service` aggregates required application health and
    the Config Web recovery portal, then `aiden-ota-health.service` processes
    pending OTA state once. Agent startup is optional during this confirmation.
+   The OTA command controls the health-marker wait through `health_timeout_seconds`
+   (five minutes by default); systemd does not impose an earlier startup timeout.
 
 ## Update Process
 
