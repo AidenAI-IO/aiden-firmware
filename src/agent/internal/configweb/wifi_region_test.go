@@ -581,3 +581,31 @@ func TestResolveWiFiRegionRespectsTheAutoApplySwitch(t *testing.T) {
 		}
 	})
 }
+
+// A supplicant that never starts is an apply failure. The association branch
+// that follows must not relabel it as "could not join this network".
+func TestApplyWiFiReportsSupplicantStartFailureAsApplyFailed(t *testing.T) {
+	options := testOptions(t)
+	options.WiFiBackend = "systemd-networkd"
+	if err := os.WriteFile(options.WiFiConfigPath, []byte("country=CN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	for name, script := range map[string]string{
+		"ip":        "#!/bin/sh\nexit 0\n",
+		"systemctl": "#!/bin/sh\nexit 5\n",
+	} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := server.applyWiFi(context.Background(), options.WiFiConfigPath, true)
+	if result.ExitCode == 0 || result.FailureReason != wifiFailureApply {
+		t.Fatalf("exit=%d reason=%q, want apply_failed", result.ExitCode, result.FailureReason)
+	}
+}

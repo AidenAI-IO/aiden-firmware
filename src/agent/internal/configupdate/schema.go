@@ -446,6 +446,7 @@ type Agent struct {
 	Timezone                   string  `json:"timezone"`
 	Prompt                     string  `json:"prompt"`
 	ContextPruneThreshold      float64 `json:"context_prune_threshold,omitempty"`
+	ContextCompactionThreshold float64 `json:"context_compaction_threshold,omitempty"`
 	InputMode                  string  `json:"input_mode"`
 	VADBackend                 string  `json:"vad_backend"`
 	VADModelPath               string  `json:"vad_model_path"`
@@ -665,6 +666,7 @@ func (d Config) ToAgentConfig() agent.Config {
 		Timezone:                   d.Agent.Timezone,
 		Prompt:                     d.Agent.Prompt,
 		ContextPruneThreshold:      d.Agent.ContextPruneThreshold,
+		ContextCompactionThreshold: d.Agent.ContextCompactionThreshold,
 		InputMode:                  d.Agent.InputMode,
 		VADBackend:                 d.Agent.VADBackend,
 		VADModelPath:               d.Agent.VADModelPath,
@@ -1059,6 +1061,7 @@ func FromAgentConfig(cfg agent.Config) Config {
 			Timezone:                   cfg.TimezoneOrDefault(),
 			Prompt:                     cfg.Prompt,
 			ContextPruneThreshold:      cfg.ContextPruneThreshold,
+			ContextCompactionThreshold: cfg.ContextCompactionThreshold,
 			InputMode:                  cfg.InputModeOrDefault(),
 			VADBackend:                 cfg.VADBackendOrDefault(),
 			VADModelPath:               cfg.VADModelPath,

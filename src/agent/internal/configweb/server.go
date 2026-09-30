@@ -219,7 +219,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		s.APIHandler().ServeHTTP(w, r)
 		return
 	}
@@ -232,22 +232,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	relative := ""
 	entry := false
-	switch r.URL.Path {
-	case "/":
+	switch {
+	case r.URL.Path == "/":
 		relative, entry = "index.html", true
-	case "/llm-logs":
+	case r.URL.Path == "/llm-logs":
 		relative, entry = "llm-logs.html", true
-	default:
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
-			decoded, ok := safeAssetPath(strings.TrimPrefix(r.URL.EscapedPath(), "/assets/"))
-			if !ok {
-				http.Error(w, "Not Found", http.StatusNotFound)
-				return true
-			}
-			relative = filepath.Join("assets", decoded)
-		} else {
-			return false
+	case strings.HasPrefix(r.URL.Path, "/assets/"):
+		decoded, ok := safeAssetPath(strings.TrimPrefix(r.URL.EscapedPath(), "/assets/"))
+		if !ok {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return true
 		}
+		relative = filepath.Join("assets", decoded)
+	case isSettingsRoute(r.URL.Path):
+		// Sub-routes such as /wifi and /wifi/<ssid> belong to the client router,
+		// which needs the same document the root serves.
+		relative, entry = "index.html", true
+	default:
+		return false
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -271,6 +273,26 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Content-Length", fmt.Sprint(info.Size()))
 	_, _ = io.Copy(w, file)
 	return true
+}
+
+// settingsRouteSections are the first path segments of the client router's
+// routes (src/config_web/web/assets/js/app/routes.js).
+var settingsRouteSections = map[string]bool{
+	"wifi": true, "basic": true, "conversation": true, "model": true, "voice": true,
+	"memory": true, "storage": true, "advanced": true, "firmware": true,
+}
+
+// isSettingsRoute reports whether a request path belongs to the client-side
+// settings router, so a settings page can be reloaded or deep-linked. It goes
+// by the section, not by the look of the last segment: an SSID such as
+// "Home_2.4G" contains a dot, and a mistyped path outside the settings must
+// still 404 rather than quietly return HTML.
+func isSettingsRoute(path string) bool {
+	if path == "" || strings.HasSuffix(path, "/") {
+		return false
+	}
+	section := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)[0]
+	return settingsRouteSections[section]
 }
 
 func staticContentType(path string) string {

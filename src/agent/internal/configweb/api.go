@@ -17,10 +17,12 @@ const (
 	apiConfigGet
 	apiConfigSchema
 	apiConfigUpdate
+	apiConfigPlan
 	apiConfigLocale
 	apiConfigApplication
 	apiConfigTest
 	apiMemoryReset
+	apiConversationReset
 	apiModels
 	apiSTTTestStart
 	apiSTTTestStop
@@ -44,6 +46,7 @@ const (
 	apiOTAStatus
 	apiOTAUpdate
 	apiDeviceReboot
+	apiAgentRestart
 	apiUSBReenumerate
 	apiSupportArchive
 	apiLLMLogs
@@ -76,9 +79,11 @@ var apiRoutes = []apiRoute{
 	{apiConfigGet, routeVariant{http.MethodGet, apiPrefix + "/config"}},
 	{apiConfigSchema, routeVariant{http.MethodGet, apiPrefix + "/config/schema"}},
 	{apiConfigUpdate, routeVariant{http.MethodPatch, apiPrefix + "/config"}},
+	{apiConfigPlan, routeVariant{http.MethodPost, apiPrefix + "/config/plan"}},
 	{apiConfigLocale, routeVariant{http.MethodPut, apiPrefix + "/config/locale"}},
 	{apiConfigTest, routeVariant{http.MethodPost, apiPrefix + "/config/test"}},
 	{apiMemoryReset, routeVariant{http.MethodPost, apiPrefix + "/memory/reset"}},
+	{apiConversationReset, routeVariant{http.MethodPost, apiPrefix + "/conversation/reset"}},
 	{apiModels, routeVariant{http.MethodGet, apiPrefix + "/models"}},
 	{apiSTTTestStart, routeVariant{http.MethodPost, apiPrefix + "/config-test/stt/start"}},
 	{apiSTTTestStop, routeVariant{http.MethodPost, apiPrefix + "/config-test/stt/stop"}},
@@ -102,6 +107,7 @@ var apiRoutes = []apiRoute{
 	{apiOTAStatus, routeVariant{http.MethodGet, apiPrefix + "/ota/status"}},
 	{apiOTAUpdate, routeVariant{http.MethodPost, apiPrefix + "/ota/updates"}},
 	{apiDeviceReboot, routeVariant{http.MethodPost, apiPrefix + "/device/reboot"}},
+	{apiAgentRestart, routeVariant{http.MethodPost, apiPrefix + "/agent/restart"}},
 	{apiUSBReenumerate, routeVariant{http.MethodPost, apiPrefix + "/device/usb/reenumerate"}},
 	{apiSupportArchive, routeVariant{http.MethodGet, apiPrefix + "/logs/support"}},
 	{apiLLMLogs, routeVariant{http.MethodGet, apiPrefix + "/logs/llm"}},
@@ -204,10 +210,14 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleConfigMeta(w, r)
 	case apiConfigUpdate:
 		s.handlePostConfig(w, r)
+	case apiConfigPlan:
+		s.handlePlanConfig(w, r)
 	case apiConfigLocale:
 		s.handlePutLocale(w, r)
 	case apiConfigTest:
 		s.handleConfigTest(w, r)
+	case apiConversationReset:
+		s.handleConversationReset(w, r)
 	case apiMemoryReset:
 		s.handleMemoryReset(w, r)
 	case apiModels:
@@ -256,6 +266,8 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleOTAUpdate(w, r)
 	case apiDeviceReboot:
 		s.handleReboot(w, r)
+	case apiAgentRestart:
+		s.handleAgentRestart(w, r)
 	case apiUSBReenumerate:
 		s.handleUSBReenumerate(w, r)
 	case apiSupportArchive:
@@ -295,12 +307,12 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 func endpointConflictsWithMaintenance(endpoint apiEndpoint) bool {
 	switch endpoint {
-	case apiConfigUpdate, apiConfigLocale, apiConfigTest, apiMemoryReset,
+	case apiConfigUpdate, apiConfigLocale, apiConfigTest, apiMemoryReset, apiConversationReset,
 		apiSTTTestStart, apiSTTTestStop, apiStorageFormat, apiStorageEject,
 		apiConfigBackupImport, apiWiFiScan, apiWiFiConnect, apiWiFiForget,
 		apiWiFiRegionUpdate,
 		apiSystemEnvironmentPut, apiSystemEnvironmentApply, apiOTAUpdate,
-		apiDeviceReboot, apiUSBReenumerate, apiLLMLogImport:
+		apiDeviceReboot, apiAgentRestart, apiUSBReenumerate, apiLLMLogImport:
 		return true
 	default:
 		return false

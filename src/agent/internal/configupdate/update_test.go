@@ -1663,3 +1663,51 @@ func TestUpdateConfigFileWritesResponsesContextFields(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanReportsApplyLevelWithoutWriting(t *testing.T) {
+	source := `[basic_settings.device]
+device_type = "iOS"
+
+[basic_settings.device.hid]
+keyboard_layout = "qwerty"
+`
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte(source), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		patch string
+		want  agent.ApplyLevel
+	}{
+		{`{"config":{"device":{"device_type":"macOS"}}}`, agent.ApplyLive},
+		{`{"config":{"device":{"device_type":"Android"}}}`, agent.ApplyReboot},
+		{`{"config":{"hid":{"keyboard_layout":"azerty"}}}`, agent.ApplyReboot},
+		{`{"config":{}}`, agent.ApplyLive},
+	}
+	for _, tt := range tests {
+		result, err := NewService().Plan(path, []byte(tt.patch))
+		if err != nil {
+			t.Fatalf("Plan(%s) error = %v", tt.patch, err)
+		}
+		if result.Apply != tt.want || result.Persisted || result.RebootRequired != (tt.want == agent.ApplyReboot) {
+			t.Fatalf("Plan(%s) = %+v, want apply %q", tt.patch, result, tt.want)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != source {
+		t.Fatalf("Plan must not write the config:\n%s", got)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("Plan left files behind: %v", entries)
+	}
+	if _, err := NewService().Plan(path, []byte(`{"config":{"hid":{"keyboard_layout":"dvorak"}}}`)); err == nil {
+		t.Fatal("Plan must reject a patch Update would reject")
+	}
+}

@@ -203,10 +203,12 @@ func (s *Server) handleGetSystemEnv(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		content = string(data)
 	}
+	restartRequired := s.systemEnvironmentRestartRequired(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                     true,
 		"system_env":             content,
-		"agent_restart_required": s.systemEnvironmentRestartRequired(r.Context()),
+		"agent_restart_required": restartRequired,
+		"apply":                  systemEnvironmentApply(restartRequired),
 		"path":                   s.options.SystemEnvPath,
 	})
 }
@@ -252,7 +254,18 @@ func (s *Server) handleSystemEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "persisted": true, "system_env": *request.SystemEnv,
 		"agent_restart_required": restartRequired,
+		"apply":                  systemEnvironmentApply(restartRequired),
 	})
+}
+
+// systemEnvironmentApply maps the restart flag onto the shared apply levels.
+// The save handler has already resolved an unconfirmed state to "required", so
+// nil here only means a read could not tell, which is not reported as pending.
+func systemEnvironmentApply(restartRequired *bool) agent.ApplyLevel {
+	if restartRequired != nil && *restartRequired {
+		return agent.ApplyAgentRestart
+	}
+	return agent.ApplyLive
 }
 
 func (s *Server) systemEnvironmentRestartRequired(ctx context.Context) *bool {

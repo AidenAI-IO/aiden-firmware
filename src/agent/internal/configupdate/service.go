@@ -33,8 +33,12 @@ type Result struct {
 	Applied       bool     `json:"applied"`
 	Revision      uint64   `json:"revision"`
 	RebootReasons []string `json:"reboot_reasons,omitempty"`
-	Error         string   `json:"error,omitempty"`
-	ErrorKind     string   `json:"error_kind,omitempty"`
+	// Apply is what the change needs before it takes effect; ApplyReasons
+	// names the settings that raised it (see agent.ConfigApplyLevel).
+	Apply        agent.ApplyLevel `json:"apply"`
+	ApplyReasons []string         `json:"apply_reasons,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	ErrorKind    string           `json:"error_kind,omitempty"`
 }
 
 const (
@@ -85,6 +89,17 @@ func NewService() *Service {
 
 // Update applies a config_web JSON merge patch and atomically persists it.
 func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
+	return s.update(path, patchJSON, true)
+}
+
+// Plan validates a patch exactly as Update would and reports its changed paths
+// and apply level, without writing anything. Settings pages call it while the
+// user edits, so the save button can say whether saving will restart.
+func (s *Service) Plan(path string, patchJSON []byte) (Result, error) {
+	return s.update(path, patchJSON, false)
+}
+
+func (s *Service) update(path string, patchJSON []byte, commit bool) (Result, error) {
 	var patch map[string]json.RawMessage
 	if err := json.Unmarshal(patchJSON, &patch); err != nil {
 		return Result{}, invalidConfigUpdate(fmt.Errorf("invalid JSON merge patch: %w", err))
@@ -162,7 +177,7 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 		if err != nil {
 			return Result{}, internalConfigUpdate(err)
 		}
-		return Result{OK: true, Config: FromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false, Persisted: true, Applied: false, Revision: configRevisionFromFile(resolvedPath)}, nil
+		return Result{OK: true, Config: FromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false, Persisted: commit, Applied: false, Revision: configRevisionFromFile(resolvedPath), Apply: agent.ApplyLive}, nil
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(resolvedPath), ".agent.toml.config-update-*.toml")
 	if err != nil {
@@ -181,8 +196,13 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	if n != len(updated) {
 		return Result{}, internalConfigUpdate(fmt.Errorf("write temporary config: %w", io.ErrShortWrite))
 	}
-	if err := tmp.Sync(); err != nil {
-		return Result{}, internalConfigUpdate(fmt.Errorf("sync temporary config: %w", err))
+	// A dry run only validates the candidate and then discards it, so it has
+	// nothing to make durable; skipping the fsync spares the flash on every
+	// settings change the page plans.
+	if commit {
+		if err := tmp.Sync(); err != nil {
+			return Result{}, internalConfigUpdate(fmt.Errorf("sync temporary config: %w", err))
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("close temporary config: %w", err))
@@ -193,6 +213,10 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	}
 	if err := candidate.ValidateVoiceProviders(); err != nil {
 		return Result{}, invalidConfigUpdate(fmt.Errorf("validate voice providers: %w", err))
+	}
+	apply, applyReasons := agent.ConfigApplyLevel(current, candidate)
+	if !commit {
+		return newResult(candidate, changed, apply, applyReasons, false, configRevision(original)), nil
 	}
 	if err := os.Rename(tmpPath, resolvedPath); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("replace config: %w", err))
@@ -205,20 +229,26 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	if err := directory.Sync(); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("sync config directory: %w", err))
 	}
-	rebootRequired := requiresConfigReboot(current, candidate)
+	return newResult(candidate, changed, apply, applyReasons, true, configRevision(updated)), nil
+}
+
+func newResult(candidate agent.Config, changed []string, apply agent.ApplyLevel, reasons []string, persisted bool, revision uint64) Result {
+	rebootRequired := apply == agent.ApplyReboot
 	result := Result{
 		OK:             true,
 		Config:         FromAgentConfig(candidate),
 		ChangedPaths:   changed,
 		RebootRequired: rebootRequired,
-		Persisted:      true,
+		Persisted:      persisted,
 		Applied:        false,
-		Revision:       configRevision(updated),
+		Revision:       revision,
+		Apply:          apply,
+		ApplyReasons:   reasons,
 	}
 	if rebootRequired {
 		result.RebootReasons = []string{"USB/HID identity or keyboard layout changed"}
 	}
-	return result, nil
+	return result
 }
 
 func configRevision(data []byte) uint64 {
@@ -1226,11 +1256,4 @@ func normalizeJSONValue(value any) (any, error) {
 	default:
 		return value, nil
 	}
-}
-
-// Source spelling remains lossless; reboot decisions use the resolved runtime
-// values so aliases do not masquerade as USB/HID behavior changes.
-func requiresConfigReboot(current, candidate agent.Config) bool {
-	return current.PointerModeOrDefault() != candidate.PointerModeOrDefault() ||
-		current.HID.KeyboardLayoutOrDefault() != candidate.HID.KeyboardLayoutOrDefault()
 }

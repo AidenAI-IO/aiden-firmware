@@ -15,9 +15,10 @@ import (
 )
 
 type commandResult struct {
-	Output   []byte
-	ExitCode int
-	TimedOut bool
+	Output        []byte
+	ExitCode      int
+	TimedOut      bool
+	FailureReason string
 }
 
 func runCommand(timeout time.Duration, env []string, input []byte, name string, args ...string) commandResult {
