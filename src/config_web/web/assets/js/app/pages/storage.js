@@ -157,7 +157,9 @@ export async function storagePage(context) {
         ]),
         el('div', {class: 'ds-meter'}, [fill]),
         determinate ? text(`${formatBytes(backup.done)} / ${formatBytes(backup.total)}`, 'ds-progress__detail') : null,
-        text(msg('backup.progress_hint', '操作完成前，请保持页面打开和 USB 连接。'), 'ds-progress__detail'),
+        backup.stalled
+          ? text(backup.message, 'ds-progress__detail ds-progress__detail--danger')
+          : text(msg('backup.progress_hint', '操作完成前，请保持页面打开和 USB 连接。'), 'ds-progress__detail'),
       ]);
     }
     let note = null;

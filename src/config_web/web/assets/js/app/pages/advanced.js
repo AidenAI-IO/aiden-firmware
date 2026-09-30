@@ -140,7 +140,8 @@ export async function logsPage(context) {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      // WebKit starts the download after this tick; revoking now can cancel it.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) {
       toast(error && error.message ? error.message : resolve(msg('advanced.export_failed', '导出日志失败')));
     } finally {

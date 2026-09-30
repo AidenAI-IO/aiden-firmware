@@ -81,6 +81,7 @@ export function createSaver(context, options) {
   const staged = new Map();
   const sequence = new Map();
   let committing = false;
+  let confirming = false;
 
   const level = () =>
     [...staged.values()].reduce((max, entry) => (RANK[entry.level] > RANK[max] ? entry.level : max), APPLY_LIVE);
@@ -171,9 +172,18 @@ export function createSaver(context, options) {
 
   /** Save everything staged, after the user confirms the restart. */
   async function commit() {
-    if (staged.size === 0 || committing) return;
+    // `confirming` covers the sheet: the app's native bar stays tappable
+    // behind it, and a second tap must not open a second confirmation.
+    if (staged.size === 0 || committing || confirming) return;
     const restart = level();
-    if (!(await confirmRestart(restart))) {
+    confirming = true;
+    let confirmed = false;
+    try {
+      confirmed = await confirmRestart(restart);
+    } finally {
+      confirming = false;
+    }
+    if (!confirmed) {
       refreshChrome();
       return;
     }

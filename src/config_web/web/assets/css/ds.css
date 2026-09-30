@@ -1404,6 +1404,10 @@
   color: var(--color-danger);
 }
 
+.ds-progress__detail--danger {
+  color: var(--color-danger);
+}
+
 .ds-card__actions {
   padding: var(--space-sm) var(--space-lg) var(--space-lg);
 }

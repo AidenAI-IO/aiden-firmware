@@ -19,6 +19,12 @@ import {readArchiveHeader, triggerBrowserDownload, uploadBrowserChunks} from '..
 
 export const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'reboot_required', 'rollback_failed']);
 const RESTORE_SD_STRATEGY = 'allow_different';
+/**
+ * Restore states that wait for the archive bytes. After a refresh the chosen
+ * file is gone, so a restore attached in one of these cannot go on; it can
+ * only be cancelled and started again.
+ */
+const NEEDS_UPLOAD = ['created', 'restore_ingest', 'reading_manifest', 'awaiting_plan', 'uploading_and_staging'];
 /** Once restore reaches these, the device commits regardless; cancelling is refused. */
 const UNCANCELLABLE = ['committing', 'post_processing', 'resuming_services', 'rolling_back'];
 
@@ -53,17 +59,30 @@ function phaseText(payload) {
 
 /**
  * @param {(state: object) => void} onChange - receives
- *   `{kind, running, phase, done, total, message, error, finished, rebootRequired}`.
+ *   `{kind, running, stalled, phase, done, total, message, error, finished, rebootRequired}`;
+ *   `stalled` marks an attached restore that lost its file and can only be cancelled.
  */
 export function createBackupEngine(onChange) {
   let session = null;
   let job = null;
   let file = null;
   let identityConfirmed = false;
-  let view = {kind: null, running: false, phase: '', done: 0, total: 0, message: '', error: false, finished: false, rebootRequired: false};
+  let view = {kind: null, running: false, stalled: false, phase: '', done: 0, total: 0, message: '', error: false, finished: false, rebootRequired: false};
 
+  // Leaving the page mid-job orphans a restore upload, so warn first, as
+  // the classic page did.
+  const onBeforeUnload = event => {
+    event.preventDefault();
+    event.returnValue = '';
+  };
+  let guarding = false;
   const emit = patch => {
     view = {...view, ...patch};
+    if (view.running !== guarding) {
+      guarding = view.running;
+      if (guarding) window.addEventListener('beforeunload', onBeforeUnload);
+      else window.removeEventListener('beforeunload', onBeforeUnload);
+    }
     onChange(view);
   };
 
@@ -126,13 +145,13 @@ export function createBackupEngine(onChange) {
     const failed = !['completed', 'reboot_required', 'cancelled'].includes(payload.state);
     const message = messages[payload.state] || t(restore ? 'backup.restore_failed' : 'backup.create_failed', {error});
     const warnings = (payload.warnings || []).join('\n');
-    emit({running: false, finished: true, error: failed, rebootRequired: payload.state === 'reboot_required',
+    emit({running: false, stalled: false, finished: true, error: failed, rebootRequired: payload.state === 'reboot_required',
       message: warnings ? `${message}\n${warnings}` : message, phase: '', done: 0, total: 0});
   }
 
   function fail(error) {
     const restore = view.kind === 'restore';
-    emit({running: false, finished: true, error: true, phase: '', done: 0, total: 0,
+    emit({running: false, stalled: false, finished: true, error: true, phase: '', done: 0, total: 0,
       message: t(restore ? 'backup.restore_failed' : 'backup.create_failed', {error: errorText(error)})});
   }
 
@@ -209,12 +228,16 @@ export function createBackupEngine(onChange) {
     emit({phase: t('backup.phase.validating'), done: 0, total: 0});
     const validated = await maintenance(jobPath('restore', jobId, '/validate'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
     job = {...job, ...validated};
+    await applyRestore(jobId, validated.plan_digest);
+  }
+
+  async function applyRestore(jobId, planDigest) {
     emit({phase: t('backup.phase.committing')});
     let applied;
     try {
       applied = await maintenance(jobPath('restore', jobId, '/apply'), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({plan_digest: validated.plan_digest, confirm: 'RESTORE'}),
+        body: JSON.stringify({plan_digest: planDigest, confirm: 'RESTORE'}),
       });
     } catch (error) {
       // A dropped apply response does not stop the commit on the device; only
@@ -288,8 +311,25 @@ export function createBackupEngine(onChange) {
     job = {kind, job_id: current.job_id, ...(current.job || {})};
     emit({kind, running: true, finished: false, error: false,
       message: t(kind === 'restore' ? 'backup.restore_started' : 'backup.create_started')});
-    progress(current.job || {state: current.phase});
-    poll(kind, current.job_id).catch(error => fail(error));
+    const state = job.state || current.phase || '';
+    progress(current.job || {state});
+    if (kind === 'restore' && NEEDS_UPLOAD.includes(state)) {
+      // Nothing on this page can send the rest of the archive. Say so and
+      // leave Cancel as the way out, instead of showing progress that never
+      // moves until the device's watchdog gives up.
+      emit({phase: '', done: 0, total: 0, stalled: true, message: t('backup.restore_interrupted')});
+      poll(kind, current.job_id).catch(error => fail(error));
+      return true;
+    }
+    // The upload finished before the refresh; the device is waiting for the
+    // same requests the uninterrupted flow would have sent next. The user
+    // confirmed the restore before it started, so it simply goes on.
+    const resume = kind !== 'restore' ? null
+      : state === 'validating' ? () => validateAndApply(current.job_id)
+        : state === 'prepared' && job.plan_digest ? () => applyRestore(current.job_id, job.plan_digest)
+          : null;
+    if (resume) resume().catch(error => fail(error));
+    else poll(kind, current.job_id).catch(error => fail(error));
     return true;
   }
 
