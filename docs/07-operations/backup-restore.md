@@ -56,9 +56,9 @@ The full-archive workflow is exposed through these routes:
 | `GET /api/backup/jobs/{id}/archive` | Stream the completed archive. |
 | `POST /api/restore/jobs` | Create a restore job for an uploaded archive. |
 | `GET /api/restore/jobs/{id}` | Read restore state and progress. |
-| `PUT /api/restore/jobs/{id}/chunks/{index}` | Upload an ordered archive chunk. |
-| `POST /api/restore/jobs/{id}/plan` | Validate the archive and create the restore plan. |
-| `POST /api/restore/jobs/{id}/validate` | Run compatibility and integrity validation. |
+| `PUT /api/restore/jobs/{id}/chunks/{index}` | Upload an ordered archive chunk. Upload pauses with `restore_plan_required` when the parsed manifest requires a plan. |
+| `POST /api/restore/jobs/{id}/plan` | Parse the manifest and create the restore plan before remaining chunks are uploaded. |
+| `POST /api/restore/jobs/{id}/validate` | Validate the complete archive, including compatibility and integrity. |
 | `POST /api/restore/jobs/{id}/apply` | Apply the validated restore transaction. |
 
 The full workflow requires a local maintenance session and USB same-origin
@@ -120,12 +120,15 @@ failed checksum before committing any component.
    rename, and parent-directory `fsync`.
 6. Preserve old files until the complete component passes validation.
 7. Commit the transaction and restart the affected services.
-8. On failure or interruption, resume recovery from the transaction log and
-   restore the last known-good state.
+8. If commit fails, attempt rollback from the transaction log. If the operation
+   is interrupted, resume the recorded commit or rollback before services read
+   the affected data; do not assume every interruption restores the last
+   known-good state automatically.
 
-The archive is not password-protected. Integrity is provided by per-file,
-per-chunk, and footer checksums; access is restricted to the local device
-management boundary and authenticated transfer path.
+The archive is unencrypted and its contents remain recoverable even when
+compression is used. Per-file, per-chunk, and footer checksums provide
+integrity, not confidentiality. Treat downloaded archives as sensitive
+plaintext and store them only in access-controlled locations.
 
 ## Client behavior
 

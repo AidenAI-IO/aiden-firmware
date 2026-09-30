@@ -48,13 +48,11 @@ The region endpoints are:
 | `PUT /api/network/wifi/region` | Apply an explicit choice such as `{"country":"US"}`. |
 
 An update applies the explicit user choice to the PHY and candidate supplicant
-configuration, then returns the resulting region:
-
-- the country code read from the Wi-Fi PHY;
-- the `country=` value in the supplicant configuration; and
-- the region metadata sidecar, including its source. Sidecar persistence is
-  best-effort metadata; the configuration file remains authoritative if the
-  sidecar cannot be written.
+configuration, then returns a `region` object containing the selected
+`country` and its `source`, together with Wi-Fi status. The API does not
+promise that the response separately returns the persisted configuration or
+sidecar contents. Sidecar persistence is best-effort metadata; the
+configuration file remains authoritative if the sidecar cannot be written.
 
 The configuration file remains authoritative. If the sidecar disagrees with
 the configuration file, the sidecar is discarded and regenerated from the

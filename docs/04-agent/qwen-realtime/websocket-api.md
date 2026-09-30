@@ -146,7 +146,9 @@ In smart\_turn mode, providing `voiceprint_audio_urls` in the first `session.upd
 
 Voiceprint registration proceeds in the following order:
 
-1.  The client sends `session.update` with voiceprint audio URLs in `turn_detection.voiceprint_audio_urls`, and the server returns `session.created`.
+1.  After the WebSocket connection opens, the server returns `session.created`.
+    The client then sends `session.update` with voiceprint audio URLs in
+    `turn_detection.voiceprint_audio_urls`, which starts registration.
 
 2.  The server immediately starts asynchronous voiceprint registration and sends a `voiceprint_audio_list.in_progress` event **before** returning `session.updated`. The event contains `item_id`, the unique identifier of this registration task.
 

@@ -48,7 +48,10 @@ ssh root@<DEVICE_IP> "cat /userdata/agent/files_report.html" > report.html
 The Agent Web service also exposes:
 
 - `GET /user_files` to view the current report; and
-- `POST /user_files/regenerate` to regenerate it.
+- `POST /user_files/regenerate` to start asynchronous regeneration. A successful
+  response means regeneration has started; it does not mean that the new
+  report is ready. Poll or reload `GET /user_files` after the generator
+  finishes.
 
 These routes are served by the Agent Web endpoint on port 8080.
 

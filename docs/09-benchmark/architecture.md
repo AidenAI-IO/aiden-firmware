@@ -81,9 +81,16 @@ whose first `k` planned attempts are all present and eligible. It reports:
 - `pass@k`: the fraction with at least one success among those first `k`
   planned attempts;
 - `pass^k`: the fraction whose first `k` planned attempts are all successful;
-- `oracle_best_score@k`: the maximum offline quality score in the first `k`
+- `oracle_best_score@k`: the mean, across tasks with a recorded score in that
+  cohort, of each task's maximum offline quality score within the first `k`
   attempts; and
-- first-success attempt and cumulative cost-to-first-success.
+- first-success attempt and cumulative cost-to-first-success, using tasks with
+  a contiguous eligible attempt prefix.
+
+`pass@1` uses tasks with an eligible first attempt. `pass@k`, `pass^k`, and
+`oracle_best_score@k` use only the cohort whose first `k` planned attempts are
+all present and eligible. First-success metrics use their own contiguous
+eligible-prefix cohort rather than silently skipping invalid attempts.
 
 Success rates include 95% Wilson confidence intervals, and eligible-task
 coverage is reported separately. The metrics are recomputable from the raw

@@ -146,7 +146,7 @@ Server event reference for the Qwen-Audio Realtime API. All server events includ
 
 **Description**: **Smart\_turn mode only.** Final ambient audio transcription result. Paired with delta events, this marks the end of transcription for an ambient audio segment. The result is not written to the conversation context.
 
-| **event\\_id** `*string*` Unique identifier of this event. | ``` { "event_id": "event_xxx", "type": "conversation.item.ambient_audio_transcription.completed", "item_id": "item_xxx", "content_index": 0, "transcript": "嗯", } ``` |
+| **event\\_id** `*string*` Unique identifier of this event. | ``` { "event_id": "event_xxx", "type": "conversation.item.ambient_audio_transcription.completed", "item_id": "item_xxx", "content_index": 0, "transcript": "嗯" } ``` |
 | --- | --- |
 | **type** `*string*` Event type, fixed to `conversation.item.ambient_audio_transcription.completed`. |
 | **item\\_id** `*string*` Independently generated temporary ID, not associated with the conversation context. |
