@@ -49,7 +49,7 @@ backup_events = backup['on'] || backup[true]
 raise 'backup releases must be manual only' unless backup_events.keys == ['workflow_dispatch']
 backup_inputs = backup_events['workflow_dispatch']['inputs']
 raise 'backup must expose three channels' unless backup_inputs['channel']['options'] == inputs['channel']['options']
-raise 'backup must default to preview' unless backup_inputs['plan_only']['default'] && !backup_inputs['publish']['default'] && !backup_inputs['dry_run']['default']
+raise 'backup must default to verified publication' unless backup_inputs['plan_only']['default'] == false && backup_inputs['publish']['default'] == true && backup_inputs['dry_run']['default'] == false && backup_inputs['apt_only']['default'] == false
 backup_jobs = backup['jobs']
 raise 'backup must reuse release and APT publishers' unless backup_jobs.keys.sort == %w[apt preflight release]
 raise 'APT-only must not enter release flow' unless backup_jobs['release']['if'].include?('!inputs.apt_only')
@@ -73,10 +73,48 @@ raise 'preflight must use backup runner and requested source' unless preflight['
 raise 'preflight must be explicitly enabled' unless preflight['if'].include?('inputs.dry_run &&')
 raise 'caller must not acquire the callee release lock' if backup.dig('concurrency', 'group') == release.dig('concurrency', 'group')
 
+primary = load_workflow.call('build-scheduled.yml')
+primary_events = primary['on'] || primary[true]
+raise 'primary must support hourly and manual runs only' unless primary_events.keys.sort == %w[schedule workflow_dispatch]
+raise 'primary must check hourly at minute 17' unless primary_events['schedule'] == [{'cron' => '17 * * * *'}]
+primary_inputs = primary_events['workflow_dispatch']['inputs']
+raise 'primary must expose the backup inputs' unless primary_inputs.keys.sort == backup_inputs.keys.sort
+primary_inputs.each do |name, input|
+  %w[type default options required].each do |key|
+    raise "primary #{name} #{key} differs from backup" unless input[key] == backup_inputs[name][key]
+  end
+end
+raise 'hourly defaults must target main/dev' unless primary_inputs['channel']['default'] == 'dev' && primary_inputs['source_ref']['default'] == 'main'
+raise 'primary must not force OTA by default' unless primary_inputs['force_ota']['default'] == false
+raise 'primary must serialize without cancelling active builds' unless primary['concurrency'] == {'group' => 'primary-build', 'cancel-in-progress' => false}
+raise 'primary must not acquire the callee release lock' if primary.dig('concurrency', 'group') == release.dig('concurrency', 'group')
+primary_jobs = primary['jobs']
+raise 'primary must reuse the shared planner and publishers' unless primary_jobs.keys.sort == %w[apt preflight release]
+primary_release = primary_jobs['release']
+%w[if uses permissions secrets].each do |key|
+  raise "primary release #{key} must match backup" unless primary_release[key] == backup_release[key]
+end
+raise 'primary must supply scheduled defaults and preserve manual overrides' unless primary_release['with'] == {
+  'runner' => 'aiden-hosted-01',
+  'channel' => "${{ inputs.channel || 'dev' }}",
+  'source_ref' => "${{ inputs.source_ref || 'main' }}",
+  'version' => '${{ inputs.version }}',
+  'force_ota' => '${{ inputs.force_ota || false }}',
+  'plan_only' => '${{ inputs.plan_only || false }}',
+  'publish' => "${{ github.event_name == 'schedule' || inputs.publish }}"
+}
+expected_preflight = preflight.merge('with' => preflight['with'].merge('runner' => 'aiden-hosted-01', 'source_ref' => "${{ inputs.source_ref || 'main' }}"))
+raise 'primary preflight must preserve dry-run isolation' unless primary_jobs['preflight'] == expected_preflight
+raise 'primary APT-only must preserve dry-run precedence' unless primary_jobs['apt'] == backup_jobs['apt']
+%w[business ota].each do |kind|
+  raise "#{kind} must skip no-change plans and previews" unless jobs[kind]['if'] == "${{ !inputs.plan_only && needs.plan.outputs.kind == '#{kind}' }}"
+end
+raise 'publication must require verified assets and explicit enablement' unless jobs['publish']['if'] == "${{ !cancelled() && inputs.publish && !inputs.plan_only && needs.plan.result == 'success' && (needs.business.result == 'success' || needs.ota.result == 'success') }}"
+
 %w[build.yml build-scheduled.yml build-backup.yml build-fallback.yml debian-package.yml].each do |name|
   workflow = load_workflow.call(name)
   triggers = workflow['on'] || workflow[true]
-  raise "#{name} still schedules publication" if triggers.key?('schedule')
+  raise "#{name} must not schedule publication" if name != 'build-scheduled.yml' && triggers.key?('schedule')
   raise "#{name} still has release write permissions" unless workflow['permissions']['contents'] == 'read'
   raise "#{name} still has a publisher" if workflow['jobs'].key?('publish')
 end

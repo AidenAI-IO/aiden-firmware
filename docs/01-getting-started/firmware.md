@@ -9,13 +9,15 @@ sidebar_position: 4
 
 ## Getting Firmware
 
-The manually dispatched **Aiden Channel Release** workflow compares changes
-against the selected channel's previous release. System changes produce signed
-firmware; business-only changes produce a Debian package. All three channels
-(`dev`, `staging`, `prod`) are manual; see [Channel Releases](../08-ota/channel-release.md).
-The backup workflow also exposes this release flow using `aiden-hosted-02` for
-firmware builds. Primary, fallback and standalone package builds upload artifacts
-only. You can also build the image locally with
+The **Aiden Channel Release** workflow compares changes against the selected
+channel's previous release. System changes produce signed firmware; business-only
+changes produce a Debian package. The primary workflow checks `main` hourly at
+`:17` UTC and publishes changed content to `dev`; unchanged content is skipped.
+All three channels (`dev`, `staging`, `prod`) also support manual releases;
+see [Channel Releases](../08-ota/channel-release.md). Primary and backup entries
+default to verified publication, using `aiden-hosted-01` and `aiden-hosted-02`
+respectively for firmware builds. Fallback and standalone package builds upload
+artifacts only. You can also build the image locally with
 `./debian_build.sh`, or obtain a reviewed `update.img` through the project's
 manual distribution process.
 

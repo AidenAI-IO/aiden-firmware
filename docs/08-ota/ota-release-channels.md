@@ -4,9 +4,10 @@ sidebar_position: 9
 
 # OTA Release Channels
 
-Use the manually dispatched **Aiden Channel Release** workflow. All three
-channels, `dev`, `staging`, and `prod`, are selected explicitly; the source branch
-does not select the channel. See [Channel Releases](channel-release.md) for
+All three channels, `dev`, `staging`, and `prod`, can be selected explicitly in
+the **Aiden Channel Release** workflow. The primary build workflow also checks
+`main` hourly and publishes changed content to the fixed `dev` channel;
+`staging` and `prod` remain manual. See [Channel Releases](channel-release.md) for
 classification, version allocation, contracts, repository setup and retries.
 
 | Channel | GitHub release type | Device discovery |
