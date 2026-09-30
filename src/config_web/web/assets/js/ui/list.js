@@ -92,6 +92,10 @@ export function row(props) {
     node.setAttribute('tabindex', '0');
     node.addEventListener('click', props.onPress);
     node.addEventListener('keydown', event => {
+      // Only keys aimed at the row itself. A control inside it (the Wi-Fi ⓘ,
+      // a switch) handles its own Enter/Space; letting it bubble here would
+      // both run the row's action and cancel the control's own activation.
+      if (event.target !== node) return;
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
         props.onPress();
