@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -374,7 +376,7 @@ func (s *Server) supportDmesg() supportArchiveFile {
 	if binary == "" {
 		binary = "dmesg"
 	}
-	result := runCommand(10*time.Second, nil, nil, binary)
+	result := runDmesgCommand(10*time.Second, binary)
 	if result.ExitCode != 0 {
 		err := fmt.Errorf("command exited with status %d", result.ExitCode)
 		if result.TimedOut {
@@ -386,6 +388,44 @@ func (s *Server) supportDmesg() supportArchiveFile {
 		return unavailableSupportFile("dmesg.log", binary, err)
 	}
 	return supportArchiveFile{name: "dmesg.log", data: tailBytes(result.Output, supportDmesgLimit, binary)}
+}
+
+func runDmesgCommand(timeout time.Duration, binary string) commandResult {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	output, err := cmd.CombinedOutput()
+	result := commandResult{Output: output, ExitCode: 0}
+	if ctx.Err() != nil {
+		result.ExitCode = -1
+		result.TimedOut = true
+		return result
+	}
+	if err == nil {
+		return result
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.ExitCode = exitErr.ExitCode()
+	} else {
+		result.ExitCode = 127
+		if len(output) == 0 {
+			result.Output = []byte(err.Error())
+		}
+	}
+	return result
 }
 
 func (s *Server) handleSupportLogsExport(w http.ResponseWriter, _ *http.Request) {

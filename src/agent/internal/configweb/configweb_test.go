@@ -1381,6 +1381,21 @@ func TestSupportLogsExportIncludesServiceLogsAndDmesg(t *testing.T) {
 	}
 }
 
+func TestRunDmesgCommandTimeoutKillsWrapperAndChild(t *testing.T) {
+	wrapper := filepath.Join(t.TempDir(), "dmesg-wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nsleep 30 &\nwait\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	result := runDmesgCommand(50*time.Millisecond, wrapper)
+	if !result.TimedOut {
+		t.Fatalf("TimedOut=%t ExitCode=%d Output=%q, want timeout", result.TimedOut, result.ExitCode, result.Output)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("dmesg wrapper shutdown took %s after timeout", elapsed)
+	}
+}
+
 func TestAPIRouteCatalogHasNoDuplicates(t *testing.T) {
 	seen := map[routeVariant]apiEndpoint{}
 	for _, route := range apiRoutes {
