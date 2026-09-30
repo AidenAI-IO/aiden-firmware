@@ -223,6 +223,8 @@ audit_rootfs() {
         || fail "boot timeline helper was not installed"
     test -x "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-machine-id-provision" \
         || fail "machine-ID provision helper was not installed"
+    test -x "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-wifi-log-retention" \
+        || fail "Wi-Fi log retention helper is missing or not executable"
     cmp "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-usb-gadget" \
         "${REPO_ROOT}/overlay-debian/usr/lib/aiden/aiden-usb-gadget"
     cmp "${ROOTFS_MOUNT}/usr/lib/aiden/aiden-boot-timeline" \

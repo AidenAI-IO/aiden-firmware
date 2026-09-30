@@ -280,7 +280,7 @@ grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}" custregd=1' \
 grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'stage=begin he_on=${he_on}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'result=failed reason=wlan0-missing' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
-grep -q 'wifi-driver:begin' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fq 'mark "begin he_on=${he_on}"' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'invalid-he_on' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'StandardOutput=append:/var/log/wifi_driver/wifi_driver.log' \
     "${UNIT_DIR}/aiden-wifi-driver.service"
@@ -302,11 +302,12 @@ grep -Fq 'link-not-ready wpa_state=' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'recovery-end attempt=' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
-grep -q 'wlan-guard:gateway-failure' \
+grep -Fq 'mark "gateway-failure count=${failures}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'cat "${log_file}.tmp.$$" >"${log_file}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
-grep -Fq 'aiden-wifi-log-retention' \
+# Exercise the same direct execution used by ExecStartPre without touching logs.
+AIDEN_WIFI_LOG_MAX_LINES=invalid \
     "${OVERLAY}/usr/lib/aiden/aiden-wifi-log-retention"
 grep -Fq '/usr/lib/aiden/aiden-wifi-log-retention 2>/dev/null || true' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
