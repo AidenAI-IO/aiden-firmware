@@ -23,11 +23,11 @@ on:
       plan_only:
         description: 'Preview classification, version, contract and changelog without building'
         type: boolean
-        default: true
+        default: false
       publish:
         description: 'Publish verified build assets to GitHub (requires plan_only=false and dry_run=false)'
         type: boolean
-        default: false
+        default: true
       dry_run:
         description: 'Preflight only: check the backup runner, secrets and toolchain; overrides plan and publish options'
         type: boolean

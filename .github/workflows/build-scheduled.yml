@@ -1,10 +1,41 @@
-name: Debian Build (manual / primary)
+name: Debian Build (scheduled / primary)
 
 on:
+  schedule:
+    - cron: '17 * * * *'  # Every hour at :17 UTC.
   workflow_dispatch:
     inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [dev, staging, prod]
+        default: dev
+        required: true
+      source_ref:
+        description: 'Commit, tag or branch to build (resolved once by the planner)'
+        type: string
+        default: main
+      version:
+        description: 'Optional MAJOR.MINOR.PATCH; blank increments the global patch version'
+        type: string
+      force_ota:
+        description: 'Rebuild the system and increment its contract, including external dependency refreshes'
+        type: boolean
+        default: false
+      plan_only:
+        description: 'Preview classification, version, contract and changelog without building'
+        type: boolean
+        default: false
+      publish:
+        description: 'Publish verified build assets to GitHub (requires plan_only=false and dry_run=false)'
+        type: boolean
+        default: true
       dry_run:
-        description: Check the build environment only
+        description: 'Preflight only: check the primary runner, secrets and toolchain; overrides plan and publish options'
+        type: boolean
+        default: false
+      apt_only:
+        description: 'Refresh the signed APT repository from existing published releases; no build or new release (dry_run takes precedence)'
         type: boolean
         default: false
 
@@ -16,10 +47,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    if: ${{ startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+  preflight:
+    if: ${{ inputs.dry_run && startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
     uses: ./.github/workflows/build.yml
     with:
       runner: aiden-hosted-01
-      dry_run: ${{ inputs.dry_run }}
+      source_ref: ${{ inputs.source_ref || 'main' }}
+      free_disk_space: false
+      dry_run: true
+    secrets: inherit
+
+  # The shared planner compares main with the last published dev release.
+  # kind=none skips builds and publication, including documentation-only changes.
+  release:
+    if: ${{ !inputs.dry_run && !inputs.apt_only && startsWith(github.ref, 'refs/heads/') && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+    # The callee keeps planning/build jobs read-only and grants write only to publication.
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/release.yml
+    with:
+      runner: aiden-hosted-01
+      # Scheduled events have no dispatch inputs; default them explicitly.
+      channel: ${{ inputs.channel || 'dev' }}
+      source_ref: ${{ inputs.source_ref || 'main' }}
+      version: ${{ inputs.version }}
+      force_ota: ${{ inputs.force_ota || false }}
+      plan_only: ${{ inputs.plan_only || false }}
+      publish: ${{ github.event_name == 'schedule' || inputs.publish }}
+    secrets: inherit
+
+  apt:
+    if: ${{ !inputs.dry_run && inputs.apt_only }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/apt-repository.yml
     secrets: inherit
