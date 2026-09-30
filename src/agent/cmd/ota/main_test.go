@@ -240,6 +240,23 @@ func TestUpdateRunsManualCheckWhenNoUpdate(t *testing.T) {
 	}
 }
 
+func TestCheckReturnsAvailabilityWithoutStartingUpdate(t *testing.T) {
+	fixture := newNoUpdateFixture(t)
+	var out bytes.Buffer
+	err := runWithConfig([]string{"check", "--config", fixture.configPath,
+		"--manifest-url", fixture.manifestURL, "--public-key", fixture.keyPath}, &out, fixture.configureStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ota.CheckResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Available || result.Version == "" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestUpdateReturnsManualCheckFailure(t *testing.T) {
 	fixture := newNoUpdateFixture(t)
 	badServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -57,4 +57,31 @@ assert.equal(current.state, 'up_to_date');
 assert.equal(parseOtaLog('x message="check: start"\nx message="download: a progress 1 MiB/2 MiB (50%)"').percent, 50);
 assert.equal(parseOtaLog('').state, 'idle');
 
+const hybrid = [line('2026-09-30T01:00:00Z', 'hybrid: start'),
+  line('2026-09-30T01:00:01Z', 'hybrid: ota-check'),
+  line('2026-09-30T01:00:02Z', 'hybrid: package-check'),
+  line('2026-09-30T01:00:03Z', 'hybrid: package-install')];
+assert.equal(parseOtaLog(hybrid.join('\n')).stage, 'package-install');
+hybrid.push(line('2026-09-30T01:00:04Z', 'hybrid: completed'));
+hybrid.push('2026-09-30T01:00:04Z [config_web][ota] update_exited exit_code=0');
+assert.equal(parseOtaLog(hybrid.join('\n')).state, 'completed', 'package-only completion must not request a reboot');
+
+const resumed = [line('2026-09-30T02:00:00Z', 'hybrid: start'),
+  line('2026-09-30T02:00:01Z', 'ota check: start'),
+  line('2026-09-30T02:01:00Z', 'ota reboot: requested after switching to slot b'),
+  line('2026-09-30T02:02:00Z', 'hybrid: ota-committed'),
+  line('2026-09-30T02:02:01Z', 'hybrid: package-check')];
+assert.equal(parseOtaLog(resumed.join('\n')).state, 'running');
+assert.equal(parseOtaLog(resumed.join('\n')).stage, 'package-check');
+resumed.push(line('2026-09-30T02:02:02Z', 'hybrid: up-to-date'));
+assert.equal(parseOtaLog(resumed.join('\n')).state, 'up_to_date');
+
+const failedHybrid = [line('2026-09-30T03:00:00Z', 'hybrid: start'),
+  '2026-09-30T03:00:01Z [ERROR][config_web][ota] message="APT index download failed"',
+  '2026-09-30T03:00:01Z [config_web][ota] update_exited exit_code=1'];
+assert.equal(parseOtaLog(failedHybrid.join('\n')).error, 'APT index download failed');
+assert.equal(parseOtaLog(failedHybrid.join('\n')).state, 'failed');
+assert.equal(parseOtaLog([...failedHybrid, ...hybrid].join('\n')).state, 'completed');
+assert.equal(parseOtaLog(hybrid.slice(2).join('\n')).state, 'completed', 'truncated logs still show package completion');
+
 process.stdout.write('config web OTA progress tests passed\n');

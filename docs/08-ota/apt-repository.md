@@ -26,6 +26,39 @@ Packages for a new contract do not appear as candidates for an old contract. A d
 switches to the repository for the new base contract only after installing the new OTA.
 The package's preinst still checks the channel, contract, base release tag, and system fingerprint.
 
+Config Web's "Check and install updates" action (`POST /api/ota/updates`) starts
+`aiden-hybrid-update.service`, which proceeds in this order:
+
+1. Run `ota check` against the current channel's GitHub Release, verifying the signed
+   manifest, version, and build time. Run `ota update` only when new firmware is available.
+   The check itself does not download images, write partitions, or change OTA transaction state.
+2. After switching slots and rebooting into the new firmware, wait for the existing OTA
+   health service. Continue only when both the requested version and build time are
+   `committed`; a rollback or failed health confirmation ends the job without upgrading
+   the business package.
+3. When no new firmware is available, or the new firmware has been confirmed, refresh
+   only the signed indexes from `aiden-business.sources`. Simulate
+   `apt-get --only-upgrade install aiden-business` and install only if that package has
+   an update. Targeting the package avoids upgrading other installed software through
+   a general `apt-get upgrade`; a plan that changes other packages or removes any package
+   is rejected. Platform repository pins, APT signature verification, and package
+   contract checks still apply.
+
+The update service runs independently of Config Web, so stopping and restarting the
+portal during a business package upgrade does not interrupt the job. Its marker is
+stored at `/userdata/ota/hybrid-update.pending`, allowing it to resume after an OTA
+reboot; `GET /api/ota/status` continues to provide logs and progress. A successful
+business package upgrade does not actively reboot the device. Any later reboot required
+by runtime configuration is still indicated by `/run/aiden-business-reboot-required.json`.
+APT refresh or installation failures are reported as failures, not as "up to date".
+The worker limits each OTA metadata check, APT index refresh, and APT simulation
+to 600 seconds. APT index refresh is attempted up to three times, with 15- and
+30-second delays so association, DHCP, or the package source can become available
+after an OTA reboot. Exhausted retries and metadata timeouts release the update
+locks and clear the request marker. Firmware flashing and package installation
+are not subject to this metadata timeout.
+After an interrupted package installation, repair the dpkg state before retrying manually.
+
 `/etc/apt/preferences.d/aiden-business` assigns business packages from the matching
 repository a priority of 990 and Debian repository packages a priority of 1, below the
 installed-package priority of 100. Normal `apt upgrade` therefore upgrades only business

@@ -41,6 +41,7 @@ RUN apt-get update \
         ripgrep \
         ruby \
         shellcheck \
+        systemd \
         tar \
         xz-utils \
         zstd \

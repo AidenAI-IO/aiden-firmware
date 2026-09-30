@@ -35,7 +35,7 @@ func runWithConfig(args []string, out io.Writer, configure func(*ota.UpdaterConf
 func runWithDependencies(args []string, out io.Writer, configure func(*ota.UpdaterConfig), selfCheck func(context.Context, ota.SelfCheckConfig) ota.SelfCheckReport) error {
 	command, args := splitCommandAndFlags(args)
 	positional := flagArgs(args)
-	if (command == "health" || command == "mark-health" || command == "provision-identity" || command == "update" || command == "check-now" || command == "status" || command == "self-check" || command == "rollback" || command == "recover") && len(positional) != 0 {
+	if (command == "health" || command == "mark-health" || command == "provision-identity" || command == "check" || command == "update" || command == "check-now" || command == "status" || command == "self-check" || command == "rollback" || command == "recover") && len(positional) != 0 {
 		return usage()
 	}
 	config, err := parseConfigFlags(args)
@@ -83,6 +83,12 @@ func runWithDependencies(args []string, out io.Writer, configure func(*ota.Updat
 		}{Written: wrote})
 	case "provision-identity":
 		result, err := updater.ProvisionFactoryIdentity()
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(result)
+	case "check":
+		result, err := updater.CheckAvailable(ctx)
 		if err != nil {
 			return err
 		}
@@ -142,6 +148,7 @@ func splitCommandAndFlags(args []string) (string, []string) {
 		"health":             true,
 		"mark-health":        true,
 		"provision-identity": true,
+		"check":              true,
 		"update":             true,
 		"check-now":          true,
 		"status":             true,
@@ -178,6 +185,8 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	miscPath := fs.String("misc", "", "misc partition path")
 	blockDir := fs.String("block-dir", "", "partition block-device directory")
 	manifestURL := fs.String("manifest-url", "", "direct manifest URL (skips release API)")
+	expectedVersion := fs.String("expected-version", "", "require the previously checked firmware version")
+	expectedBuildTime := fs.String("expected-build-time", "", "require the previously checked firmware build time")
 	publicKeyPath := fs.String("public-key", "", "Ed25519 public key PEM path")
 	dryRun := fs.Bool("dry-run", false, "download and verify without switching misc or rebooting")
 	testMode := fs.Bool("test", false, "use test-friendly short health timeout")
@@ -193,6 +202,7 @@ func parseConfigFlags(args []string) (ota.UpdaterConfig, error) {
 	if err != nil {
 		return ota.UpdaterConfig{}, err
 	}
+	config.ExpectedVersion, config.ExpectedBuildTime = *expectedVersion, *expectedBuildTime
 	if *stateDir != "" {
 		config.StateDir = *stateDir
 		config.DownloadDir = filepath.Join(*stateDir, "downloads")
@@ -278,7 +288,7 @@ func flagIsBool(name string) bool {
 
 func flagTakesValue(name string) bool {
 	switch name {
-	case "config", "state-dir", "misc", "block-dir", "manifest-url", "public-key", "health-timeout", "target-slot", "http-timeout", "switch-tries":
+	case "config", "state-dir", "misc", "block-dir", "manifest-url", "public-key", "health-timeout", "target-slot", "http-timeout", "switch-tries", "expected-version", "expected-build-time":
 		return true
 	default:
 		return false
@@ -286,5 +296,5 @@ func flagTakesValue(name string) bool {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: ota [flags] [health|mark-health|provision-identity|update|check-now|status|self-check|rollback|recover|verify-manifest <manifest>]")
+	return fmt.Errorf("usage: ota [flags] [health|mark-health|provision-identity|check|update|check-now|status|self-check|rollback|recover|verify-manifest <manifest>]")
 }
