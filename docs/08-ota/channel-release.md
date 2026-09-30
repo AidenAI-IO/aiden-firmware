@@ -1,161 +1,206 @@
-# 三通道发布
+# Three-Channel Releases
 
-正式发布共用 **Aiden Channel Release**（`.github/workflows/release.yml`）流程，
-可直接手动触发，也可通过主、备构建入口调用。
-**Debian Build (scheduled / primary)** 每小时检查 `main`，有运行时变更时自动发布到 `dev`。
-`staging`、`prod` 保持手动选择；fallback 和独立业务包工作流只生成构建产物。
+All production releases use **Aiden Channel Release** (`.github/workflows/release.yml`),
+which can be triggered manually or called by the primary and backup build entry points.
+**Debian Build (scheduled / primary)** checks `main` hourly and automatically publishes
+runtime changes to `dev`. `staging` and `prod` remain manual; fallback and standalone
+business-package workflows only produce build artifacts.
 
-## 发布决策
+## Release decisions
 
-每个通道以自己的上次成功发布为比较基线，比较 Git 树中的文件内容、路径、模式和
-SDK gitlink 提交。草稿、失败构建和 workflow artifact 不推进基线。
+Each channel compares against its own last successful release, including file contents,
+paths, modes, and the SDK gitlink commit in the Git tree. Drafts, failed builds, and
+workflow artifacts do not advance the baseline.
 
-| 对比结果 | 构建和发布 | 基础契约 |
+| Comparison result | Build and publish | Base contract |
 | --- | --- | --- |
-| 本通道首次发布 | 完整 OTA、刷机镜像及配套 `.deb` | 分配新的契约 |
-| 只有业务或管理范围内配置变动（包括新增文件） | `.deb` | 继承本通道最近 OTA 的契约和底座标识 |
-| 系统变动或业务与系统混合变动 | 完整 OTA、刷机镜像及配套 `.deb` | 分配新的契约 |
-| 只有文档、测试或没有变动 | 不构建、不发布 | 不变 |
-| 勾选 `force_ota` | 完整 OTA，即使源码未变 | 分配新的契约 |
+| First release in the channel | Full OTA, flash image, and matching `.deb` | Allocate a new contract |
+| Only business or in-scope configuration changes (including new files) | `.deb` | Inherit the channel's latest OTA contract and base identifier |
+| System changes or mixed business/system changes | Full OTA, flash image, and matching `.deb` | Allocate a new contract |
+| Documentation/tests only, or no changes | No build or release | Unchanged |
+| `force_ota` selected | Full OTA, even with no source changes | Allocate a new contract |
 
-先按 `scripts/debian-system/config-package.json` 将管理范围内的 overlay 分类为
-`config`（指纹计入 business），再按 `scripts/release/policy.json` 的 ignore、system、business
-顺序匹配。首次配置接管强制新 OTA；此后范围内新增文件无需扩大契约。详见
-[业务包管理运行配置](system-config-package.md)。
-`src/` 和 `assets/business/` 通常属于业务；OTA 实现、Go 依赖声明、CMake 文件、
-工厂 Agent 配置属于系统。范围外的 overlay、SDK、内核、分区、基础依赖、构建与发布脚本等
-未列入业务范围的文件默认属于系统。业务技能的 `SKILL.md` 属于业务资源。
-删除和重命名也参与比较。允许 squash 合并或 rebase 后的源码：前次发布提交不必是
-待发布提交的祖先，但两者必须有共同 Git 历史；仍拒绝选择前次发布的更早祖先提交。
-已有发布基线时，浅克隆会先从 `origin` 补全前次发布和待发布提交的历史，再检查共同
-祖先；拉取失败或超过 300 秒会终止规划。完整克隆不执行额外拉取。
-分类和文件列表直接比较前次发布与当前源码两端的 Git 树，不从共同祖先计算差异。
-因此相同内容的 squash 不会触发发布，系统内容变化仍必须建立新 OTA 契约。
-变更说明中的 Full comparison 链接也使用两端比较；提交摘要保留新历史里的提交信息。
+The planner first classifies in-scope overlay files as `config` (included in the business
+fingerprint) according to `scripts/debian-system/config-package.json`, then matches
+ignore, system, and business in that order from `scripts/release/policy.json`.
+The first configuration ownership transition forces a new OTA; later in-scope files do
+not expand the contract. See [Runtime Configuration Managed by the Business Package](system-config-package.md).
+`src/` and `assets/business/` are normally business; OTA implementation, Go dependency
+declarations, CMake files, and factory Agent configuration are system. Files not listed
+as business, including out-of-scope overlays, SDK, kernel, partitions, base dependencies,
+and build/release scripts, default to system. Business skills' `SKILL.md` files are business resources.
 
-外部 Debian 仓库、签名密钥、Actions secret 和浮动下载内容不在 Git 比较范围内。
-这些输入更新时使用 `force_ota`；无法通过源码差异自动识别它们。
+Deletions and renames participate in comparison. Squash merges and rebases are supported:
+the previous release commit need not be an ancestor of the candidate commit, but both
+must share Git history; selecting an older ancestor of the previous release is still
+rejected. With an existing baseline, a shallow clone fetches the complete history of the
+previous and candidate commits from `origin` before checking their common ancestor;
+fetch failure or a timeout over 300 seconds aborts planning. Full clones do not fetch
+extra history. Classification and file lists compare the two release Git trees directly,
+not differences from their common ancestor. Thus an identical-content squash does not
+trigger a release, while system-content changes still require a new OTA contract.
+The Full comparison link in release notes also uses the two-endpoint comparison; commit
+summaries retain messages from the new history.
 
-## 版本与契约
+External Debian repositories, signing keys, Actions secrets, and floating downloads are
+outside Git comparison. Use `force_ota` when these inputs change; source differences
+cannot detect them automatically.
 
-发布标签为 `dev-v0.0.2`、`staging-v0.0.3`、`prod-v0.0.4` 等。
-三个通道共享版本分配序列，默认在所有已发布版本的最大值上增加 patch，首个托管
-发布为 `0.0.2`，高于已有本地包 `0.0.1-2`。可手动填写更高的 `MAJOR.MINOR.PATCH`。
-正式包版本为 `${version}-1`，不再靠修改 `version.sh` 分配正式版本。
+## Versions and contracts
 
-契约使用 JSON 正整数（例如 `"platform_contract": 1`），不使用版本字符串。
-契约也全局递增：首个托管 OTA 为 `1`，之后每个 OTA 分别分配 `2`、
-`3` 等。通道之间不会出现同号却不同底座的契约。每个通道首次发布都会构建
-自己的底座，所以发布相同提交到另一个新通道也会产生一个 OTA 和新契约。
+Release tags look like `dev-v0.0.2`, `staging-v0.0.3`, and `prod-v0.0.4`.
+All channels share one version sequence. By default, patch is incremented above the
+maximum published version; the first managed release is `0.0.2`, above the existing
+local package `0.0.1-2`. A higher `MAJOR.MINOR.PATCH` may be entered manually.
+Published package versions are `${version}-1`; editing `version.sh` is no longer used
+to assign published versions.
 
-例如 dev 的 OTA 契约为 `4`，之后两个业务包仍依赖 `[4, 5)`，并绑定
-相同 `base_release`、通道和系统源码指纹。dev 再发系统 OTA 后，后续 dev 业务包
-使用新契约；staging/prod 仍按各自已发布的底座计算。
+Contracts are positive JSON integers, such as `"platform_contract": 1`, not version
+strings. They also increment globally: the first managed OTA is `1`, followed by `2`,
+`3`, and so on. Different bases never share a contract number across channels. Each
+channel's first release builds its own base, so publishing the same commit to a new
+channel still creates an OTA and a new contract.
 
-`AIDEN_PLATFORM_CONTRACT` 环境变量使用十进制文本，例如 `1`；生成的 JSON 字段及
-包兼容范围 `min` / `max_exclusive` 都是整数。旧 `"1.0.0"` 契约格式不再接受。
+For example, if dev's OTA contract is `4`, its next two business packages still depend on
+`[4, 5)` and bind the same `base_release`, channel, and system-source fingerprint.
+After another dev system OTA, later dev packages use the new contract; staging/prod
+continue to use their own published bases.
 
-`scripts/release/contract.py` 根据发布计划同时生成：
+`AIDEN_PLATFORM_CONTRACT` is decimal text such as `1`; generated JSON fields and package
+compatibility bounds `min` / `max_exclusive` are integers. The old `"1.0.0"` format is rejected.
 
-- rootfs 的 `/usr/lib/aiden/platform/contract.json`。
-- `.deb` 内的 `release-manifest.json` 和安装前检查。
-- 发布附件 `platform-contract.json`。
+`scripts/release/contract.py` generates all of the following from the release plan:
 
-安装托管业务包时，`preinst` 在解包前核对平台、契约、通道、底座标签和源码指纹；
-不匹配则退出，要求先安装匹配的 OTA。dpkg 原有服务停止、恢复及失败回调逻辑保留。
-初始 rootfs 安装 `.deb` 前先放入契约，最终镜像审计再次核对契约。
-契约是兼容性标识，不代替签名；`.deb` 包含管理范围内的配置和 systemd unit，
-不内含平台库或分区镜像。平台契约、业务 manifest 和发布记录以 `runtime_config: 1`
-声明配置归属；旧记录缺少该字段按 0 处理。
+- `/usr/lib/aiden/platform/contract.json` in the rootfs.
+- `release-manifest.json` and pre-install checks in the `.deb`.
+- The `platform-contract.json` release asset.
 
-## Actions 操作
+When a managed business package is installed, `preinst` checks the platform, contract,
+channel, base tag, and source fingerprint before unpacking; mismatches abort and require
+the matching OTA first. dpkg's existing service stop, restore, and failure-callback
+logic remains. The initial rootfs receives the contract before `.deb` installation, and
+the final image audit checks it again. A contract identifies compatibility and does not
+replace signatures. The `.deb` contains in-scope configuration and systemd units, not
+platform libraries or partition images. Platform contracts, business manifests, and
+release records declare configuration ownership with `runtime_config: 1`; old records
+without the field are treated as 0.
 
-工作流合入 GitHub 默认分支后：
+## Actions operation
 
-1. 进入 **Aiden Channel Release**，选 channel 和 source_ref（默认 main，可填提交 SHA）。
-2. 保持 `plan_only=true`，查看 Summary 和 `release-plan` artifact 中的计划、契约和变更列表。
-3. 正式构建设 `plan_only=false`；`publish=false` 只生成可下载的验证产物。
-4. 正式发布再设 `publish=true`。发布任务经过对应 channel 的 GitHub Environment。
+After merging the workflow into the GitHub default branch:
 
-主入口 **Debian Build (scheduled / primary)**（`build-scheduled.yml`）和备用入口
-**Debian Build (backup / self-hosted-02)**（`build-backup.yml`）提供同样的
-`channel`、`source_ref`、`version`、`force_ota`、`plan_only`、`publish` 参数。
-OTA 分别固定在 `aiden-hosted-01`、`aiden-hosted-02` 构建；业务包仍在 GitHub 托管 Ubuntu 构建。
-两个入口手动运行默认 `channel=dev`、`source_ref=main`、`plan_only=false`、
-`publish=true`、`dry_run=false`、`apt_only=false`，即构建并发布经过校验的产物。
-只查看计划时勾选 `plan_only`；只生成构建产物时取消 `publish`。
-`dry_run=true` 优先，仅检查所选机器环境、签名密钥和工具链，不生成计划、不构建、不发布。
-`apt_only=true` 只从已有发布刷新签名 APT 仓库，仍受 `dry_run` 优先级约束。
+1. Open **Aiden Channel Release**, choose channel and source_ref (default main;
+   a commit SHA is accepted).
+2. Keep `plan_only=true` and inspect the plan, contract, and change list in Summary and
+   the `release-plan` artifact.
+3. Build with `plan_only=false`; set `publish=false` to generate downloadable validation artifacts only.
+4. Set `publish=true` for the actual release. The release job runs through the channel's GitHub Environment.
 
-主入口恢复 `17 * * * *`，每小时 UTC 第 17 分钟检查一次（北京时间/新加坡时间同为每小时 `:17`，
-实际启动可能受调度和排队影响）。定时运行固定使用 `main`、`dev`、`plan_only=false`、
-`publish=true`、`force_ota=false`；手动输入的默认值不依赖定时事件提供。
-每次直接复用发布规划器，在全局发布锁内比较本通道上次成功发布的源码指纹，
-包含 `dev` prerelease；没有变化、只有文档/测试变化或相同内容的 squash 合并均为 `kind=none`，
-不构建、不发布。业务变化生成 `.deb`，系统变化生成完整 OTA；失败构建不推进基线，下小时继续检查。
+The primary **Debian Build (scheduled / primary)** (`build-scheduled.yml`) and backup
+**Debian Build (backup / self-hosted-02)** (`build-backup.yml`) expose the same
+`channel`, `source_ref`, `version`, `force_ota`, `plan_only`, and `publish` parameters.
+OTAs are fixed to `aiden-hosted-01` and `aiden-hosted-02`, respectively; business packages
+are still built on GitHub-hosted Ubuntu. Manual runs of both entry points default to
+`channel=dev`, `source_ref=main`, `plan_only=false`, `publish=true`, `dry_run=false`,
+and `apt_only=false`, which builds and publishes validated artifacts.
+Select `plan_only` to inspect a plan; clear `publish` to generate artifacts only.
+`dry_run=true` takes precedence and checks only the selected machine environment,
+signing key, and toolchain, without planning, building, or publishing.
+`apt_only=true` refreshes only the signed APT repository from existing releases, still
+subject to the precedence of `dry_run`.
 
-三个入口复用相同的变更分类、契约分配、通道 Environment、草稿上传和下载校验，
-并由被调用的发布工作流持有同一个全局发布锁。主、备入口自身的 `primary-build`、
-`backup-build` 并发组不能改成相同的发布锁名称，否则嵌套调用会互相等待；新一轮不会取消正在执行的构建。
+The primary entry point restores the `17 * * * *` schedule, checking every hour at
+minute 17 UTC (also `:17` in Beijing/Singapore time; actual startup may be delayed by
+scheduling and queueing). Scheduled runs use `main`, `dev`, `plan_only=false`,
+`publish=true`, and `force_ota=false`; manual-input defaults do not depend on the
+scheduled event. Every run directly reuses the release planner inside the global release
+lock and compares the source fingerprint of the channel's last successful release,
+including `dev` prereleases. No changes, documentation/tests only, and identical-content
+squash merges produce `kind=none`, with no build or release. Business changes produce a
+`.deb`, system changes a full OTA, and failed builds do not advance the baseline;
+the check runs again the next hour.
 
-需要仓库 secret `OTA_ED25519_PRIVATE_KEY`（Ed25519 PEM，仅 OTA 构建使用），可选
-`AGENT_CONFIG_TOML`。业务包构建不需要这两个 secret。发布使用 workflow 自带的
-`GITHUB_TOKEN`，发布流程中只有发布 job 使用 `contents: write`。主、备入口的调用 job
-也需声明该权限上限，才能传给被调用的发布 job；规划和构建 job 仍为只读。
-仓库的 Actions 权限必须允许该权限。建议为 `staging`、`prod` Environment 配置审核人和允许发布的分支。
+All three entry points share classification, contract allocation, channel Environment,
+draft upload, and download verification. The called release workflow holds the same
+global release lock. The primary and backup entry points' `primary-build` and
+`backup-build` concurrency groups must not be renamed to that release lock, or nested
+calls will wait on one another. A new run does not cancel a running build.
 
-固件可选择 `aiden-hosted-01`、`aiden-hosted-02` 或 `ubuntu-24.04`；业务包在 GitHub
-托管 Ubuntu 构建。固件复用 `build.yml` 的 SDK 清理、工具链、缓存、签名和最终审计。
-传入的 source_ref 只解析一次，后续步骤固定到该 SHA；该提交须包含本发布工具。
+The repository requires `OTA_ED25519_PRIVATE_KEY` (Ed25519 PEM, OTA builds only) and
+optionally `AGENT_CONFIG_TOML`. Business-package builds need neither secret. Publishing
+uses the workflow's `GITHUB_TOKEN`; only the publish job has `contents: write`. Calling
+jobs in the primary and backup workflows must also declare that maximum permission so
+it can be passed to the called publish job; planning and build jobs remain read-only.
+Repository Actions permissions must allow it. Configuring approvers and allowed release
+branches for the `staging` and `prod` Environments is recommended.
 
-全通道共享一个 workflow concurrency group，并在发布前重新核对发布历史。
-GitHub concurrency 不是无限队列：同组只保留一个运行和一个等待任务，后来的等待
-任务可能替换前一个。不要并行启动多个发布；已运行的发布不会被新任务取消。
+Firmware can use `aiden-hosted-01`, `aiden-hosted-02`, or `ubuntu-24.04`; business
+packages use GitHub-hosted Ubuntu. Firmware reuses `build.yml` SDK cleanup, toolchain,
+cache, signing, and final audit. The supplied source_ref is resolved once and all later
+steps pin that SHA; the commit must contain this release tooling.
 
-## 本地脚本
+All channels share one workflow concurrency group, and release history is rechecked
+before publication. GitHub concurrency is not an unlimited queue: one running and one
+waiting job are retained per group, and a later waiting job can replace the earlier one.
+Do not start multiple releases in parallel; a running release is not canceled by a new job.
 
-规划仅需 Git、Python 3.11+、已认证 GitHub CLI。编译在 Linux amd64（如 luhaodev）
-上执行，需要 Docker 和现有固件构建环境；macOS 可查看计划和产物。
+## Local scripts
+
+Planning requires only Git, Python 3.11+, and an authenticated GitHub CLI. Builds run on
+Linux amd64 (for example, luhaodev) and require Docker and the existing firmware build
+environment; macOS can inspect plans and artifacts.
 
 ```bash
 python3 scripts/release/release.py plan \
   --repo AidenAI-IO/aiden-firmware --channel dev
 
-# 干净工作区、HEAD 与 plan 中的 source_commit 一致。
-# OTA 构建还需配置已有 debian_build.sh 的签名/信任公钥变量。
+# Clean working tree; HEAD must match source_commit in the plan.
+# OTA builds also require the signing/trusted-public-key variables used by debian_build.sh.
 python3 scripts/release/release.py build --plan output/release/plan.json
 python3 scripts/release/release.py verify output/release/assets
 
-# 仅在明确准备对外发布时执行。
+# Run only when explicitly ready to publish externally.
 python3 scripts/release/release.py publish output/release/assets
 ```
 
-`plan --history history.json` 使用离线发布记录数组进行预览/测试。空数组表示没有
-托管发布，不表示读取了线上历史。发布器始终重新读取 GitHub，不接受离线历史作为
-发布依据。`--force-ota` 强制刷新底座；`--version` 指定高于全局已发布版本的版本号。
+`plan --history history.json` uses an offline release-record array for preview/testing.
+An empty array means no managed releases; it does not mean online history was read.
+The publisher always rereads GitHub and does not accept offline history as the basis
+for publication. `--force-ota` forces a base refresh; `--version` selects a version above
+the global published maximum.
 
-发布目录包含 `.deb`、业务 manifest、平台契约、自动变更说明、`release.json` 和
-`SHA256SUMS`。OTA 还包含签名 manifest、boot A/B、rootfs、刷机镜像压缩包、刷机镜像
-校验文件和 OTA 验签公钥。userdata 不作为单独 OTA 分区发布。
+The release directory contains `.deb`, the business manifest, platform contract,
+automated release notes, `release.json`, and `SHA256SUMS`. OTA releases also contain
+the signed manifest, boot A/B, rootfs, compressed flash image, flash-image checksum file,
+and OTA verification public key. userdata is not released as a separate OTA partition.
 
-## 发布完整性与失败重试
+## Release integrity and retrying failures
 
-`release.json` 记录源码 SHA、Git 树、通道、版本、前次发布、平台基线、系统/业务
-指纹、变更列表和每个附件的大小/哈希。已发布的托管标签必须有有效记录，读取失败
-会中止规划，不会误当作首次发布。旧 `debian-*`/`business-v*` 标签不作为新流程基线。
-不要删除或修改已发布的托管标签、附件或记录；它们是后续版本与契约分配的依据。
+`release.json` records the source SHA, Git tree, channel, version, previous release,
+platform baseline, system/business fingerprints, change list, and size/hash of every
+asset. Published managed tags must have valid records; read failures abort planning
+rather than being mistaken for a first release. Old `debian-*`/`business-v*` tags are
+not baselines for the new process. Do not delete or modify published managed tags,
+assets, or records: later versions and contract allocation depend on them.
 
-发布器核对标签指向、创建草稿、上传、完整重新下载并校验后才公开。OTA 还验证
-Ed25519 签名、镜像哈希和固定到标签的下载 URL。发布过程中历史变化会中止公开。
-已公开版本拒绝覆盖。上传失败后保留原始 `channel-release-assets` artifact，使用
-同一批文件重新运行 `publish`；草稿已有不同构建内容时不会覆盖。重新构建会改变
-构建时间和签名，因此不能替代原始附件来续传同一草稿。
+The publisher verifies tag targets, creates the draft, uploads, fully redownloads and
+checks all files, and only then makes the release public. OTA also verifies the Ed25519
+signature, image hashes, and tag-pinned download URLs. Any history change during
+publication aborts public release. Published versions cannot be overwritten. After an
+upload failure, retain the original `channel-release-assets` artifact and rerun
+`publish` with the same files; a draft with different build contents is not overwritten.
+Rebuilding changes build times and signatures and cannot replace the original assets
+when resuming the same draft.
 
-dev/staging 是 prerelease。只有 prod 的 OTA 可以更新 GitHub Latest；prod 业务包
-不会抢占 Latest。新 OTA 客户端读取设备配置的 `repo`、`channel`，分页寻找该通道
-版本最高的 OTA，跳过业务包，并验证已签名 manifest 的通道。空 channel 和旧配置
-继续使用旧 Latest 入口；旧设备需要先强刷本通道的新基础镜像，才能获得通道选择。
+dev/staging are prereleases. Only prod OTA can update GitHub Latest; prod business
+packages do not take Latest. New OTA clients read `repo` and `channel` from device
+configuration, paginate to find the channel's highest-version OTA, skip business packages,
+and verify the signed manifest's channel. Empty channels and old configurations continue
+to use the old Latest entry point; old devices must first be fully reflashed with the
+new base image for their channel to obtain channel selection.
 
-正式发布后自动刷新 GitHub Pages 上的签名 APT 源。设备运行 `apt update && apt upgrade`
-即可升级本通道、当前基础契约内的业务包；系统更新继续走 A/B OTA。首次配置、签名
-密钥、系统包 pin 和索引维护见 [GitHub APT 软件源](apt-repository.md)。
+After publication, the signed GitHub Pages APT repository is refreshed automatically.
+Devices run `apt update && apt upgrade` to upgrade business packages for their channel
+and current base contract; system updates continue through A/B OTA. For initial setup,
+signing keys, system package pins, and index maintenance, see
+[GitHub APT Repository](apt-repository.md).

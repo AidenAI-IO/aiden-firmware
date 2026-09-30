@@ -2,7 +2,7 @@
 sidebar_position: 8
 ---
 
-# OTA 自检、数据兼容与 A/B 回退设计
+# OTA Health Checks, Data Compatibility, and A/B Rollback Design
 
 OTA updates write only the inactive A/B slot. Before writing, the updater
 creates a durable snapshot of the protected configuration files listed in the
