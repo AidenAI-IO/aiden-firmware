@@ -28,6 +28,7 @@ export const tokens = {
     accent: "#4B8EFF",
     success: "#34C759",
     danger: "#FF3B30",
+    warning: "#B86E00",
     primaryFill: "#000000",
     primaryFillDisabled: "#D2D5DD",
     primaryInk: "#FFFFFF",
