@@ -1,98 +1,98 @@
-Qwen-Audio Realtime API的客户端事件参考。
+Client event reference for the Qwen-Audio Realtime API.
 
-**用户指南**：[实时语音对话（Qwen-Audio-Realtime）](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime)。如需了解事件交互时序，请参见[WebSocket API](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api)。
+**User guide**: [Real-time voice conversations (Qwen-Audio-Realtime)](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime). For event interaction sequences, see [WebSocket API](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime-websocket-api).
 
 ## **session.update**
 
-**说明**：建立连接后，发送此事件更新会话的默认配置。仅包含需要变更的字段，未传字段保持原值。服务端收到后校验参数，若参数不合法则返回错误，若参数合法则应用更改并返回完整配置。
+**Description**: After establishing a connection, send this event to update the default session configuration. Include only the fields to change; omitted fields retain their existing values. The server validates the parameters, returning an error if they are invalid or applying the changes and returning the full configuration if they are valid.
 
-**说明**
+**Note**
 
-`turn_detection` 仅在首次发送音频之前（IDLE 状态）允许修改。
+`turn_detection` can only be changed before audio is first sent (in the IDLE state).
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `session.update`。 | ``` { "type": "session.update", "session": { "modalities": [ "text", "audio" ], "voice": "longanqian", "turn_detection": { "type": "server_vad", "threshold": 0.5, "silence_duration_ms": 800 } } } ``` Function Calling： ``` { "type": "session.update", "session": { "modalities": [ "text", "audio" ], "voice": "longanqian", "tools": [ { "type": "function", "function": { "name": "get_weather", "description": "查询指定城市天气", "parameters": { "type": "object", "properties": { "city": { "type": "string", "title": "城市" } }, "required": ["city"] } } } ], "turn_detection": { "type": "server_vad", "threshold": 0.5, "silence_duration_ms": 800 } } } ``` 声纹注册（voiceprint\\_audio\\_urls）： ``` { "type": "session.update", "session": { "turn_detection": { "type": "smart_turn", "voiceprint_audio_urls": [ "https://example.com/speaker1.pcm", "https://example.com/speaker2.wav" ] } } } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `session.update`. | ``` { "type": "session.update", "session": { "modalities": [ "text", "audio" ], "voice": "longanqian", "turn_detection": { "type": "server_vad", "threshold": 0.5, "silence_duration_ms": 800 } } } ``` Function Calling: ``` { "type": "session.update", "session": { "modalities": [ "text", "audio" ], "voice": "longanqian", "tools": [ { "type": "function", "function": { "name": "get_weather", "description": "查询指定城市天气", "parameters": { "type": "object", "properties": { "city": { "type": "string", "title": "城市" } }, "required": ["city"] } } } ], "turn_detection": { "type": "server_vad", "threshold": 0.5, "silence_duration_ms": 800 } } } ``` Voiceprint registration (voiceprint\\_audio\\_urls): ``` { "type": "session.update", "session": { "turn_detection": { "type": "smart_turn", "voiceprint_audio_urls": [ "https://example.com/speaker1.pcm", "https://example.com/speaker2.wav" ] } } } ``` |
 | --- | --- |
-| **session** `*object*`（可选） 会话配置。 **属性** **modalities** `*array*`（可选） 模型输出模态设置，可选值： - `["text"]` 仅输出文本。 - `["audio", "text"]`（默认值） 同时输出文本和音频。 **voice** `*string*`（可选） TTS 音色名称，默认值为 `longanqian`。支持两种类型，仅可在第一次 `session.update` 中设置，后续传入将被忽略。 - **系统音色**：可选值：`longanqian`、`longanlingxin`、`longanlingxi`、`longanxiaoxin`、`longanlufeng`。 - **声音复刻音色**：通过声音复刻 API 创建，将返回的 `voice_id` 填入此参数。详见[音色配置](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime#fc60h311)。 **enable\\_speech\\_emotion** `*boolean*`（可选） 是否开启情绪增强功能。开启后，回复音色的情绪变化更明显。默认值：`true`。可选值：`true`、`false`。 **instructions** `*string*`（可选） 系统指令，用于设定模型的角色身份、回答风格和行为偏好。对整个会话生效。 **input\\_audio\\_format** `*string*`（可选） 输入音频格式。当前仅支持 `pcm`（16kHz 16bit 单声道），为默认值。仅在首次发送音频之前（IDLE 状态）允许修改。 **output\\_audio\\_format** `*string*`（可选） 输出音频格式。当前仅支持 `pcm`（24kHz 16bit 单声道），为默认值。 **max\\_history\\_turns** `*integer*`（可选） 允许单次请求的最大历史 QA 轮数。取值范围为 1-50，默认值为 20。 **tools** `*array*`（可选） Function Calling 工具定义列表。配置后模型可根据用户输入自主决定是否调用工具。 **属性** **type** `*string*`**（必选）** 固定为 `function`。 **function.name** `*string*`**（必选）** 工具函数名称。 **function.description** `*string*`（可选） 对工具函数功能的描述，模型据此判断是否调用该工具。 **function.parameters** `*object*`（可选） 对工具函数入参的描述，模型据此提取所需入参。若函数无需入参，可不指定。 **属性** **type** `*string*`**（必选）** 固定为 `object`。 **properties** `*object*`（可选） 描述各入参的名称、数据类型与说明。 **required** `*array*`（可选） 指定哪些入参为必填项。 **turn\\_detection** `*object\\|null*`（可选） 轮次检测配置。设为 `null` 可切换为 push-to-talk 模式（手动提交音频并触发推理）。若不提供此字段，系统将使用默认参数启用 VAD。 **属性** **type** `*string*`（可选） VAD 类型，可选值： - `server_vad`（默认值）：基于声学特征检测语音起止，自动触发推理。 - `smart_turn`：融合声学感知与语义理解的智能轮次检测，通过声学与语义双重判断轮次边界。无语义的声音（如”嗯”、”啊”）不会触发对话轮或打断模型播报。 **threshold** `*float*`（可选） VAD灵敏度，仅在 server\\_vad 模式下生效（smart\\_turn 模式下无效）。值越低，VAD越灵敏，越容易将微弱声音（包括背景噪音）识别为语音；值越高，越不灵敏，需要更清晰、音量更大的语音才能触发。 取值范围为\\[-1.0, 1.0\\]，默认值为 0.5。 **silence\\_duration\\_ms** `*integer*`（可选） 语音结束后需保持静音的最短时间（毫秒），仅在 server\\_vad 模式下生效（smart\\_turn 模式下无效）。超时即触发模型响应。值越低，响应越快，但可能在短暂停顿时误触发。 取值范围为\\[200, 6000\\]，默认值为 800。对话场景推荐 400-800。 **voiceprint\\_audio\\_urls** `*array*`（可选） **仅在 smart\\_turn 模式下生效。**目标用户预录音频的公网可访问 URL 列表，用于说话人增强。传入后，模型将在双工对话中精准锁定目标说话人，有效忽略旁人声音与背景噪声。最多支持 5 个 URL。音频格式要求：16kHz PCM 或 WAV。 **重要** 该参数仅在**第一次**发送 `session.update` 事件时可配置，后续传入该字段将被忽略。 |
+| **session** `*object*` (optional) Session configuration. **Properties** **modalities** `*array*` (optional) Model output modalities. Valid values: - `["text"]`: Text only. - `["audio", "text"]` (default): Both text and audio. **voice** `*string*` (optional) TTS voice name. Default: `longanqian`. Two types are supported. This can only be set in the first `session.update`; subsequent values are ignored. - **System voices**: Valid values: `longanqian`, `longanlingxin`, `longanlingxi`, `longanxiaoxin`, `longanlufeng`. - **Cloned voices**: Create a voice using the voice cloning API and set this parameter to the returned `voice_id`. See [Voice configuration](https://help.aliyun.com/zh/model-studio/fun-audiochat-realtime#fc60h311). **enable\\_speech\\_emotion** `*boolean*` (optional) Whether to enable emotion enhancement, which makes emotional variation in the response voice more pronounced. Default: `true`. Valid values: `true`, `false`. **instructions** `*string*` (optional) System instructions defining the model's role, response style, and behavioral preferences. Apply to the entire session. **input\\_audio\\_format** `*string*` (optional) Input audio format. Currently, only `pcm` (16kHz, 16-bit, mono) is supported and is the default. Can only be changed before audio is first sent (in the IDLE state). **output\\_audio\\_format** `*string*` (optional) Output audio format. Currently, only `pcm` (24kHz, 16-bit, mono) is supported and is the default. **max\\_history\\_turns** `*integer*` (optional) Maximum number of historical question-answer turns allowed per request. Range: 1-50. Default: 20. **tools** `*array*` (optional) List of Function Calling tool definitions. When configured, the model can decide whether to call a tool based on user input. **Properties** **type** `*string*`** (required)** Fixed to `function`. **function.name** `*string*`** (required)** Tool function name. **function.description** `*string*` (optional) Description of the tool function, used by the model to decide whether to call it. **function.parameters** `*object*` (optional) Description of the function's input parameters, used by the model to extract the required arguments. May be omitted if the function requires no arguments. **Properties** **type** `*string*`** (required)** Fixed to `object`. **properties** `*object*` (optional) Names, data types, and descriptions of the input parameters. **required** `*array*` (optional) Specifies which input parameters are required. **turn\\_detection** `*object\\|null*` (optional) Turn detection configuration. Set to `null` to switch to push-to-talk mode (manually submit audio and trigger inference). If omitted, the system enables VAD with default parameters. **Properties** **type** `*string*` (optional) VAD type. Valid values: - `server_vad` (default): Detects speech boundaries using acoustic features and automatically triggers inference. - `smart_turn`: Intelligent turn detection combining acoustic perception and semantic understanding to identify turn boundaries. Sounds without semantic meaning (such as "um" or "ah") do not trigger a conversation turn or interrupt model speech. **threshold** `*float*` (optional) VAD sensitivity. Applies only in server\\_vad mode (has no effect in smart\\_turn mode). Lower values make VAD more sensitive and more likely to recognize faint sounds, including background noise, as speech. Higher values require clearer, louder speech to trigger detection. Range: \\[-1.0, 1.0\\]. Default: 0.5. **silence\\_duration\\_ms** `*integer*` (optional) Minimum silence duration in milliseconds after speech ends. Applies only in server\\_vad mode (has no effect in smart\\_turn mode). When this duration elapses, a model response is triggered. Lower values produce faster responses but may trigger prematurely during brief pauses. Range: \\[200, 6000\\]. Default: 800. Recommended for conversations: 400-800. **voiceprint\\_audio\\_urls** `*array*` (optional) **Applies only in smart\\_turn mode.** List of publicly accessible URLs of prerecorded audio from the target user, used for speaker enhancement. When provided, the model precisely identifies the target speaker in full-duplex conversations and ignores other speakers and background noise. Supports up to 5 URLs. Required audio format: 16kHz PCM or WAV. **Important** This parameter can only be configured in the **first** `session.update` event; subsequent values are ignored. |
 
 ## **input\_audio\_buffer.append**
 
-**说明**：追加音频数据到输入缓冲区。应持续、高频发送（如每 20~40 ms 一帧）。此事件无服务端确认回包。
+**Description**: Append audio data to the input buffer. Send continuously at a high frequency (for example, one frame every 20~40 ms). The server does not acknowledge this event.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `input_audio_buffer.append`。 | ``` { "type": "input_audio_buffer.append", "audio": "<base64 编码的音频数据>" } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `input_audio_buffer.append`. | ``` { "type": "input_audio_buffer.append", "audio": "<base64 编码的音频数据>" } ``` |
 | --- | --- |
-| **audio** `*string*`**（必选）** Base64 编码的音频数据。 |
+| **audio** `*string*`** (required)** Base64-encoded audio data. |
 
 ## **input\_audio\_buffer.commit**
 
-**说明**：**仅 push-to-talk 模式。**将缓冲区音频提交为一条用户消息。提交后不会自动触发推理，需要发送 `response.create` 手动触发。
+**Description**: **Push-to-talk mode only.** Commit buffered audio as a user message. Committing does not automatically trigger inference; send `response.create` to trigger it manually.
 
-server\_vad / smart\_turn 模式下此事件被忽略。
+This event is ignored in server\_vad / smart\_turn mode.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `input_audio_buffer.commit`。 | ``` { "type": "input_audio_buffer.commit" } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `input_audio_buffer.commit`. | ``` { "type": "input_audio_buffer.commit" } ``` |
 | --- | --- |
 
 ## **input\_audio\_buffer.clear**
 
-**说明**：**仅 push-to-talk 模式。**清空缓冲区中尚未提交的音频。server\_vad / smart\_turn 模式下此事件被忽略。服务端以 `input_audio_buffer.cleared` 事件响应。
+**Description**: **Push-to-talk mode only.** Clear uncommitted audio from the buffer. This event is ignored in server\_vad / smart\_turn mode. The server responds with an `input_audio_buffer.cleared` event.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `input_audio_buffer.clear`。 | ``` { "type": "input_audio_buffer.clear" } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `input_audio_buffer.clear`. | ``` { "type": "input_audio_buffer.clear" } ``` |
 | --- | --- |
 
 ## **conversation.item.create**
 
-**说明**：手动向对话上下文插入一条对话项。可用于注入历史上下文、补充文本信息，或写回 Function Calling 的工具执行结果。
+**Description**: Manually insert an item into the conversation context. Use this to inject historical context, add text information, or submit tool execution results for Function Calling.
 
-**说明**
+**Note**
 
-若 `item.id` 已存在于对话中，会返回错误并拒绝创建。
+If `item.id` already exists in the conversation, creation is rejected with an error.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `conversation.item.create`。 | 注入用户文本消息： ``` { "type": "conversation.item.create", "previous_item_id": "item_xxx", "item": { "id": "my_item_001", "type": "message", "role": "user", "content": [ { "type": "input_text", "text": "请帮我总结一下上次的对话" } ] } } ``` 写回 Function Calling 结果： ``` { "type": "conversation.item.create", "item": { "type": "function_call_output", "call_id": "call_xxx", "output": "{\\"temperature\\":18,\\"condition\\":\\"晴\\"}" } } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `conversation.item.create`. | Inject a user text message: ``` { "type": "conversation.item.create", "previous_item_id": "item_xxx", "item": { "id": "my_item_001", "type": "message", "role": "user", "content": [ { "type": "input_text", "text": "请帮我总结一下上次的对话" } ] } } ``` Submit Function Calling results: ``` { "type": "conversation.item.create", "item": { "type": "function_call_output", "call_id": "call_xxx", "output": "{\\"temperature\\":18,\\"condition\\":\\"晴\\"}" } } ``` |
 | --- | --- |
-| **previous\\_item\\_id** `*string*`（可选） 指定新项插入到哪条对话项之后。不传时追加到对话末尾。 |
-| **item** `*object*`**（必选）** 要创建的对话项。 **属性** **id** `*string*`（可选） 对话项的唯一标识符。不传时由服务端自动生成。若指定的 ID 已存在于对话中，会返回错误。 **type** `*string*`**（必选）** 对话项类型，可选值： - `message`：普通对话消息。 - `function_call`：函数调用请求。通常由服务端生成，客户端也可用于补充历史上下文。 - `function_call_output`：工具执行结果。客户端收到 `function_call` 后执行工具，并用该类型写回结果。 **role** `*string*`（`message` 类型必选） 消息角色，可选值：`system`、`user`、`assistant`。 **content** `*array*`（`message` 类型必选） 消息内容列表。每个元素包含 `type` 和对应的数据字段。 **各 role 支持的 content 类型** **system** `input_text`：系统消息，必填字段 `text`。 **user** - `input_text`：用户文本输入，必填字段 `text`。 - `input_audio`：用户音频输入，必填字段 `audio`（Base64 编码）。 **assistant** `output_text`：助手文本输出，必填字段 `text`。 **call\\_id** `*string*`（`function_call` / `function_call_output` 类型必选） 函数调用的唯一标识符，用于关联请求和结果。 **name** `*string*`（`function_call` 类型必选） 要调用的函数名称。 **arguments** `*string*`（`function_call` 类型必选） 函数调用参数，JSON 字符串格式。 **output** `*string*`（`function_call_output` 类型必选） 工具执行结果，JSON 字符串格式。 |
+| **previous\\_item\\_id** `*string*` (optional) Specifies the conversation item after which to insert the new item. If omitted, the new item is appended to the conversation. |
+| **item** `*object*`** (required)** Conversation item to create. **Properties** **id** `*string*` (optional) Unique identifier of the conversation item. Automatically generated by the server if omitted. If the specified ID already exists in the conversation, an error is returned. **type** `*string*`** (required)** Conversation item type. Valid values: - `message`: A regular conversation message. - `function_call`: A function call request. Usually generated by the server; the client can also use it to add historical context. - `function_call_output`: Tool execution results. After receiving a `function_call`, the client executes the tool and submits results using this type. **role** `*string*` (required for `message`) Message role. Valid values: `system`, `user`, `assistant`. **content** `*array*` (required for `message`) List of message content elements. Each contains a `type` and the corresponding data fields. **Supported content types by role** **system** `input_text`: System message; requires `text`. **user** - `input_text`: User text input; requires `text`. - `input_audio`: User audio input; requires `audio` (Base64-encoded). **assistant** `output_text`: Assistant text output; requires `text`. **call\\_id** `*string*` (required for `function_call` / `function_call_output`) Unique function call identifier linking the request and result. **name** `*string*` (required for `function_call`) Name of the function to call. **arguments** `*string*` (required for `function_call`) Function call arguments as a JSON string. **output** `*string*` (required for `function_call_output`) Tool execution results as a JSON string. |
 
 ## **conversation.item.retrieve**
 
-**说明**：查询服务端存储的某条对话项。返回的音频类型 content 仅包含转写文本（`transcript`），不包含原始音频数据。
+**Description**: Retrieve a conversation item stored on the server. Returned audio content contains only the transcription (`transcript`), not raw audio data.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `conversation.item.retrieve`。 | ``` { "type": "conversation.item.retrieve", "item_id": "item_xxx" } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `conversation.item.retrieve`. | ``` { "type": "conversation.item.retrieve", "item_id": "item_xxx" } ``` |
 | --- | --- |
-| **item\\_id** `*string*`**（必选）** 要查询的对话项 ID。服务端以 `conversation.item.retrieved` 事件返回查询结果。 |
+| **item\\_id** `*string*`** (required)** ID of the conversation item to retrieve. The server returns the result in a `conversation.item.retrieved` event. |
 
 ## **conversation.item.delete**
 
-**说明**：从对话上下文中删除指定对话项。服务端以 `conversation.item.deleted` 事件确认。
+**Description**: Delete the specified item from the conversation context. The server acknowledges deletion with a `conversation.item.deleted` event.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `conversation.item.delete`。 | ``` { "type": "conversation.item.delete", "item_id": "item_xxx" } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `conversation.item.delete`. | ``` { "type": "conversation.item.delete", "item_id": "item_xxx" } ``` |
 | --- | --- |
-| **item\\_id** `*string*`**（必选）** 要删除的对话项 ID。 |
+| **item\\_id** `*string*`** (required)** ID of the conversation item to delete. |
 
 ## **response.create**
 
-**说明**：显式触发一次模型推理。各模式下的行为如下：
+**Description**: Explicitly trigger model inference. Behavior by mode:
 
--   **push-to-talk 模式**：必须手动调用，需先通过 `input_audio_buffer.commit` 提交缓冲区音频或写入 `function_call_output` 后触发。当前有响应正在生成时不允许重复触发。
+-   **push-to-talk mode**: Must be called manually after committing buffered audio with `input_audio_buffer.commit` or submitting `function_call_output`. Cannot be triggered again while a response is being generated.
 
--   **server\_vad 模式**：通常由服务端自动触发。当前无响应正在生成时，客户端也允许手动调用；有响应正在生成时不允许重复触发。
+-   **server\_vad mode**: Usually triggered automatically by the server. The client may also call it manually when no response is being generated; it cannot be triggered again while a response is being generated.
 
--   **smart\_turn 模式**：等待用户下一轮输入时允许调用。当前处于一个 turn 内时（收到 `input_audio_buffer.speech_started` 到 `response.done` 期间）不允许重复触发。
+-   **smart\_turn mode**: May be called while waiting for the user's next input. Cannot be triggered again during an active turn (between receiving `input_audio_buffer.speech_started` and `response.done`).
 
 
-`response` 字段可选，用于覆盖本轮推理的会话默认配置。Function Calling 场景下，客户端写入 `function_call_output` 后也通过该事件触发二轮推理。
+The optional `response` field overrides the default session configuration for this inference. In Function Calling scenarios, the client also uses this event to trigger a second inference after submitting `function_call_output`.
 
-**说明**
+**Note**
 
-server\_vad / smart\_turn 模式下，手动触发的推理仍可能被新语音打断。
+In server\_vad / smart\_turn mode, new speech can still interrupt manually triggered inference.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `response.create`。 | ``` { "type": "response.create", "response": { "modalities": ["audio", "text"] } } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `response.create`. | ``` { "type": "response.create", "response": { "modalities": ["audio", "text"] } } ``` |
 | --- | --- |
-| **response** `*object*`（可选） 用于覆盖本轮推理的会话默认配置。不传时使用当前会话配置。 **属性** **modalities** `*array*`（可选） 覆盖本轮的输出模态设置。可选值与 `session.update` 中的 `modalities` 一致。 **voice** `*string*`（可选） 覆盖本轮的 TTS 音色。 |
+| **response** `*object*` (optional) Overrides the default session configuration for this inference. If omitted, the current session configuration is used. **Properties** **modalities** `*array*` (optional) Overrides the output modalities for this turn. Valid values are the same as `modalities` in `session.update`. **voice** `*string*` (optional) Overrides the TTS voice for this turn. |
 
 ## **response.cancel**
 
-**说明**：取消当前正在进行的推理。已输出的部分文本会写入 item 链表，服务端返回 `status=cancelled` 的 `response.done`。
+**Description**: Cancel the ongoing inference. Text already output is written to the item linked list, and the server returns `response.done` with `status=cancelled`.
 
-若当前无进行中的推理，返回错误。
+Returns an error if no inference is in progress.
 
-| **type** `*string*`**（必选）** 事件类型，固定为 `response.cancel`。 | ``` { "type": "response.cancel" } ``` |
+| **type** `*string*`** (required)** Event type, fixed to `response.cancel`. | ``` { "type": "response.cancel" } ``` |
 | --- | --- |

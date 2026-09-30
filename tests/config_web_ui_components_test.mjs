@@ -290,6 +290,12 @@ const countByClass = (node, className) => {
   tappable.fire('click');
   tappable.fire('keydown', {key: 'Enter'});
   assert.deepEqual(presses, ['press', 'press'], 'pointer and keyboard both activate');
+  // Enter on a control inside the row (the Wi-Fi ⓘ) bubbles to the row; it
+  // must reach that control only, not run the row's action.
+  let prevented = false;
+  tappable.fire('keydown', {key: 'Enter', target: new Element('button'), preventDefault() { prevented = true; }});
+  assert.deepEqual(presses, ['press', 'press'], 'a nested control\'s Enter does not activate the row');
+  assert.equal(prevented, false, 'the nested control keeps its own Enter activation');
 
   const plain = row({label: 'Memory'});
   assert.equal(plain.getAttribute('role'), null, 'a static row is not announced as a button');

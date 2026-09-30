@@ -120,6 +120,17 @@ export const glyphs = {
     ],
   },
 
+  // Details button on a saved network row, as iOS draws it: an outlined disc
+  // with an "i".
+  info: {
+    box: '0 0 24 24',
+    shapes: [
+      {tag: 'circle', attrs: {cx: 12, cy: 12, r: 10, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6}},
+      {tag: 'circle', attrs: {cx: 12, cy: 7.6, r: 1.25, fill: 'currentColor'}},
+      {tag: 'path', attrs: {d: 'M12 11v6.2', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round'}},
+    ],
+  },
+
   // Connected indicator: solid disc with a white check, as the design draws it.
   checkCircle: {
     box: '0 0 24 24',

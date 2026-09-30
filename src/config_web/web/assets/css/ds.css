@@ -778,6 +778,42 @@
   opacity: 0.55;
 }
 
+/* Trailing state plus the details button on a saved Wi-Fi row. */
+.ds-row__accessory-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+/* The iOS-style ⓘ: its own tap target, so the row itself can join. */
+.ds-row__info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -4px -5px -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.ds-row__info:active {
+  background-color: var(--color-pressed);
+}
+
+.ds-row__spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-option-border);
+  border-top-color: var(--color-ink-secondary);
+  border-radius: var(--radius-pill);
+  animation: ds-spin 0.9s linear infinite;
+}
+
 /* A lone action row in its own card, e.g. "删除提供商": the label and its
    note centre, as a native destructive action does. */
 .ds-row--centered {
