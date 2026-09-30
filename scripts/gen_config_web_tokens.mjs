@@ -88,7 +88,7 @@ function renderNative(tokens) {
     // Keep the JSON output valid JavaScript module syntax.
     .replace(/"([A-Za-z_$][\w$]*)":/g, '$1:');
 
-  return `/**\n * ${HEADER}\n *\n * Import these values in the companion app so a WebView-rendered settings\n * surface and a native screen cannot drift apart:\n *\n *   import {tokens} from './tokens.native';\n *\n * Notes for the React Native side:\n *   - \`size.hairline\` is 0.5 for the web. Use \`StyleSheet.hairlineWidth\` natively.\n *   - \`motion.sheetBezier\` feeds \`Easing.bezier(...)\`; \`motion.sheet\` is in ms.\n *   - \`font.family\` is a CSS stack. Native uses the platform system font,\n *     which is the same typeface the stack resolves to on iOS.\n */\n\n/** @type {const} */\nexport const tokens = ${body};\n\nexport const {color, space, radius, size, font, motion, layout} = tokens;\n\nexport default tokens;\n`;
+  return `/**\n * ${HEADER}\n *\n * Import these values in the companion app so a WebView-rendered settings\n * surface and a native screen cannot drift apart:\n *\n *   import {tokens} from './tokens.native';\n *\n * Notes for the React Native side:\n *   - \`size.hairline\` is 0.5 for the web. Use \`StyleSheet.hairlineWidth\` natively.\n *   - \`motion.sheetBezier\` feeds \`Easing.bezier(...)\`; \`motion.sheet\` is in ms.\n *   - \`font.family\` is a CSS stack. Native uses the platform system font,\n *     which is the same typeface the stack resolves to on iOS.\n */\n\n/** @type {const} */\nexport const tokens = ${body};\n\nexport const {color, space, radius, size, font, motion, layout, shadow} = tokens;\n\nexport default tokens;\n`;
 }
 
 async function main() {

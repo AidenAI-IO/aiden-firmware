@@ -704,7 +704,7 @@
   border-radius: var(--radius-field);
   background-color: var(--color-canvas);
   color: var(--color-ink);
-  font-size: var(--font-body-sm);
+  font-size: var(--font-input);
   line-height: 1.5;
   resize: vertical;
 }
@@ -1212,7 +1212,7 @@
   border: 0;
   box-sizing: border-box;
   font-family: var(--font-family-mono);
-  font-size: var(--font-caption);
+  font-size: var(--font-input);
   font-weight: var(--font-weight-regular);
   font-style: normal;
   line-height: var(--font-line-code);

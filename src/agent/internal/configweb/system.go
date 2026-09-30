@@ -11,7 +11,11 @@ import (
 	"time"
 )
 
-func (s *Server) handleReboot(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
+	if !isSameOriginBrowserRequest(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	if _, err := exec.LookPath("reboot"); err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "reboot command not found")
 		return
@@ -29,7 +33,13 @@ func (s *Server) handleReboot(w http.ResponseWriter, _ *http.Request) {
 
 // handleAgentRestart carries out the agent_restart apply level. Config Web is a
 // separate process, so the page that asked stays up while the Agent restarts.
-func (s *Server) handleAgentRestart(w http.ResponseWriter, _ *http.Request) {
+// handleAgentRestart, like the reboot and reset endpoints, is a simple POST a
+// page on another origin could send, so it refuses cross-site requests.
+func (s *Server) handleAgentRestart(w http.ResponseWriter, r *http.Request) {
+	if !isSameOriginBrowserRequest(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	if err := s.scheduleAgentRestart(); err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 		return

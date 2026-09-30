@@ -105,6 +105,13 @@ async function navigateTo(target) {
   assert.deepEqual(pushes, ['/wifi/Aiden'], 'one entry per navigation');
 }
 
+// 8. A malformed escape in a deep link falls back to the settings list
+// instead of throwing out of navigate() and leaving the page blank.
+{
+  const context = await navigateTo('/wifi/%E0');
+  assert.equal(context.name, 'home');
+}
+
 // 7. Link clicks: in-app links navigate; a download link (how the backup
 // archive is fetched) and a new-tab link are left to the browser. Intercepting
 // the download once replaced the storage page with the archive's URL.

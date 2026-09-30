@@ -229,6 +229,55 @@ func TestServerServesStaticAssetsAndRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestServerServesSettingsRoutesOnlyForKnownSections(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]int{
+		"/wifi":                 http.StatusOK,
+		"/wifi/Home_2.4G":       http.StatusOK,
+		"/model/providers/edit": http.StatusOK,
+		"/firmware/log":         http.StatusOK,
+		"/wifii":                http.StatusNotFound,
+		"/favicon":              http.StatusNotFound,
+		"/assets/css/tokens":    http.StatusNotFound,
+		"/legacy":               http.StatusNotFound,
+		"/api":                  http.StatusNotFound,
+	} {
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
+		if resp.Code != want {
+			t.Errorf("GET %s: status=%d, want %d", path, resp.Code, want)
+		}
+		if want == http.StatusOK && resp.Body.String() != "index" {
+			t.Errorf("GET %s: body=%q, want the settings shell", path, resp.Body.String())
+		}
+	}
+	// POST /api reaches the API handler's 404, not the static 405.
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api", nil))
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("POST /api: status=%d, want the API handler's 404", resp.Code)
+	}
+}
+
+func TestRestartAndPlanRejectCrossSiteRequests(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/agent/restart", "/api/device/reboot", "/api/config/plan"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"config":{}}`))
+		req.Header.Set("Origin", "https://evil.example")
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, req)
+		if resp.Code != http.StatusForbidden {
+			t.Errorf("cross-site POST %s: status=%d, want 403", path, resp.Code)
+		}
+	}
+}
+
 func TestServerStartsWithInvalidAgentConfigAndReportsFieldError(t *testing.T) {
 	options := testOptions(t)
 	config := `[voice_settings.mode]

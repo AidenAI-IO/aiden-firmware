@@ -544,13 +544,13 @@ func parseWiFiScanDetails(text string) []wifiScanNetwork {
 		}
 		if strings.HasPrefix(line, "capability:") {
 			haveRecord = true
-			current.Secured = strings.Contains(line, "Privacy")
+			current.Secured = current.Secured || strings.Contains(line, "Privacy")
 			continue
 		}
 		if strings.HasPrefix(line, "Encryption key:") {
 			haveRecord = true
 			// Compare the value only: "Encryption" itself contains "on".
-			current.Secured = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "Encryption key:")), "on")
+			current.Secured = current.Secured || strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "Encryption key:")), "on")
 			continue
 		}
 		if signal, ok := parseWiFiSignalDBM(line); ok {
@@ -1369,6 +1369,11 @@ func (s *Server) applyWiFiWithConnectivity(ctx context.Context, configPath strin
 		result.ExitCode = 127
 		result.FailureReason = wifiFailureIP
 		output.WriteString("No supported DHCP client found (need dhcpcd or dhclient).\n")
+	} else if result.FailureReason != "" {
+		// The supplicant never started; that failure, not association, is
+		// what the client should report.
+		result.ExitCode = 1
+		output.WriteString("wpa_supplicant did not start; skipping DHCP.\n")
 	} else {
 		result.ExitCode = 1
 		result.FailureReason = wifiFailureAssociation

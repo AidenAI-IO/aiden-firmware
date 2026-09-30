@@ -168,8 +168,17 @@ globalThis.document = {
   documentElement: new Element('html'),
   createElement: tag => new Element(tag),
   createElementNS: (namespace, tag) => new Element(tag, namespace),
-  addEventListener() {},
+  // Counted, so a component that leaves a document listener behind shows up.
+  listeners: new Map(),
+  addEventListener(type, handler) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(handler);
+  },
+  removeEventListener(type, handler) {
+    if (this.listeners.has(type)) this.listeners.get(type).delete(handler);
+  },
 };
+const documentListeners = type => (document.listeners.get(type) || new Set()).size;
 
 const load = name => import(pathToFileURL(path.join(uiRoot, `${name}.js`)).href);
 const {switchControl, setChecked} = await load('switch');
@@ -235,8 +244,10 @@ const countByClass = (node, className) => {
 /* -------------------------------------------------------------- sheet --- */
 
 {
+  const keydownBefore = documentListeners('keydown');
   const view = sheet({title: 'Wi-Fi 密码', body: [new Element('div')]});
   assert.equal(view.isOpen(), false);
+  assert.equal(documentListeners('keydown'), keydownBefore, 'a closed sheet listens for nothing');
 
   view.open();
   assert.equal(view.isOpen(), true);
@@ -249,6 +260,7 @@ const countByClass = (node, className) => {
   assert.equal(view.isOpen(), false);
   assert.equal(countByClass(view.el, 'ds-sheet__panel--open'), 0, 'the panel closes');
   assert.equal(countByClass(view.el, 'ds-sheet__scrim--open'), 0, 'the scrim fades out');
+  assert.equal(documentListeners('keydown'), keydownBefore, 'closing releases the Escape listener');
 }
 
 /* --------------------------------------------------------------- list --- */

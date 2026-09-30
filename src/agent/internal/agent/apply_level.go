@@ -36,6 +36,11 @@ func MaxApplyLevel(a, b ApplyLevel) ApplyLevel {
 
 // ConfigApplyLevel classifies moving the running config from current to next.
 //
+// It never returns ApplyAgentRestart: the Agent hot-reloads every agent.toml
+// field it reads, so a config change is either live or waits for the USB
+// gadget to re-enumerate. Only the system environment file, which the Agent
+// reads at start, needs a restart (see configweb's systemEnvironmentApply).
+//
 // The device type only matters through the pointer mode it derives: iOS,
 // macOS, Windows and Linux share absolute pointer mode, so switching among them
 // is live, while switching to or from Android changes the HID descriptor.

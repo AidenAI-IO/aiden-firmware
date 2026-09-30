@@ -225,7 +225,10 @@ export async function manualConfigPage(context) {
   let loaded = '';
   let submitting = false;
   let editor = null;
-  const dirty = () => Boolean(editor) && editor.textarea.value !== loaded;
+  // Set only once the saved file was read. Saving replaces the whole
+  // configuration, so an editor that failed to load must never offer it.
+  let editable = false;
+  const dirty = () => editable && Boolean(editor) && editor.textarea.value !== loaded;
   const saver = createSaver(context, {
     title: msg('advanced.manual_config', '手动编辑配置'),
     back: '/advanced',
@@ -267,15 +270,19 @@ export async function manualConfigPage(context) {
       throw new Error(payload.error || `HTTP ${response.status}`);
     }
     source = await response.text();
+    editable = true;
   } catch (error) {
     toast(error && error.message ? error.message : resolve(msg('manual_config.load_failed', '加载配置失败。')), {durationMs: 5000});
   }
   loaded = source;
   editor = tomlEditor({value: source, label: resolve(msg('advanced.manual_config', '手动编辑配置')), onInput: () => saver.refreshChrome()});
+  editor.textarea.readOnly = !editable;
 
   replace(body, [
     el('div', {class: 'ds-group ds-group--fill'}, [
-      text(msg('advanced.manual_config_help', '编辑完整的分组式 Agent TOML，保存前会先校验配置。'), 'ds-group__intro'),
+      text(editable
+        ? msg('advanced.manual_config_help', '编辑完整的分组式 Agent TOML，保存前会先校验配置。')
+        : msg('manual_config.load_failed_help', '当前配置未能读取，为避免覆盖现有配置，此处不可编辑。请返回后重试。'), 'ds-group__intro'),
       el('div', {class: 'ds-toml-frame'}, [editor.el]),
     ]),
   ]);

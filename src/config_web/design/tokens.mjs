@@ -168,6 +168,11 @@ export const font = {
   bodySm: 15,
   /** Section captions and helper text. */
   caption: 13,
+  /**
+   * Text-entry fields. iOS zooms the page when a field under 16px takes
+   * focus, so nothing typed into is ever smaller than this.
+   */
+  input: 16,
   /** Screen-level title inside the content area. */
   title: 20,
   /**
@@ -177,7 +182,7 @@ export const font = {
    */
   lineBody: 22,
   lineCaption: 18,
-  lineCode: 20,
+  lineCode: 22,
   /** Sheet title. */
   sheetTitle: 14,
   /** Action sheet title and message. */

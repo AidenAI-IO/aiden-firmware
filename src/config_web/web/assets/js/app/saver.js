@@ -27,6 +27,22 @@ import {toast} from '../ui/toast.js';
 
 const RANK = {live: 0, agent_restart: 1, reboot: 2};
 
+/**
+ * The app's native "保存" arrives as one window event. A single listener hands
+ * it to the saver of the page on screen (the newest one whose root is still in
+ * the document), so pages that come and go leave no listener behind.
+ */
+let saveRequestHandler = null;
+let listening = false;
+function handleSaveRequests(handler) {
+  saveRequestHandler = handler;
+  if (listening) return;
+  listening = true;
+  window.addEventListener('aiden:save-request', () => {
+    if (saveRequestHandler) saveRequestHandler();
+  });
+}
+
 /** Merge JSON-merge-patch objects, later keys winning. */
 function mergePatch(target, source) {
   for (const [key, value] of Object.entries(source)) {
@@ -183,14 +199,11 @@ export function createSaver(context, options) {
   }
 
   const onSaveRequest = () => {
-    if (!options.root.isConnected) {
-      window.removeEventListener('aiden:save-request', onSaveRequest);
-      return;
-    }
+    if (!options.root.isConnected) return;
     if (staged.size === 0 && formReady()) options.form.submit();
     else commit();
   };
-  window.addEventListener('aiden:save-request', onSaveRequest);
+  handleSaveRequests(onSaveRequest);
 
   return {
     change,

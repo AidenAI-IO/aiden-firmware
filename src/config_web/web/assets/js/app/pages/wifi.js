@@ -12,7 +12,7 @@
  *     for a new profile, so a hidden network needs no extra field.
  */
 
-import {connectedSsid, fetchSnapshot, savedNetwork, savedNetworks} from '../data.js';
+import {connectedSsid, fetchSnapshot, savedNetwork, savedNetworks, t} from '../data.js';
 import {connect, forget, otherNetworks, proxyChangeRequest, scan, wifiSignalLevel} from '../wifi-service.js';
 import {el, replace} from '../../ui/dom.js';
 import {group, row, screen} from '../../ui/list.js';
@@ -567,7 +567,7 @@ export function openJoinSheet(ssid, secured, onJoined) {
         return;
       }
       view.close();
-      toast(msg('wifi.connected_to', `已连接到 ${ssid}`));
+      toast(t('wifi.connected_to', {ssid, defaultValue: '已连接到“{{ssid}}”。'}));
       if (onJoined) onJoined();
     } catch (error) {
       form.setError({key: 'ui.connect_failed', fallback: error && error.message ? error.message : '连接失败'});
@@ -613,7 +613,7 @@ export function openCustomNetworkSheet(onJoined) {
         return;
       }
       view.close();
-      toast(msg('wifi.connected_to', `已连接到 ${ssid}`));
+      toast(t('wifi.connected_to', {ssid, defaultValue: '已连接到“{{ssid}}”。'}));
       if (onJoined) onJoined();
     } catch (error) {
       form.setError({key: 'ui.connect_failed', fallback: error && error.message ? error.message : '连接失败'});

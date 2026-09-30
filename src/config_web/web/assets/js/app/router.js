@@ -41,9 +41,15 @@ export function createRouter(options) {
       const found = route.regex.exec(pathname);
       if (!found) continue;
       const params = {};
-      route.keys.forEach((key, index) => {
-        params[key] = decodeURIComponent(found[index + 1]);
-      });
+      try {
+        route.keys.forEach((key, index) => {
+          params[key] = decodeURIComponent(found[index + 1]);
+        });
+      } catch (_malformed) {
+        // A hand-edited link such as /wifi/%E0 is not a route; the caller
+        // falls back to the settings list instead of leaving the page blank.
+        return null;
+      }
       return {route, params};
     }
     return null;

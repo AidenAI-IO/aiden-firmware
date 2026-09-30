@@ -91,10 +91,11 @@ export const tokens = {
     body: 17,
     bodySm: 15,
     caption: 13,
+    input: 16,
     title: 20,
     lineBody: 22,
     lineCaption: 18,
-    lineCode: 20,
+    lineCode: 22,
     sheetTitle: 14,
     actionSheetText: 13,
     actionSheetButton: 20,
@@ -149,6 +150,6 @@ export const tokens = {
   }
 };
 
-export const {color, space, radius, size, font, motion, layout} = tokens;
+export const {color, space, radius, size, font, motion, layout, shadow} = tokens;
 
 export default tokens;

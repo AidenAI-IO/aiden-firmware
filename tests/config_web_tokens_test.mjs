@@ -58,8 +58,10 @@ for (const group of ['color', 'space', 'radius', 'size', 'font', 'motion', 'shad
   assert.ok(native.includes(`${group}: {`), `tokens.native.js is missing the ${group} group`);
 }
 assert.ok(
-  native.includes('export const {color, space, radius, size, font, motion, layout} = tokens;'),
-  'tokens.native.js must offer named exports for the native screens',
+  // Every group, shadow included: importing a name the module does not
+  // export is a link-time SyntaxError in ESM, not undefined.
+  native.includes('export const {color, space, radius, size, font, motion, layout, shadow} = tokens;'),
+  'tokens.native.js must offer a named export for every group',
 );
 assert.ok(
   /size: \{[\s\S]*?hairline: 0\.5\b/.test(native),

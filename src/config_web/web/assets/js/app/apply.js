@@ -29,6 +29,12 @@ const REBOOT_TIMEOUT_MS = 180000;
 /** A reboot that has not taken the device down by now did not happen, ms. */
 const REBOOT_START_TIMEOUT_MS = 45000;
 const AGENT_RESTART_TIMEOUT_MS = 60000;
+/**
+ * Without a `runtime_id` from before the restart there is nothing to compare
+ * against, and a quick restart can fall between two polls. After this long an
+ * Agent that answers is taken to be the restarted one, ms.
+ */
+const AGENT_RESTART_BLIND_GRACE_MS = 10000;
 const POLL_INTERVAL_MS = 2000;
 const PROBE_TIMEOUT_MS = 3000;
 /** Answered by Config Web, and carries the Agent's `runtime_id` once it is up. */
@@ -139,7 +145,9 @@ async function waitForAgentRestart(previousRuntime) {
     const runtime = result && result.ok ? result.body.runtime_id : '';
     if (!runtime) {
       sawDown = true;
-    } else if (previousRuntime ? runtime !== previousRuntime : sawDown) {
+    } else if (previousRuntime) {
+      if (runtime !== previousRuntime) return;
+    } else if (sawDown || Date.now() - started >= AGENT_RESTART_BLIND_GRACE_MS) {
       return;
     }
   }

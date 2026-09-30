@@ -57,6 +57,18 @@ same-origin management requests. Agent port mappings therefore do not affect
 the configuration portal, and the Agent does not expose duplicate models, STT
 test, or storage-management handlers on port 8080.
 
+The endpoints that restart or reset something from a plain POST (`POST
+/api/agent/restart`, `/api/device/reboot`, `/api/memory/reset`,
+`/api/conversation/reset`) and `POST /api/config/plan` refuse cross-site
+requests with `403`: a browser request whose `Sec-Fetch-Site` is `cross-site`,
+or whose `Origin` names another host. Requests without an `Origin` (curl, the
+companion app's native code) are accepted.
+
+Paths under the settings sections (`/wifi`, `/basic`, `/conversation`,
+`/model`, `/voice`, `/memory`, `/storage`, `/advanced`, `/firmware`, and
+anything below them) return the settings page so a page can be reloaded or
+linked directly; any other unknown path is `404`.
+
 `POST /api/network/wifi/scan` keeps the legacy `networks` string array and also
 returns `network_details`. Each detail contains `ssid`, `secured`, and, when
 the driver reports them, `signal_dbm` and `signal_percent`. The current

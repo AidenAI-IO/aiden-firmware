@@ -196,8 +196,13 @@ func (s *Service) update(path string, patchJSON []byte, commit bool) (Result, er
 	if n != len(updated) {
 		return Result{}, internalConfigUpdate(fmt.Errorf("write temporary config: %w", io.ErrShortWrite))
 	}
-	if err := tmp.Sync(); err != nil {
-		return Result{}, internalConfigUpdate(fmt.Errorf("sync temporary config: %w", err))
+	// A dry run only validates the candidate and then discards it, so it has
+	// nothing to make durable; skipping the fsync spares the flash on every
+	// settings change the page plans.
+	if commit {
+		if err := tmp.Sync(); err != nil {
+			return Result{}, internalConfigUpdate(fmt.Errorf("sync temporary config: %w", err))
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("close temporary config: %w", err))

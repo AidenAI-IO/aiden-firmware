@@ -78,10 +78,11 @@
   --font-body: 17px;
   --font-body-sm: 15px;
   --font-caption: 13px;
+  --font-input: 16px;
   --font-title: 20px;
   --font-line-body: 22px;
   --font-line-caption: 18px;
-  --font-line-code: 20px;
+  --font-line-code: 22px;
   --font-sheet-title: 14px;
   --font-action-sheet-text: 13px;
   --font-action-sheet-button: 20px;

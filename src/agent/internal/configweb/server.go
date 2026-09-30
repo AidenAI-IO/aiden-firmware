@@ -219,7 +219,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		s.APIHandler().ServeHTTP(w, r)
 		return
 	}
@@ -275,16 +275,24 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// settingsRouteSections are the first path segments of the client router's
+// routes (src/config_web/web/assets/js/app/routes.js).
+var settingsRouteSections = map[string]bool{
+	"wifi": true, "basic": true, "conversation": true, "model": true, "voice": true,
+	"memory": true, "storage": true, "advanced": true, "firmware": true,
+}
+
 // isSettingsRoute reports whether a request path belongs to the client-side
-// settings router rather than to a file on disk. Extension-less paths are
-// treated as routes so the settings surface can be deep-linked, while a request
-// that names an extension still 404s instead of quietly returning HTML.
+// settings router, so a settings page can be reloaded or deep-linked. It goes
+// by the section, not by the look of the last segment: an SSID such as
+// "Home_2.4G" contains a dot, and a mistyped path outside the settings must
+// still 404 rather than quietly return HTML.
 func isSettingsRoute(path string) bool {
 	if path == "" || strings.HasSuffix(path, "/") {
 		return false
 	}
-	last := path[strings.LastIndex(path, "/")+1:]
-	return !strings.Contains(last, ".")
+	section := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)[0]
+	return settingsRouteSections[section]
 }
 
 func staticContentType(path string) string {

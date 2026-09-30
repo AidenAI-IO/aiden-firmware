@@ -19,6 +19,7 @@
 import {fetchSnapshot, request} from '../data.js';
 import {inlineValueRow, parse} from '../fields.js';
 import {createSaver} from '../saver.js';
+import {confirmSheet} from '../../ui/confirm.js';
 import {el, replace} from '../../ui/dom.js';
 import {group, row, screen} from '../../ui/list.js';
 import {icon, searchTile} from '../../ui/icon.js';
@@ -92,7 +93,14 @@ function badge(name) {
 }
 
 async function resetConversation() {
-  if (!window.confirm(resolve(msg('conversation.reset_confirm', '确定重置当前对话吗？对话历史会被清空，记忆会保留。')))) return;
+  const confirmed = await confirmSheet({
+    title: msg('conversation.reset', '重置当前对话'),
+    body: msg('conversation.reset_confirm', '确定重置当前对话吗？对话历史会被清空，记忆会保留。'),
+    confirmLabel: msg('conversation.reset_action', '重置'),
+    danger: true,
+    action: 'confirm-conversation-reset',
+  });
+  if (!confirmed) return;
   try {
     await request('/api/conversation/reset', {method: 'POST'});
     toast(msg('conversation.reset_done', '当前对话已重置'));

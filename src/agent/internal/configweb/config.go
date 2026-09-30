@@ -226,6 +226,10 @@ func readConfigPatch(w http.ResponseWriter, r *http.Request) (json.RawMessage, m
 // handlePlanConfig reports what saving a patch would need before it takes
 // effect, without persisting anything, so a page can label its save button.
 func (s *Server) handlePlanConfig(w http.ResponseWriter, r *http.Request) {
+	if !isSameOriginBrowserRequest(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	config, _, ok := readConfigPatch(w, r)
 	if !ok {
 		return
@@ -316,8 +320,9 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 		apply = string(agent.ApplyLive)
 	}
 	if rebootRequired {
+		// The Agent's own reload can still report a reboot the plan missed.
 		message = "config saved; USB HID configuration changed; reboot required"
-		apply = string(agent.ApplyReboot)
+		apply = string(agent.MaxApplyLevel(agent.ApplyLevel(apply), agent.ApplyReboot))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                              true,

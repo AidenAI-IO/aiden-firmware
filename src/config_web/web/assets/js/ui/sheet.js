@@ -51,11 +51,13 @@ export function sheet(props) {
       void root.offsetHeight;
       scrim.classList.add('ds-sheet__scrim--open');
       panel.classList.add('ds-sheet__panel--open');
+      document.addEventListener('keydown', onKeydown);
       const focusTarget = panel.querySelector('input, button');
       if (focusTarget) setTimeout(() => focusTarget.focus(), 0);
     } else {
       scrim.classList.remove('ds-sheet__scrim--open');
       panel.classList.remove('ds-sheet__panel--open');
+      document.removeEventListener('keydown', onKeydown);
       const finish = () => {
         if (open) return;
         root.setAttribute('hidden', 'hidden');
@@ -101,7 +103,8 @@ export function sheet(props) {
     event.stopPropagation();
     setOpen(false);
   }
-  document.addEventListener('keydown', onKeydown);
+  // Listened for only while open: choice sheets are built afresh on every tap,
+  // and a listener per sheet would otherwise outlive it.
 
   return {
     el: root,
