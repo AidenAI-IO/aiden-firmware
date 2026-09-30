@@ -68,6 +68,9 @@ for (const route of [
   '/api/ota/updates',
   '/api/logs/llm',
   '/api/logs/support',
+  '/api/logs/agent',
+  '/api/device/status',
+  '/llm-logs',
 ]) {
   assert.ok(bundle.includes(route), `missing canonical frontend route: ${route}`);
 }
