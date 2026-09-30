@@ -556,6 +556,11 @@ export async function wifiDetailPage(context) {
   }
 
   const infoRows = [row({label: msg('ui.network_name', '网络名称'), value: ssid, tone: 'strong'})];
+  // Only the connected profile has an address; a saved one out of range has none.
+  const ipAddress = connected ? ((snapshot && snapshot.wifi_status) || {}).ip_address : '';
+  if (ipAddress) {
+    infoRows.push(row({label: msg('ui.ip_address', 'IP 地址'), value: ipAddress}));
+  }
   if (profile.has_psk) {
     infoRows.push(row({label: msg('wifi.password', '密码'), value: '••••••••'}));
   }
