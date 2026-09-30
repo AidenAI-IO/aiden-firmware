@@ -465,4 +465,63 @@ const countByClass = (node, className) => {
   assert.equal(lines[1].textContent, '2026-09-30T08:34:42Z [WARN][agent][phone_bridge] fallback to HTTP', 'the text is unchanged');
 }
 
+/* --------------------------------------------------- agent log polling --- */
+
+{
+  const {agentLogPage} = await import(pathToFileURL(path.join(uiRoot, '../app/pages/advanced.js')).href);
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const timers = [];
+  const calls = [];
+  let releaseStatus;
+  const statusGate = new Promise(resolve => { releaseStatus = resolve; });
+  const respond = body => ({ok: true, status: 200, text: async () => JSON.stringify(body)});
+  globalThis.fetch = async url => {
+    calls.push(url);
+    if (url === '/api/device/status') {
+      // The first status read hangs, as the init script can on a busy board.
+      if (calls.filter(entry => entry === url).length === 1) await statusGate;
+      return respond({agent_status: {process_running: true, pid: 42, port_reachable: true}});
+    }
+    return respond({agent_log: {log: '2026-09-30T08:34:41Z [INFO][agent][server] ok'}});
+  };
+  globalThis.setTimeout = callback => timers.push(callback);
+  globalThis.clearTimeout = () => {};
+  globalThis.requestAnimationFrame = () => {};
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const tick = async () => {
+    const pending = timers.splice(0);
+    pending.forEach(callback => callback());
+    await settle();
+  };
+  try {
+    // Racing a few event-loop turns: a page that waits for its requests would
+    // otherwise hang this test instead of failing it.
+    const page = await Promise.race([agentLogPage({header() {}, navigate() {}}), settle().then(settle).then(() => null)]);
+    assert.ok(page, 'the page is returned while the status request is still pending');
+    const body = page.childNodes[0];
+    await settle();
+    assert.equal(timers.length, 1, 'the log read finished and scheduled the next poll');
+
+    await tick();
+    assert.equal(calls.filter(url => url === '/api/logs/agent').length, 1, 'no poll runs before the page is attached');
+    assert.equal(timers.length, 1, 'polling waits for the page instead of stopping');
+
+    body.isConnected = true;
+    releaseStatus();
+    for (let i = 0; i < 5; i += 1) await tick();
+    assert.equal(calls.filter(url => url === '/api/logs/agent').length, 6, 'the log is polled once attached');
+    assert.equal(calls.filter(url => url === '/api/device/status').length, 2, 'the status is refreshed every fifth poll');
+
+    body.isConnected = false;
+    await tick();
+    assert.equal(timers.length, 0, 'polling stops once the page is left');
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+}
+
 process.stdout.write('config web UI component tests passed\n');

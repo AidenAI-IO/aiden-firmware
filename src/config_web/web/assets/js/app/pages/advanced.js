@@ -54,6 +54,13 @@ function adoptSaved(snapshot, after) {
 /** How often the live Agent log is re-read while its page is open. */
 const AGENT_LOG_POLL_MS = 2000;
 
+/**
+ * The Agent status is re-read every this many log polls (about ten seconds):
+ * `/api/device/status` runs the Agent init script's `status` on the board, which
+ * is too heavy to repeat every two seconds.
+ */
+const AGENT_STATUS_EVERY_POLLS = 5;
+
 /** A card followed by a footnote, the pattern the log settings use. */
 function noted(card, note) {
   card.classList.add('ds-group--noted');
@@ -262,6 +269,9 @@ export async function agentLogPage(context) {
   const pre = el('pre', {class: 'ds-log', data: {action: 'agent-log'}});
   let timer = null;
   let shown = null;
+  let attached = false;
+  let polls = 0;
+  let statusInFlight = false;
 
   // Replacing the text would drop a selection the user is making to copy it.
   const selecting = () => {
@@ -276,8 +286,28 @@ export async function agentLogPage(context) {
   }
 
   async function loadStatus() {
+    if (statusInFlight) return;
+    statusInFlight = true;
     const payload = await request('/api/device/status').catch(() => null);
-    replace(statusGroup, payload ? [group({rows: [agentStatusRow(payload.agent_status || {})]})] : []);
+    statusInFlight = false;
+    // A failed refresh keeps the last known state rather than blanking the row.
+    if (payload) replace(statusGroup, [group({rows: [agentStatusRow(payload.agent_status || {})]})]);
+  }
+
+  // Polling stops once the page has been shown and then left. Before the
+  // shell attaches it, keep waiting instead of stopping for good.
+  function schedule() {
+    timer = setTimeout(() => {
+      if (body.isConnected) attached = true;
+      else if (attached) return;
+      if (attached) {
+        polls += 1;
+        if (polls % AGENT_STATUS_EVERY_POLLS === 0) loadStatus();
+        load();
+      } else {
+        schedule();
+      }
+    }, AGENT_LOG_POLL_MS);
   }
 
   async function load() {
@@ -296,12 +326,15 @@ export async function agentLogPage(context) {
     } catch (error) {
       if (!pre.textContent) pre.textContent = error && error.message ? error.message : resolve(msg('advanced.agent_log_failed', '读取日志失败'));
     }
-    timer = setTimeout(() => { if (body.isConnected) load(); }, AGENT_LOG_POLL_MS);
+    schedule();
   }
 
   replace(body, [statusGroup, el('div', {class: 'ds-group'}, [el('div', {class: 'ds-log-frame ds-log-frame--bounded'}, [pre])])]);
   saver.refreshChrome();
-  await Promise.all([loadStatus(), load()]);
+  // Mount first: waiting here would hold the page off screen for as long as
+  // the slower of the two requests takes.
+  loadStatus();
+  load();
   return screen([body], 'ds-screen--sticky');
 }
 
