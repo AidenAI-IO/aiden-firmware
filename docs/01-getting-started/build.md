@@ -70,6 +70,12 @@ the local OTA manifest in one workflow.
 ./debian_build.sh
 ```
 
+Rootfs packaging preserves executable permissions from `overlay-debian/`.
+Keep helpers invoked by systemd executable in Git (`100755`). The required
+`debian-systemd-overlay` test suite checks these permissions, and the image
+audit checks the installed Wi-Fi log retention helper because both Wi-Fi
+driver startup and `wpa_supplicant` run it through `ExecStartPre`.
+
 To build and stage only the business `.deb` (default `0.0.1-2`), run
 `scripts/debian-package/release.sh build` on Linux amd64. See
 [Debian business package](../08-ota/debian-package.md) for independent GitHub

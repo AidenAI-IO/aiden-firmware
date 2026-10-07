@@ -59,6 +59,7 @@ aiden-adb-host.service
 aiden-agent.service
 aiden-audio.service
 aiden-ota-health.service
+aiden-hybrid-update.service
 aiden-config-web.service
 aiden-ttyd.service
 '
@@ -280,7 +281,7 @@ grep -Fqx 'insert_if_present aic8800_fdrv.ko he_on="${he_on}" custregd=1' \
 grep -Fqx 'he_on=${AIDEN_WIFI_HE:-0}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'stage=begin he_on=${he_on}' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'result=failed reason=wlan0-missing' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
-grep -q 'wifi-driver:begin' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
+grep -Fq 'mark "begin he_on=${he_on}"' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'invalid-he_on' "${OVERLAY}/usr/lib/aiden/aiden-wifi-driver"
 grep -Fq 'StandardOutput=append:/var/log/wifi_driver/wifi_driver.log' \
     "${UNIT_DIR}/aiden-wifi-driver.service"
@@ -302,11 +303,12 @@ grep -Fq 'link-not-ready wpa_state=' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'recovery-end attempt=' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
-grep -q 'wlan-guard:gateway-failure' \
+grep -Fq 'mark "gateway-failure count=${failures}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
 grep -Fq 'cat "${log_file}.tmp.$$" >"${log_file}"' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
-grep -Fq 'aiden-wifi-log-retention' \
+# Exercise the same direct execution used by ExecStartPre without touching logs.
+AIDEN_WIFI_LOG_MAX_LINES=invalid \
     "${OVERLAY}/usr/lib/aiden/aiden-wifi-log-retention"
 grep -Fq '/usr/lib/aiden/aiden-wifi-log-retention 2>/dev/null || true' \
     "${OVERLAY}/usr/lib/aiden/aiden-wlan-guard"
@@ -443,6 +445,8 @@ grep -q 'Requires=.*aiden-machine-id.service' \
 grep -q 'Requires=aiden-ota-health-marker.service' \
     "${UNIT_DIR}/aiden-ota-health.service"
 grep -q '/userdata/debian/ota/config.json' \
+    "${UNIT_DIR}/aiden-ota-health.service"
+grep -qx 'TimeoutStartSec=10min' \
     "${UNIT_DIR}/aiden-ota-health.service"
 if rg -n 'WriteHealthMarkerIfPending' "${REPO_ROOT}/src/agent/cmd/daemon"; then
     fail "Agent daemon still writes an early OTA health marker"
@@ -599,6 +603,7 @@ if grep -E "${UNIT_DIR}/.*(Unknown key name|Failed to parse|Missing '=')" \
 fi
 
 "${REPO_ROOT}/scripts/test_debian_ota_health_aggregate.sh"
+python3 "${REPO_ROOT}/scripts/test_hybrid_update.py"
 "${REPO_ROOT}/scripts/test_debian_machine_id_provision.sh"
 "${REPO_ROOT}/scripts/test_debian_agent_control.sh"
 "${REPO_ROOT}/scripts/test_debian_agent_log_retention.sh"

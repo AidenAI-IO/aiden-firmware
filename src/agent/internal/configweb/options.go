@@ -66,6 +66,9 @@ type Options struct {
 	WiFiProxyInitScript    string
 	AgentHTTPBaseURL       string
 	OTABinary              string
+	HybridUpdateService    string
+	HybridUpdateMarkerPath string
+	BootIDPath             string
 	EnvRunBinary           string
 	OTAUpdateLockPath      string
 	OTAUpdateLogPath       string
@@ -120,13 +123,16 @@ func DefaultOptions() Options {
 		// Leave the Agent HTTP target empty by default so the portal follows the
 		// address reported by the agent control helper. AIDEN_AGENT_HTTP_BASE_URL
 		// remains an explicit override for development and tests.
-		AgentHTTPBaseURL:  strings.TrimSpace(os.Getenv("AIDEN_AGENT_HTTP_BASE_URL")),
-		OTABinary:         envOrDefault("AIDEN_OTA_BIN", "/usr/lib/aiden/ota"),
-		EnvRunBinary:      envOrDefault("AIDEN_ENV_RUN_BIN", "/usr/lib/aiden/aiden-managed-env-run"),
-		OTAUpdateLockPath: envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", "/tmp/config_web_ota_update.lock"),
-		OTAUpdateLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", "/userdata/ota/config_web_ota_update.log"),
-		OTAHealthLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", "/var/log/ota/ota.log"),
-		DmesgBinary:       envOrDefault("AIDEN_CONFIG_WEB_DMESG_BIN", "dmesg"),
+		AgentHTTPBaseURL:       strings.TrimSpace(os.Getenv("AIDEN_AGENT_HTTP_BASE_URL")),
+		OTABinary:              envOrDefault("AIDEN_OTA_BIN", "/usr/lib/aiden/ota"),
+		HybridUpdateService:    envOrDefault("AIDEN_HYBRID_UPDATE_SERVICE", "aiden-hybrid-update.service"),
+		HybridUpdateMarkerPath: envOrDefault("AIDEN_HYBRID_UPDATE_MARKER", "/userdata/ota/hybrid-update.pending"),
+		BootIDPath:             envOrDefault("AIDEN_BOOT_ID_PATH", "/proc/sys/kernel/random/boot_id"),
+		EnvRunBinary:           envOrDefault("AIDEN_ENV_RUN_BIN", "/usr/lib/aiden/aiden-managed-env-run"),
+		OTAUpdateLockPath:      envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", "/tmp/config_web_ota_update.lock"),
+		OTAUpdateLogPath:       envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", "/userdata/ota/config_web_ota_update.log"),
+		OTAHealthLogPath:       envOrDefault("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", "/var/log/ota/ota.log"),
+		DmesgBinary:            envOrDefault("AIDEN_CONFIG_WEB_DMESG_BIN", "dmesg"),
 	}
 }
 

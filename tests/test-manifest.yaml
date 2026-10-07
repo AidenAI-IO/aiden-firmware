@@ -132,6 +132,14 @@ suites:
     required: false
     timeout_seconds: 1200
 
+  - name: debian-systemd-overlay
+    class: deterministic
+    paths: [overlay-debian, scripts/test_debian_systemd_overlay.sh]
+    command: bash scripts/test_debian_systemd_overlay.sh
+    dependencies: [bash, sh, python3, rg, systemd-analyze]
+    required: true
+    timeout_seconds: 180
+
   - name: script-contracts
     class: deterministic
     paths: [scripts, .github/workflows, tests]
@@ -156,6 +164,7 @@ suites:
       python3 scripts/test_debian_package_lifecycle.py
       python3 scripts/test_channel_release.py
       python3 scripts/test_apt_repository.py
+      python3 scripts/test_hybrid_update.py
       python3 scripts/check_normalized_coords.py
       bash scripts/test_check_normalized_coords.sh
     dependencies: [bash, sh, python3, jq, git, openssl, rg]
