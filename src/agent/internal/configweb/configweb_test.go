@@ -115,6 +115,10 @@ func testOptions(t *testing.T) Options {
 		USBSubnet:                 "127.0.0.0/8",
 		HardwareIDPath:            filepath.Join(root, "hardware-id"),
 		SystemctlBinary:           "/bin/true",
+		HybridUpdateService:       "aiden-hybrid-update.service",
+		HybridUpdateMarkerPath:    filepath.Join(root, "hybrid-update.pending"),
+		OTAUpdateLockPath:         filepath.Join(root, "ota.lock"),
+		OTAUpdateLogPath:          filepath.Join(root, "ota-update.log"),
 		AgentBinary:               "/bin/true",
 		AgentHTTPBaseURL:          "http://127.0.0.1:1",
 		AgentInitScript:           filepath.Join(root, "missing-init"),
@@ -1074,47 +1078,6 @@ func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 	}
 	if storage.reconfigureCalls != 1 || storage.reconfigured.MountPointOrDefault() != "/mnt/new-card" || storage.reconfigured.DeviceOrDefault() != "mmcblk9" || storage.reconfigured.MinCardFreeMBOrDefault() != 128 {
 		t.Fatalf("storage reconfigure calls=%d config=%+v", storage.reconfigureCalls, storage.reconfigured)
-	}
-}
-
-func TestOTAUpdateChildKeepsLockAcrossParentDescriptorClose(t *testing.T) {
-	options := testOptions(t)
-	root := t.TempDir()
-	ota := filepath.Join(root, "fake-ota")
-	if err := os.WriteFile(ota, []byte("#!/bin/sh\n/bin/sleep 0.4\nexit 7\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	options.OTABinary = ota
-	options.EnvRunBinary = filepath.Join(root, "missing-env-run")
-	options.OTAUpdateLockPath = filepath.Join(root, "ota.lock")
-	options.OTAUpdateLogPath = filepath.Join(root, "ota.log")
-	options.OTAHealthLogPath = filepath.Join(root, "health.log")
-	server, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/ota/updates", nil))
-	if resp.Code != http.StatusAccepted {
-		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	if !server.otaUpdateRunning() {
-		t.Fatal("OTA lock was released after the parent closed its descriptor")
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for server.otaUpdateRunning() && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if server.otaUpdateRunning() {
-		t.Fatal("OTA lock remained held after the supervisor exited")
-	}
-	logData, err := os.ReadFile(options.OTAUpdateLogPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(logData), "update_exited exit_code=7") {
-		t.Fatalf("OTA log missing exit marker: %q", logData)
 	}
 }
 

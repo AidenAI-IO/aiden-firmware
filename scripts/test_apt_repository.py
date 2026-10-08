@@ -190,6 +190,21 @@ class RepositoryTests(unittest.TestCase):
             downloaded = self.apt("apt-get", "--print-uris", "--download-only", "--assume-yes", "install", "aiden-business").stdout
             self.assertIn("pool/dev-c1/dev-v0.0.3/aiden-business_0.0.3-1_armhf.deb", downloaded)
 
+    def test_hybrid_check_refreshes_only_business_source_and_targets_business(self):
+        device = self.release("0.0.2", kind="ota", contract=1)
+        self.release("0.0.3")
+        self.build()
+        with self.serve() as url:
+            root = self.apt_fixture(device, url)
+            # An unrelated broken source must not participate in this check.
+            (root / "etc/apt/sources.list.d/unrelated.list").write_text("deb http://127.0.0.1:1/unrelated ./\n")
+            self.apt("apt-get", "-o", f"Dir::Etc::sourcelist={root}/etc/apt/sources.list.d/aiden-business.sources",
+                     "-o", "Dir::Etc::sourceparts=-", "-o", "APT::Get::List-Cleanup=0", "update")
+            plan = self.apt("apt-get", "--simulate", "--only-upgrade", "install", "aiden-business").stdout
+            changed = [line.split()[1] for line in plan.splitlines() if line.startswith("Inst ")]
+            self.assertEqual(changed, ["aiden-business"])
+            self.assertIn("0.0.3-1", plan)
+
     def test_signed_metadata_has_no_expiry(self):
         device = self.release("0.0.2", kind="ota", contract=1)
         self.build(now=datetime(2020, 1, 1, tzinfo=timezone.utc))
