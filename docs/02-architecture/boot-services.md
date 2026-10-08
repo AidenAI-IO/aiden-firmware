@@ -104,6 +104,13 @@ Configuration: `/etc/aiden_audio_service.conf`
 `aiden-audio.service` executes `/usr/lib/aiden/audio_service` in the foreground
 and lets systemd own restart and stop behavior.
 
+Before capture starts, `aiden-audio-mixer.service` waits for all microphone
+controls on the `rv1106acodec` ALSA card and restores the microphone gain,
+bias, ADC mode and ALC settings. It selects the card by its ID, independent
+of the default card and boot-time enumeration order. Missing controls, a
+missing mixer helper or failed control writes prevent the audio service
+from starting; inspect `journalctl -u aiden-audio-mixer.service` for details.
+
 ```bash
 systemctl restart aiden-audio.service
 systemctl status aiden-audio.service --no-pager

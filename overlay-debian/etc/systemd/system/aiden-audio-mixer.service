@@ -4,10 +4,9 @@ Requires=aiden-media-modules.service
 After=aiden-media-modules.service sound.target
 Before=aiden-audio.service
 PartOf=aiden-audio.service
-ConditionPathExists=/usr/lib/aiden/aiden-audio-mixer
 
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/aiden/aiden-audio-mixer
 RemainAfterExit=yes
-TimeoutStartSec=20s
+TimeoutStartSec=30s

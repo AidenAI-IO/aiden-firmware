@@ -281,28 +281,7 @@ grep -Fqx 'PartOf=aiden-audio.service' \
     "${UNIT_DIR}/aiden-audio-mixer.service"
 grep -Fqx 'ExecStart=/usr/lib/aiden/aiden-audio-mixer' \
     "${UNIT_DIR}/aiden-audio-mixer.service"
-grep -Fq "ADC MIC Left Gain" "${OVERLAY}/usr/lib/aiden/aiden-audio-mixer"
-grep -Fq "ADC MIC Right Gain" "${OVERLAY}/usr/lib/aiden/aiden-audio-mixer"
-grep -Fq "ADC MICBIAS Voltage" "${OVERLAY}/usr/lib/aiden/aiden-audio-mixer"
-grep -Fq "SingadcL" "${OVERLAY}/usr/lib/aiden/aiden-audio-mixer"
-fake_amixer=${TEST_ROOT}/amixer
-fake_amixer_log=${TEST_ROOT}/amixer.log
-cat >"${fake_amixer}" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >>"${AIDEN_AMIXER_LOG}"
-case "$1" in
-    controls) exit 0 ;;
-    -q) exit 0 ;;
-    *) exit 1 ;;
-esac
-EOF
-chmod 0755 "${fake_amixer}"
-AIDEN_AMIXER_BIN="${fake_amixer}" AIDEN_AMIXER_LOG="${fake_amixer_log}" \
-    "${OVERLAY}/usr/lib/aiden/aiden-audio-mixer"
-grep -Fqx 'controls' "${fake_amixer_log}"
-grep -Fq -- '-q set ADC MIC Left Gain 3' "${fake_amixer_log}"
-grep -Fq -- '-q set ADC MICBIAS Voltage VREFx0_975' "${fake_amixer_log}"
-grep -Fq -- '-q set ADC Mode SingadcL' "${fake_amixer_log}"
+bash "${REPO_ROOT}/scripts/test_debian_audio_mixer.sh"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline init-systemd' \
     "${UNIT_DIR}/aiden-boot-timeline-init.service"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline finalize-systemd' \

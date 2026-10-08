@@ -12,6 +12,28 @@ if [ -z "${amixer_bin}" ] || [ ! -x "${amixer_bin}" ]; then
     exit 1
 fi
 
+# The Pico Zero DTS names the card rv1106-acodec. ALSA removes punctuation
+# when generating its ID, which stays stable when card indices change.
+card=rv1106acodec
+
+control_available() {
+    for name in "$@"; do
+        if "${amixer_bin}" -c "${card}" sget "${name}" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+required_controls_ready() {
+    control_available 'ADC MIC Left Gain' &&
+        control_available 'ADC MIC Right Gain' &&
+        control_available 'ADC MICBIAS Voltage' &&
+        control_available 'ADC Mode' &&
+        control_available 'ADC ALC Left' 'ADC ALC Left Volume' &&
+        control_available 'ADC ALC Right' 'ADC ALC Right Volume'
+}
+
 if command -v udevadm >/dev/null 2>&1; then
     udevadm settle --timeout=10 >/dev/null 2>&1 || true
 fi
@@ -20,7 +42,7 @@ fi
 ready=0
 attempt=0
 while [ "${attempt}" -lt 40 ]; do
-    if "${amixer_bin}" controls >/dev/null 2>&1; then
+    if required_controls_ready; then
         ready=1
         break
     fi
@@ -28,7 +50,7 @@ while [ "${attempt}" -lt 40 ]; do
     sleep 0.25
 done
 if [ "${ready}" -ne 1 ]; then
-    echo "aiden-audio-mixer: ALSA controls did not become ready" >&2
+    echo "aiden-audio-mixer: required controls on ${card} did not become ready" >&2
     exit 1
 fi
 
@@ -36,7 +58,7 @@ set_control() {
     value=$1
     shift
     for name in "$@"; do
-        if "${amixer_bin}" -q set "${name}" "${value}" >/dev/null 2>&1; then
+        if "${amixer_bin}" -c "${card}" -q set "${name}" "${value}" >/dev/null 2>&1; then
             return 0
         fi
     done
