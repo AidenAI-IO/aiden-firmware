@@ -50,15 +50,17 @@ def notes(plan):
     if plan["previous_tag"]:
         text += f"[Full comparison](https://github.com/{plan['repo']}/compare/{plan['previous_tag']}..{plan['tag']})\n\n"
     if plan["kind"] == "ota":
+        requirement = plan.get("ota_requirement", {})
+        commit = requirement.get("commit", plan["source_commit"])
+        more = " (and more)" if requirement.get("more") else ""
+        text += (f"Commit [`{commit[:8]}`](https://github.com/{plan['repo']}/commit/{commit})"
+                 f"{more} requires OTA update.\n\n")
         text += "Install the signed boot + rootfs OTA together, or flash update.img. This establishes a new base contract.\n\n"
     elif plan["kind"] == "business":
         text += "Install the .deb with apt on the matching channel/base. Previously running services are stopped and restored by dpkg.\n\n"
     else:
         text += "No runtime changes; no build, version allocation or publication.\n\n"
     text += "## Commits (up to 100)\n\n" + "\n".join(f"- {c}" for c in plan["commits"]) + "\n"
-    for kind, paths in plan["changes"].items():
-        text += f"\n## {kind.title()} ({len(paths)} files)\n\n"
-        text += "\n".join(f"- `{p}`" for p in paths[:100]) + "\n"
     return text
 
 
