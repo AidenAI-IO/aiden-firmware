@@ -20,6 +20,7 @@ relationships rather than filename order.
 | `aiden-platform-ldconfig.service` | Register platform libraries from the active rootfs slot |
 | `aiden-environment.service` | Generate the strict runtime environment |
 | `aiden-media-modules.service` | Load media modules and prepare video device access |
+| `aiden-audio-mixer.service` | Initialize RV1106 microphone controls before audio capture |
 | `aiden-wifi-driver.service` | Load AIC8800 Wi-Fi and Bluetooth firmware |
 | `aiden-bluetooth-attach.service` | Attach the AIC8800 UART transport |
 | `aiden-usb-gadget.service` | Create keyboard, pointer, Consumer Control, and ECM functions |
@@ -102,6 +103,13 @@ Configuration: `/etc/aiden_audio_service.conf`
 
 `aiden-audio.service` executes `/usr/lib/aiden/audio_service` in the foreground
 and lets systemd own restart and stop behavior.
+
+Before capture starts, `aiden-audio-mixer.service` waits for all microphone
+controls on the `rv1106acodec` ALSA card and restores the microphone gain,
+bias, ADC mode and ALC settings. It selects the card by its ID, independent
+of the default card and boot-time enumeration order. Missing controls, a
+missing mixer helper or failed control writes prevent the audio service
+from starting; inspect `journalctl -u aiden-audio-mixer.service` for details.
 
 ```bash
 systemctl restart aiden-audio.service

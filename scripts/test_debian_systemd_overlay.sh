@@ -268,6 +268,21 @@ grep -qx 'Group=aiden' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'SupplementaryGroups=audio video' "${UNIT_DIR}/aiden-frame.service"
 grep -qx 'Group=aiden' "${UNIT_DIR}/aiden-audio.service"
 grep -qx 'SupplementaryGroups=audio video' "${UNIT_DIR}/aiden-audio.service"
+grep -Fqx 'Requires=aiden-environment.service aiden-media-modules.service aiden-audio-mixer.service' \
+    "${UNIT_DIR}/aiden-audio.service"
+grep -Fqx 'After=aiden-environment.service aiden-media-modules.service aiden-audio-mixer.service sound.target' \
+    "${UNIT_DIR}/aiden-audio.service"
+grep -Fqx 'Requires=aiden-media-modules.service' \
+    "${UNIT_DIR}/aiden-audio-mixer.service"
+grep -Fqx 'After=aiden-media-modules.service sound.target' \
+    "${UNIT_DIR}/aiden-audio-mixer.service"
+grep -Fqx 'Before=aiden-audio.service' \
+    "${UNIT_DIR}/aiden-audio-mixer.service"
+grep -Fqx 'PartOf=aiden-audio.service' \
+    "${UNIT_DIR}/aiden-audio-mixer.service"
+grep -Fqx 'ExecStart=/usr/lib/aiden/aiden-audio-mixer' \
+    "${UNIT_DIR}/aiden-audio-mixer.service"
+bash "${REPO_ROOT}/scripts/test_debian_audio_mixer.sh"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline init-systemd' \
     "${UNIT_DIR}/aiden-boot-timeline-init.service"
 grep -qx 'ExecStart=/usr/lib/aiden/aiden-boot-timeline finalize-systemd' \
