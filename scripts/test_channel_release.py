@@ -138,8 +138,7 @@ class PlannerTests(GitFixture):
     def test_repository_markdown_and_gitignore_do_not_change_release(self):
         base = self.publish()
         paths = ("scripts/UPDATE_SUMMARY.md", "src/README.md", "src/agent/README.md",
-                 "CLAUDE.md", ".gitignore", "src/.gitignore",
-                 "overlay-debian/etc/aiden/.gitignore")
+                 "CLAUDE.md", ".gitignore", "src/.gitignore")
         self.commit({path: "documentation" for path in paths})
         record = self.make()
         self.assertEqual(record["kind"], "none")
@@ -165,6 +164,13 @@ class PlannerTests(GitFixture):
         self.commit({"overlay-debian/usr/share/aiden/platform/README.md": "platform content"})
         self.assertEqual(self.make()["kind"], "ota")
 
+    def test_overlay_gitignore_is_shipped(self):
+        self.publish()
+        self.commit({"overlay-debian/etc/aiden/.gitignore": "managed config"})
+        self.assertEqual(self.publish()["kind"], "business")
+        self.commit({"overlay-debian/usr/share/aiden/platform/.gitignore": "platform content"})
+        self.assertEqual(self.make()["kind"], "ota")
+
     def test_skill_markdown_is_business(self):
         self.publish()
         self.commit({"src/agent/config/skills/new/SKILL.md": "runtime skill"})
@@ -173,7 +179,9 @@ class PlannerTests(GitFixture):
     def test_other_shipped_markdown_is_business(self):
         self.publish()
         self.commit({"src/config_web/web/help.md": "web content",
-                     "assets/business/audio/guide.md": "audio content"})
+                     "assets/business/audio/guide.md": "audio content",
+                     "src/agent/internal/agent/web_ui/help.md": "embedded web content",
+                     "src/agent/config/skills/new/.gitignore": "skill payload"})
         self.assertEqual(self.make()["kind"], "business")
 
     def test_mixed_unknown_ota_and_dependency_changes_are_system(self):
