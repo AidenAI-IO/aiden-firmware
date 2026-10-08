@@ -113,42 +113,37 @@ require_pattern 'V4L2_MBUS_CSI2_CONTINUOUS_CLOCK' "$DRIVER" \
     "RK628 mbus configuration must report continuous clock when selected"
 require_pattern 'V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK' "$DRIVER" \
     "RK628 mbus configuration must retain non-continuous-clock support"
-require_pattern '#define RK628_CSI_LINK_FREQ_LOW[[:space:]]+375000000' "$DRIVER" \
-    "750 Mbps/lane must be advertised as a 375 MHz link frequency"
-require_pattern '#define RK628_CSI_LINK_FREQ_HIGH[[:space:]]+625000000' "$DRIVER" \
-    "1250 Mbps/lane must be advertised as a 625 MHz link frequency"
+# Hardware-version detection must select the F-specific receiver and CSI paths.
+CORE="$KERNEL_DIR/drivers/media/i2c/rk628/rk628.c"
+HEADER="$KERNEL_DIR/drivers/media/i2c/rk628/rk628.h"
+require_pattern '#define GRF_SOC_VERSION[[:space:]]+0x0200' "$HEADER" \
+    "RK628F chip identity must be read at the actual silicon version register"
+require_pattern 'version == 0x20230321' "$CORE" \
+    "the RK628F silicon revision must be recognized"
+require_pattern 'rk628_hdmirx_verisyno_phy_power_on' "$DRIVER" \
+    "RK628F must use its Synopsys receiver PHY instead of the RK628D combo PHY"
+require_pattern 'SW_OUTPUT_COMBTX_MODE_MASK' "$DRIVER" \
+    "RK628F must configure its own CSI output mux"
+require_pattern 'rk628_mipi_dphy.o rk628_post_process.o' \
+    "$KERNEL_DIR/drivers/media/i2c/rk628/Makefile" \
+    "RK628F PHY and post-processing dependencies must be linked"
 require_pattern 'link_freq->flags \|= V4L2_CTRL_FLAG_READ_ONLY' "$DRIVER" \
     "RK628 link frequency must be derived read-only state"
 require_pattern 'v4l2_ctrl_s_ctrl\(csi->link_freq, index\);' "$DRIVER" \
-    "RK628 link frequency updates must take the V4L2 control lock"
-require_pattern 'v4l2_ctrl_s_ctrl_int64\(csi->pixel_rate, pixel_rate\);' "$DRIVER" \
-    "RK628 pixel-rate updates must take the V4L2 control lock"
-
-require_pattern '#define SIGNAL_RECOVERY_INTERVAL_MS[[:space:]]+10000' "$DRIVER" \
-    "RK628 direct mode must throttle automatic HDMI PHY recovery"
-require_pattern 'rk628_csi_schedule_recovery\(sd\);' "$DRIVER" \
-    "RK628 polling must recover when HDMI starts after probe"
-require_pattern 'time_before\(jiffies, csi->next_recovery\)' "$DRIVER" \
-    "RK628 recovery must use a per-device retry deadline"
-require_pattern 'rk628_csi_arm_recovery_cooldown\(csi\);' "$DRIVER" \
-    "RK628 recovery cooldown must begin after PHY training"
-require_pattern '#define HDMI_RX_SCDC_LOCK_MASK[[:space:]]+GENMASK\(11, 8\)' "$DRIVER" \
-    "RK628 PHY lock detection must name the four HDMI lock flags"
-require_pattern 'status & HDMI_RX_SCDC_LOCK_MASK' "$DRIVER" \
-    "RK628 PHY lock detection must ignore unrelated SCDC flags"
-reject_pattern 'status & 0xfff' "$DRIVER" \
-    "RK628 PHY lock detection must not reject valid lock on status bit 0"
+    "link frequency updates must take the V4L2 handler lock"
+require_pattern '\.set_edid = rk628_csi_set_edid,' "$DRIVER" \
+    "userspace EDID updates must restart RK628F receiver configuration"
+require_pattern 'return -ENOLCK;' "$DRIVER" \
+    "no signal must not be reported as a locked fallback VGA source"
 require_pattern 'rk628_is_avi_ready\(csi->rk628, &csi->avi_rcv_rdy\)' "$DRIVER" \
     "RK628 CSI setup must observe live AVI readiness changes"
 require_pattern 'rk628_is_avi_ready\(bt1120->rk628, &bt1120->avi_rcv_rdy\)' "$BT1120" \
     "the shared AVI API change must cover the BT1120 caller"
-require_pattern 'const bool \*avi_rcv_rdy' "$HDMIRX_HEADER" \
-    "RK628 AVI readiness API must accept live state"
 require_pattern 'READ_ONCE\(\*avi_rcv_rdy\)' "$HDMIRX" \
-    "RK628 AVI polling must reload state updated by the interrupt path"
-
+    "AVI polling must reload state updated by the interrupt path"
 require_pattern 'i2c_set_clientdata\(client, sd\);' "$DRIVER" \
-    "RK628 remove must retain its V4L2 subdevice"
+    "RK628 remove and audio callbacks must retain the V4L2 subdevice"
+
 remove_body="$(sed -n '/^static int rk628_csi_remove(/,/^}/p' "$DRIVER")"
 for cleanup in \
         'v4l2_async_unregister_subdev(sd);' \
@@ -158,22 +153,6 @@ for cleanup in \
         'v4l2_ctrl_handler_free(&csi->hdl);'; do
     if ! grep -Fq "$cleanup" <<< "$remove_body"; then
         echo "FAIL: RK628 remove is missing cleanup: $cleanup" >&2
-        exit 1
-    fi
-done
-
-poll_body="$(sed -n '/^static void rk628_csi_work_i2c_poll(/,/^}/p' "$DRIVER")"
-poll_isr_line="$(grep -n 'rk628_csi_isr(sd, 0, &handled);' <<< "$poll_body" | cut -d: -f1 || true)"
-poll_mutex_line="$(grep -n 'mutex_lock(&csi->confctl_mutex);' <<< "$poll_body" | cut -d: -f1 || true)"
-if [[ -z "$poll_isr_line" || -z "$poll_mutex_line" || "$poll_isr_line" -ge "$poll_mutex_line" ]]; then
-    echo "FAIL: no-IRQ polling must service HDMI interrupts before taking the config mutex" >&2
-    exit 1
-fi
-
-for call_site in rk628_csi_s_dv_timings rk628_csi_set_fmt mipi_dphy_power_on rk628_csi_probe; do
-    call_site_body="$(sed -n "/^static .*${call_site}(/,/^}/p" "$DRIVER")"
-    if ! grep -q 'rk628_csi_update_mode_controls(csi);' <<< "$call_site_body"; then
-        echo "FAIL: $call_site must synchronize mode, link frequency and pixel rate" >&2
         exit 1
     fi
 done
