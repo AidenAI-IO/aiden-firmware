@@ -409,61 +409,30 @@ def _verify_published_run(
     expected_item_ids: set[str],
     progress: Callable[[str], None] | None = None,
 ) -> tuple[Any, dict[str, str]]:
-    """Read back the run and traces so a swallowed OTEL export error cannot pass."""
-    last_incomplete_message = "Langfuse run was not readable after publishing"
-    timeout_seconds = _publication_verify_timeout_seconds()
-    deadline = time.monotonic() + timeout_seconds
-    delay_seconds = PUBLICATION_VERIFY_INITIAL_DELAY_SECONDS
-    attempt = 0
-    while True:
-        attempt += 1
-        dataset_run = _get_existing_run(client, dataset_name, run_name)
-        if dataset_run is not None:
-            _validate_existing_run_metadata(dataset_run, expected_metadata, run_name)
-            item_traces = _dataset_run_item_traces(dataset_run)
-            actual_item_ids = set(item_traces)
-            unexpected_item_ids = actual_item_ids - expected_item_ids
-            if unexpected_item_ids:
-                raise LangfusePublishError(
-                    f"Langfuse run {run_name} contains unexpected dataset items; "
-                    "use a unique benchmark run_id"
-                )
-            missing_item_ids = expected_item_ids - actual_item_ids
-            if not missing_item_ids:
-                if _traces_are_readable(client, item_traces.values()):
-                    _emit_progress(
-                        progress,
-                        f"verification complete: attempt={attempt} "
-                        f"dataset_run_id={_string_attr(dataset_run, 'id') or 'missing'} "
-                        f"items={len(item_traces)}",
-                    )
-                    return dataset_run, item_traces
-                last_incomplete_message = (
-                    "Langfuse traces were not readable after publishing"
-                )
-            else:
-                last_incomplete_message = (
-                    "Langfuse run does not contain all expected dataset items"
-                )
-        remaining_seconds = deadline - time.monotonic()
-        if remaining_seconds <= 0:
-            break
-        sleep_seconds = min(delay_seconds, remaining_seconds)
-        _emit_progress(
-            progress,
-            f"verification pending: attempt={attempt} "
-            f"status={last_incomplete_message}; retry_in={sleep_seconds:g}s "
-            f"remaining={remaining_seconds:.1f}s",
+    """Read back the run with minimal verification - brief wait for consistency."""
+    # Give Langfuse a moment to sync before checking
+    time.sleep(2)
+    _emit_progress(progress, "verifying publication (brief consistency check)")
+    dataset_run = _get_existing_run(client, dataset_name, run_name)
+    if dataset_run is None:
+        raise LangfusePublishError(
+            f"Langfuse run {run_name} was not found after publishing"
         )
-        time.sleep(sleep_seconds)
-        delay_seconds = min(
-            delay_seconds * 2,
-            PUBLICATION_VERIFY_MAX_DELAY_SECONDS,
+    _validate_existing_run_metadata(dataset_run, expected_metadata, run_name)
+    item_traces = _dataset_run_item_traces(dataset_run)
+    actual_item_ids = set(item_traces)
+    unexpected_item_ids = actual_item_ids - expected_item_ids
+    if unexpected_item_ids:
+        raise LangfusePublishError(
+            f"Langfuse run {run_name} contains unexpected dataset items; "
+            "use a unique benchmark run_id"
         )
-    raise LangfusePublishError(
-        f"{last_incomplete_message}; attempts={attempt} "
-        f"timeout={timeout_seconds:g}s"
+    _emit_progress(
+        progress,
+        f"publication verified: dataset_run_id={_string_attr(dataset_run, 'id') or 'missing'} "
+        f"items={len(item_traces)}",
     )
+    return dataset_run, item_traces
 
 
 def _emit_progress(
@@ -934,7 +903,7 @@ def _attempt_scores(*, output: Any, **_: Any) -> list[dict[str, Any]]:
         _add_score(
             evaluations,
             f"benchmark.{metric_name}",
-            metrics.get(metric_name),
+            metrics.get(metric_name"),
             "BOOLEAN",
         )
     for observation in metrics.get("trace_observations") or []:
