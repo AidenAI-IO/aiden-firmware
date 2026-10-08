@@ -440,7 +440,7 @@ def test_publish_run_reports_publication_progress(tmp_path: Path):
         for message in progress
     )
     assert any("experiment replay start" in message for message in progress)
-    assert any("publication verified" in message for message in progress)
+    assert any("benchmark scores published" in message for message in progress)
 
 
 def test_publish_run_uses_suite_snapshot_when_source_changes(tmp_path: Path):
@@ -562,6 +562,45 @@ def test_publish_run_fails_when_score_write_fails(tmp_path: Path):
 
     with pytest.raises(LangfusePublishError, match="score storage unavailable"):
         publish_run(_write_run(tmp_path), client=client)
+
+
+def test_publish_run_publishes_scores_without_reading_the_run_back(tmp_path: Path):
+    """Scores must not depend on a read-back that Langfuse may not serve yet.
+
+    Self-hosted Langfuse acknowledges the experiment write before the dataset run
+    is readable, so a publisher that re-reads the run to collect trace IDs never
+    reaches the score phase. This client serves the write and then refuses every
+    subsequent run lookup.
+    """
+
+    class WriteOnlyLangfuse(FakeLangfuse):
+        def __init__(self):
+            super().__init__()
+            self.published = False
+
+        def get_dataset_run(self, **kwargs):
+            if self.published:
+                raise FakeAPIError(404, "run is not readable yet")
+            return super().get_dataset_run(**kwargs)
+
+        def run_experiment(self, **kwargs):
+            result = super().run_experiment(**kwargs)
+            self.published = True
+            return result
+
+    client = WriteOnlyLangfuse()
+
+    published = publish_run(_write_run(tmp_path), client=client)
+
+    assert published.dataset_run_id == "dataset-run-1"
+    score_names = {call["name"] for call in client.score_calls}
+    assert "capability.pass_at_1" in score_names
+    assert "benchmark.success" in score_names
+    attempt_scores = [call for call in client.score_calls if call["trace_id"]]
+    assert attempt_scores
+    assert all(
+        call["trace_id"].startswith("trace-") for call in attempt_scores
+    )
 
 
 def test_publish_run_does_not_create_dataset_after_lookup_failure(tmp_path: Path):
