@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ko_dir=/oem/usr/ko
+ko_dir=/usr/lib/aiden/platform/modules
 insert_if_present() {
     module=$1
     shift
@@ -32,9 +32,9 @@ for sensor in imx415 os04a10 sc4336 sc3336 sc530ai gc2053 sc200ai \
         rmmod "${sensor}" 2>/dev/null || true
     fi
 done
-# Keep async notifiers intact while the HDMI bridge is absent or probing.
+# Keep async notifiers intact while the media graph is incomplete or probing.
 # clr_unready_dev forces completion with missing endpoints and can Oops in
-# vendor CIF kernels. Normal V4L2 async binding completes the graph itself.
+# vendor CIF kernels when the input format is not available.
 
 insert_if_present rga3.ko
 insert_if_present mpp_vcodec.ko
@@ -49,7 +49,7 @@ for status in /proc/rkisp-vir0 /proc/rkisp0; do
     case "${value}" in ''|*[!0-9]*) ;; *) sensor_height=${value}; break ;; esac
 done
 insert_if_present rockit.ko \
-    mcu_fw_path=/oem/usr/ko/hpmcu_wrap.bin \
+    mcu_fw_path=/usr/lib/aiden/platform/modules/hpmcu_wrap.bin \
     mcu_fw_addr=0xff6fe000 isp_max_h="${sensor_height}"
 udevadm settle --timeout=10 || true
 

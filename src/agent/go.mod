@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/Masterminds/semver/v3 v3.2.0
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/gocolly/colly v1.2.0
 	github.com/godbus/dbus/v5 v5.2.0
@@ -12,15 +13,16 @@ require (
 	github.com/pelletier/go-toml/v2 v2.0.9
 	github.com/tmc/langchaingo v0.1.14
 	github.com/vmihailenco/msgpack/v5 v5.4.1
+	golang.org/x/crypto v0.51.0
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
+	golang.org/x/term v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	nhooyr.io/websocket v1.8.7
 )
 
 require (
 	github.com/Masterminds/goutils v1.1.1 // indirect
-	github.com/Masterminds/semver/v3 v3.2.0 // indirect
 	github.com/Masterminds/sprig/v3 v3.2.3 // indirect
 	github.com/PuerkitoBio/goquery v1.8.1 // indirect
 	github.com/andybalholm/cascadia v1.3.2 // indirect
@@ -55,7 +57,6 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
 	go.starlark.net v0.0.0-20230302034142-4b1e35fe2254 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect

@@ -450,11 +450,22 @@ func (s *Server) writeLocalProxyEnvironment() error {
 		noProxyFlag = "1"
 	}
 	contents := []byte(fmt.Sprintf(
-		"HTTP_PROXY=%s://%s\nHTTPS_PROXY=%s://%s\nALL_PROXY=%s://%s\nNO_PROXY=%s\nno_proxy=%s\nAIDEN_WIFI_PROXY_NO_PROXY_SET=%s\n",
+		"HTTP_PROXY=%s://%s\nHTTPS_PROXY=%s://%s\nALL_PROXY=%s://%s\nhttp_proxy=%s://%s\nhttps_proxy=%s://%s\nall_proxy=%s://%s\nNO_PROXY=%s\nno_proxy=%s\nAIDEN_WIFI_PROXY_NO_PROXY_SET=%s\n",
+		httpScheme, address, httpsScheme, address, allScheme, address,
 		httpScheme, address, httpsScheme, address, allScheme, address,
 		shellQuote(normalizedNoProxy), shellQuote(normalizedNoProxy), noProxyFlag,
 	))
 	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, contents) {
+		// Repair files left by versions that restricted login shells to root.
+		// Avoid chmod on every refresh: metadata changes can wake the Agent's
+		// systemd path watcher even when the proxy route did not change.
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm() != 0o644 {
+			return os.Chmod(path, 0o644)
+		}
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -466,7 +477,9 @@ func (s *Server) writeLocalProxyEnvironment() error {
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
+	// This public file contains only the local relay address and NO_PROXY.
+	// Upstream credentials remain in the separate, private Wi-Fi config.
+	if err := temporary.Chmod(0o644); err != nil {
 		temporary.Close()
 		return err
 	}

@@ -84,7 +84,7 @@ func TestTextInputBridgePreparedClipboardRequiresExactText(t *testing.T) {
 	}
 }
 
-func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
+func TestTextInputBridgeUsesPiPBackgroundClipboardQueueWithStaleAppState(t *testing.T) {
 	message := "桥接输入测试"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeComposition,
@@ -93,7 +93,7 @@ func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 	pb := newTestPhoneBridge(t)
 	pb.platform = "ios"
 	pb.appState = "background"
-	pb.appStateAt = time.Now()
+	pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
 	pb.pipBridgeEnabled = true
 	pb.pipBridgeSeen = true
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
@@ -157,21 +157,16 @@ func TestTextInputBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 	}
 }
 
-func TestTextInputBridgeRejectsStalePiPBackgroundClipboardState(t *testing.T) {
-	pb := newTestPhoneBridge(t)
-	pb.platform = "ios"
-	pb.appState = "background"
-	pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
-	pb.pipBridgeEnabled = true
-	pb.pipBridgeSeen = true
-
-	tool := &textInputBridge{bridgeFn: func() *PhoneBridge { return pb }}
-	result := tool.runAutomaticClipboardFirstFlow(context.Background(), "ios", textInputArgs{Text: "过期状态不应写入"})
-	if result.Attempted || result.Err != nil {
-		t.Fatalf("stale PiP state result = %+v, want unavailable without attempt", result)
+func TestTextInputBridgeUsesEnabledPiPDespiteStaleAppState(t *testing.T) {
+	enabled := true
+	status := PhoneBridgeStatus{
+		Platform:          "ios",
+		AppState:          "background",
+		PipBridgeEnabled:  &enabled,
+		AppStateUpdatedAt: ptrTime(time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)),
 	}
-	if commands := pb.queue.PollForPhone("ios", "", 10); len(commands) != 0 {
-		t.Fatalf("stale PiP state queued commands = %+v, want none", commands)
+	if !phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
+		t.Fatal("enabled PiP bridge should allow clipboard queue despite stale app-state timestamp")
 	}
 }
 

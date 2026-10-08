@@ -79,6 +79,7 @@ def prepare_task_isolation(
                     task_id=benchmark_task_id or task.id,
                     timeout=DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
                     app_ids=task.app_ids,
+                    foreground_app_id=task.foreground_app_id,
                 )
             except (ResetError, AgentTimeoutError, AgentRequestError):
                 raise

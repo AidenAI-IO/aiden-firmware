@@ -818,9 +818,9 @@ func (pb *PhoneBridge) UpdateState() map[string]string {
 	}
 	ret["app_state"] = appState
 
-	// Expose only currently usable background bridge modes. Raw capability flags
-	// can outlive the companion app's HTTP polling, while command routing rejects
-	// background state after phoneBridgeBackgroundStateMaxAge.
+	// Expose the transport modes reported by the companion app. PiP mode is an
+	// explicit iOS capability signal and remains usable for background-safe data
+	// commands even when ordinary app-state timestamps stop refreshing.
 	ret["app_pip_enabled"] = fmt.Sprintf("%t", phoneBridgeCanUsePiPBackground(status, "clipboard_read"))
 	ret["app_fgs_enabled"] = fmt.Sprintf("%t", phoneBridgeCanUseFGSBackground(status, "clipboard_read"))
 

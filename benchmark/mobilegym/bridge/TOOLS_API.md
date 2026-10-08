@@ -13,12 +13,14 @@ device bridge.
 | `POST /api/providers/screenshot` | Return the current screen frame for pre/post capture and the agent screenshot tool. |
 | `POST /api/providers/mnk` | Execute a Go `mnk.Provider` operation for agent input. |
 | `POST /api/setup` | Initialize or reset a task route. |
+| `POST /state` | Return the environment state snapshot for deterministic assertions. |
+| `POST /route` | Return the foreground app and in-app route. |
 | `POST /api/release` | Release a task route. |
 | `GET /api/concurrent` | Return bridge concurrency capacity. |
 
 MobileGym routes concurrent tasks by the `benchmark-task-id` header. The same id
-must be sent to `/api/setup`, `/api/providers/screenshot`, `/api/providers/mnk`, and `/api/release`
-for a task worker.
+must be sent to `/api/setup`, `/api/providers/screenshot`, `/api/providers/mnk`,
+`/state`, `/route`, and `/api/release` for a task worker.
 
 ## Tool Catalog
 
@@ -90,7 +92,7 @@ curl -X POST http://localhost:8888/api/providers/mnk \
 curl -X POST http://localhost:8888/api/setup \
   -H "Content-Type: application/json" \
   -H "benchmark-task-id: suite.json:task-1" \
-  -d '{"app_ids":["settings"]}'
+  -d '{"app_ids":["settings"],"foreground_app_id":"settings"}'
 
 curl -X POST http://localhost:8888/api/release \
   -H "Content-Type: application/json" \
@@ -104,6 +106,60 @@ for later tasks.
 `app_ids` is optional. Missing or empty `app_ids` skips eager app data loading;
 non-empty lists preload only the named apps. The app launch path still loads an
 app's data on demand.
+
+`foreground_app_id` is an optional exact installed app ID. Setup opens it after
+reset and fails if it cannot be launched. The preload list does not determine
+the foreground app. The agent's Phone Bridge `open_app` tool is not routed
+through MobileGym's `/api/tools` catalog.
+
+## Deterministic State And Route
+
+Suites can judge a UI action by exact state instead of relying only on the final
+screenshot. Both endpoints accept an empty JSON object and require the task's
+route header:
+
+```bash
+curl -X POST http://localhost:8888/state \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{}'
+
+curl -X POST http://localhost:8888/route \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{}'
+```
+
+For example, `mobilegym_scroll_regression.json` checks both the selected record
+and its detail route:
+
+```json
+{
+  "environment_assertions": {
+    "route.path": "/item/scroll-item-083",
+    "apps.scroll_lab.selectedItemId": "scroll-item-083"
+  }
+}
+```
+
+Scroll Lab also exposes its live scroll trajectory: `apps.scroll_lab.scrollTop`
+is the scroll container offset in CSS pixels, `apps.scroll_lab.firstVisibleOrdinal`
+is the first row still visible in the viewport, and
+`apps.scroll_lab.maxFirstVisibleOrdinal` is the monotonic high-water mark of that
+value for the episode. Because a scalar assertion must match exactly, a numeric
+band is expressed as an object with `min`/`max` keys:
+
+```json
+{
+  "environment_assertions": {
+    "apps.scroll_lab.maxFirstVisibleOrdinal": {"max": 23}
+  }
+}
+```
+
+`mobilegym_scroll_regression.json` checks ordinals 24 and 83. The optional
+`mobilegym_scroll_sweep.json` applies that bound to every row for calibration.
+The high-water mark survives a scroll-back, so a recovered overshoot still fails.
 
 ## Concurrency
 

@@ -23,6 +23,8 @@ func Run(args []string) int {
 	fs.StringVar(&options.AgentConfigPath, "config", options.AgentConfigPath, "agent TOML path")
 	fs.StringVar(&options.WiFiConfigPath, "wifi-config", options.WiFiConfigPath, "wpa_supplicant config path")
 	fs.StringVar(&options.WiFiConfigEnvironmentPath, "wifi-config-environment", options.WiFiConfigEnvironmentPath, "runtime wpa_supplicant config environment path")
+	fs.StringVar(&options.WiFiRegionStatePath, "wifi-region-state", options.WiFiRegionStatePath, "Wi-Fi regulatory domain provenance sidecar path")
+	fs.BoolVar(&options.WiFiRegionAutoApplyBeacon, "wifi-region-auto-apply-beacon", options.WiFiRegionAutoApplyBeacon, "apply a country agreed by at least three distinct access points without asking")
 	fs.StringVar(&options.WiFiInterface, "wifi-interface", options.WiFiInterface, "Wi-Fi interface")
 	fs.StringVar(&options.WiFiBackend, "wifi-backend", options.WiFiBackend, "Wi-Fi backend (legacy or systemd-networkd)")
 	fs.StringVar(&options.OTAStatePath, "ota-state", options.OTAStatePath, "OTA state JSON path")
@@ -33,6 +35,15 @@ func Run(args []string) int {
 	fs.StringVar(&options.LocalProxyEnvironmentPath, "local-proxy-environment", options.LocalProxyEnvironmentPath, "generated local proxy environment path")
 	fs.StringVar(&options.StorageStatePath, "storage-state", options.StorageStatePath, "storage state path")
 	fs.StringVar(&options.WebRoot, "web-root", options.WebRoot, "config web static asset root")
+	fs.StringVar(&options.BackupUserdataRoot, "backup-userdata-root", options.BackupUserdataRoot, "userdata root used by backup and restore")
+	fs.StringVar(&options.BackupSDRoot, "backup-sd-root", options.BackupSDRoot, "SD-card root used by backup and restore")
+	fs.StringVar(&options.MaintenanceLockPath, "maintenance-lock", options.MaintenanceLockPath, "backup and restore maintenance lock path")
+	fs.StringVar(&options.BackupJobStateDir, "backup-job-state-dir", options.BackupJobStateDir, "runtime backup job state directory")
+	fs.StringVar(&options.USBAddress, "usb-address", options.USBAddress, "device address on the USB ECM link")
+	fs.StringVar(&options.USBSubnet, "usb-subnet", options.USBSubnet, "USB ECM client subnet")
+	fs.StringVar(&options.USBInterface, "usb-interface", options.USBInterface, "USB ECM ingress interface for maintenance")
+	fs.StringVar(&options.HardwareIDPath, "hardware-id-path", options.HardwareIDPath, "immutable hardware identifier path")
+	fs.StringVar(&options.OTAConfigPath, "ota-config", options.OTAConfigPath, "OTA configuration path for factory version information and identity provisioning after restore")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0

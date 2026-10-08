@@ -164,7 +164,8 @@ func (r *Runtime) logConfigApply(revision uint64, applyErr error, elapsed time.D
 }
 
 func configRequiresReboot(current, next Config) bool {
-	return current.PointerModeOrDefault() != next.PointerModeOrDefault() || current.HID.KeyboardLayoutOrDefault() != next.HID.KeyboardLayoutOrDefault()
+	level, _ := ConfigApplyLevel(current, next)
+	return level == ApplyReboot
 }
 
 // ApplyConfigSnapshot is synchronous for embedders. HTTP callers use QueueConfig.
@@ -343,7 +344,7 @@ func (r *Runtime) applyConfig(ctx context.Context, cfg Config) error {
 	}
 	// InitializeContextManager rotates the append-only session when its system
 	// prompt changes. Model/provider changes also drop provider-specific chaining.
-	if current.Locale != cfg.Locale || current.TimezoneOrDefault() != cfg.TimezoneOrDefault() || current.Instruction != cfg.Instruction || current.AdditionalPrompt != cfg.AdditionalPrompt || current.Model.Provider != cfg.Model.Provider || current.Model.Model != cfg.Model.Model || current.Model.APIMode != cfg.Model.APIMode || current.Model.BaseURL != cfg.Model.BaseURL {
+	if current.Locale != cfg.Locale || current.TimezoneOrDefault() != cfg.TimezoneOrDefault() || current.Instruction != cfg.Instruction || current.Prompt != cfg.Prompt || current.Model.Provider != cfg.Model.Provider || current.Model.Model != cfg.Model.Model || current.Model.APIMode != cfg.Model.APIMode || current.Model.BaseURL != cfg.Model.BaseURL {
 		r.configContextRotate.Store(true)
 		r.configUserContextRotate.Store(true)
 	}

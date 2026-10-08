@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 
 	"aiden-agent/internal/agent"
-	"aiden-agent/internal/agenttask"
 	"aiden-agent/internal/logging"
 )
 
@@ -50,11 +49,14 @@ func newInputLifecycle(runtime *agent.Runtime, server *agent.Server) *inputLifec
 }
 
 func voiceConfig(cfg agent.Config) agent.Config {
+	// Runtime replaces the ordinary model at the next Agent task boundary.
+	// Including it here would wait for an unrelated, potentially long-lived
+	// voice session before the new provider can serve any task.
 	return agent.Config{
 		HID: cfg.HID, Device: cfg.Device, Search: cfg.Search,
 		ScreenStableTimeoutMs: cfg.ScreenStableTimeoutMs, ScreenStableMs: cfg.ScreenStableMs, ScreenStableDiffThreshold: cfg.ScreenStableDiffThreshold,
 		InputMode: cfg.InputMode, Audio: cfg.Audio, STT: cfg.STT, TTS: cfg.TTS, VoiceModel: cfg.VoiceModel,
-		Model: cfg.Model, Locale: cfg.Locale, Timezone: cfg.Timezone, Instruction: cfg.Instruction, AdditionalPrompt: cfg.AdditionalPrompt,
+		Locale: cfg.Locale, Timezone: cfg.Timezone, Instruction: cfg.Instruction, Prompt: cfg.Prompt,
 		AudioArchive: cfg.AudioArchive, VADBackend: cfg.VADBackend, VADModelPath: cfg.VADModelPath, VADHelperPath: cfg.VADHelperPath,
 		VADSpeechThreshold: cfg.VADSpeechThreshold, SilenceMs: cfg.SilenceMs, MinSpeechMs: cfg.MinSpeechMs,
 		VoiceFollowupEnabled: cfg.VoiceFollowupEnabled, VoiceFollowupTimeoutMs: cfg.VoiceFollowupTimeoutMs,
@@ -63,6 +65,25 @@ func voiceConfig(cfg agent.Config) agent.Config {
 		VoiceToolCallSpeech: cfg.VoiceToolCallSpeech, VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabled,
 		VoiceMaxResponseTokens: cfg.VoiceMaxResponseTokens,
 	}
+}
+
+func activeVoiceConfig(cfg agent.Config) agent.Config {
+	active := voiceConfig(cfg)
+	active.InputMode = cfg.InputModeOrDefault()
+	switch active.InputMode {
+	case "stt":
+		active.VoiceModel = agent.VoiceModelConfig{}
+	case "realtime":
+		// These clients are published independently by Server and Runtime.
+		// Editing them must not wait for a live realtime conversation to end.
+		active.STT = agent.STTConfig{}
+		active.TTS = agent.TTSConfig{}
+	default:
+		active.STT = agent.STTConfig{}
+		active.TTS = agent.TTSConfig{}
+		active.VoiceModel = agent.VoiceModelConfig{}
+	}
+	return active
 }
 
 func (c *inputLifecycle) buildDialog(cfg agent.Config) (*agent.AudioDialog, error) {
@@ -102,8 +123,10 @@ func (c *inputLifecycle) startVoice(cfg agent.Config, dialog *agent.AudioDialog)
 		case "stt":
 			runWakeupMode(cfg, dialog, c.runtime, shutdown, c.newWatcher, stop)
 		case "realtime":
-			tasks := agenttask.NewManager(runtimeAgentTaskRunner{runtime: c.runtime})
-			defer tasks.Close()
+			tasks := newRealtimeAgentTaskManager(cfg, c.runtime)
+			if tasks != nil {
+				defer tasks.Close()
+			}
 			runRealtimeWakeupModeWithServer(cfg, shutdown, c.server, c.runtime, tasks, c.newWatcher, stop)
 		default:
 			select {
@@ -145,7 +168,7 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 	c.dialogMu.Lock()
 	oldDialog := c.dialog
 	c.dialogMu.Unlock()
-	voiceChanged := !reflect.DeepEqual(voiceConfig(old), voiceConfig(cfg))
+	voiceChanged := !reflect.DeepEqual(activeVoiceConfig(old), activeVoiceConfig(cfg))
 	quickChanged := old.QuickCapture.GPIOPin != cfg.QuickCapture.GPIOPin || old.QuickCapture.EnabledOrDefault() != cfg.QuickCapture.EnabledOrDefault()
 	if voiceChanged {
 		close(c.stop)
@@ -166,10 +189,11 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 		}
 	}
 	var dialog *agent.AudioDialog
+	var commitInput func()
 	if voiceChanged {
 		dialog, err = c.buildDialog(cfg)
 		if err == nil {
-			err = dialog.PrepareInput()
+			commitInput, err = dialog.PrepareInputReplacement(oldDialog)
 		}
 	}
 	var quick wakeupWatcher
@@ -221,6 +245,9 @@ func (c *inputLifecycle) Prepare(ctx context.Context, cfg agent.Config) (func(bo
 		if voiceChanged {
 			c.dialogMu.Lock()
 			c.dialog = nil
+			if commitInput != nil {
+				commitInput()
+			}
 			c.dialogMu.Unlock()
 			if oldDialog != nil {
 				_ = oldDialog.Close()

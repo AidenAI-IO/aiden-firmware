@@ -1,11 +1,11 @@
 # Aiden C++ SDK
 
-本目录包含 C++ SDK、硬件服务和示例程序源码。
+This directory contains the C++ SDK, hardware services, and example programs.
 
-完整文档已迁移到：
+The full documentation is available here:
 
-- [C++ SDK 参考](../docs/05-sdk-and-tools/cpp-sdk.md)
-- [示例程序](../docs/05-sdk-and-tools/examples.md)
+- [C++ SDK reference](../docs/05-sdk-and-tools/cpp-sdk.md)
+- [Example programs](../docs/05-sdk-and-tools/examples.md)
 - [Frame Service](../docs/03-services/frame-service.md)
 - [Audio Service](../docs/03-services/audio-service.md)
-- [Unix Domain Socket 协议](../docs/06-protocols/uds-protocol.md)
+- [Unix Domain Socket protocol](../docs/06-protocols/uds-protocol.md)

@@ -11,6 +11,11 @@ bridge_pid=""
 bridge_log=""
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
+if grep -q 'scripts/debian-apps/debian.sources' "$script_dir/../docker/test/Dockerfile"; then
+    echo "docker test image must not depend on the regional Debian apps mirror" >&2
+    exit 1
+fi
+
 compose() {
     AIDEN_CONFIG_WEB_PORT="$config_port" \
     AIDEN_AGENT_WEB_PORT="$agent_port" \
@@ -273,10 +278,10 @@ compose exec -T aiden sh -c '
 count=0
 for process in /proc/[0-9]*; do
     executable="$(readlink "$process/exe" 2>/dev/null || true)"
-    if [ "$executable" = /oem/usr/bin/agent ]; then
+    if [ "$executable" = /usr/lib/aiden/agent ]; then
         command_line="$(tr "\000" " " < "$process/cmdline" 2>/dev/null || true)"
         case "$command_line" in
-            */oem/usr/bin/agent\ config-web\ *|*/oem/usr/bin/agent\ wifi-proxy\ *) continue ;;
+            */usr/lib/aiden/agent\ config-web\ *|*/usr/lib/aiden/agent\ wifi-proxy\ *) continue ;;
         esac
         count="$((count + 1))"
     fi

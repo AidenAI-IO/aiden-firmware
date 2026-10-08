@@ -64,7 +64,7 @@ trap shutdown INT TERM EXIT
     >>/userdata/agent/log/ttyd.log 2>&1 &
 ttyd_pid="$!"
 
-"$env_run_bin" "${AIDEN_AGENT_BIN:-/oem/usr/bin/agent}" config-web \
+"$env_run_bin" "${AIDEN_AGENT_BIN:-/usr/lib/aiden/agent}" config-web \
     --bind=0.0.0.0 \
     --port=80 \
     --config="$agent_dir/agent.toml" \

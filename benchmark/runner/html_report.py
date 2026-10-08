@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from runner.agent_client import AgentClient
+from runner.report import task_error_details
 
 
 def _esc(s: str) -> str:
@@ -66,7 +67,7 @@ def _fmt_time_ms(ms: float | int | str | None) -> str:
         return "0ms"
     try:
         ms_num = float(ms)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # If conversion fails, escape and return the value with ms suffix
         return _esc(str(ms)) + "ms"
 
@@ -83,6 +84,13 @@ def _fmt_time_ms(ms: float | int | str | None) -> str:
     min_part = int(sec // 60)
     sec_part = sec % 60
     return f"{min_part}m{sec_part:.1f}s"
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _read_excerpt(path: Path, max_chars: int = 6000) -> str:
@@ -617,23 +625,24 @@ def generate_report_html(run_dir: Path) -> str:
 
         # Extract errors
         errors = []
-        metrics = r.get("metrics", {})
-        if "error" in metrics:
-            errors.append(["Error", metrics["error"]])
-        if "agent_error" in metrics:
-            errors.append(["Agent Error", metrics["agent_error"]])
-        if "judge_error" in metrics:
-            errors.append(["Judge Error", metrics["judge_error"]])
+        metrics = r.get("metrics") or {}
+        errors.extend(
+            [label, value] for label, value in task_error_details(metrics)
+        )
         artifacts_detail = _task_artifact_refs(run_dir, tid, task_dir)
         error_log_detail = _task_error_log(run_dir, tid, str(status), errors, hard_assertion_failures, task_dir)
+        try:
+            tool_calls_count = int(metrics.get("tool_calls", 0) or 0)
+        except (TypeError, ValueError):
+            tool_calls_count = 0
 
         tasks_js_items.append({
             "id": tid,
             "category": r.get("category", ""),
             "status": status,
-            "wall_ms": r.get("metrics", {}).get("wall_ms", 0),
-            "tool_calls_count": r.get("metrics", {}).get("tool_calls", 0),
-            "screenshots_taken": r.get("metrics", {}).get("screenshots_taken", 0),
+            "wall_ms": metrics.get("wall_ms", 0),
+            "tool_calls_count": tool_calls_count,
+            "screenshots_taken": metrics.get("screenshots_taken", 0),
             "rubric_pass": r.get("rubric_pass_count", 0),
             "rubric_total": r.get("rubric_total", 0),
             "description": r.get("description_for_judge", ""),
@@ -652,7 +661,7 @@ def generate_report_html(run_dir: Path) -> str:
                     obs.get("reason", obs.get("description", "")),
                     "yes" if obs.get("passed") else "no",
                 ]
-                for obs in r.get("metrics", {}).get("trace_observations") or []
+                for obs in metrics.get("trace_observations") or []
             ],
         })
 
@@ -670,7 +679,7 @@ def generate_report_html(run_dir: Path) -> str:
   <td>{_esc(t['category'])}</td>
   <td><span class="badge {badge_cls}">{badge_label}</span></td>
   <td class="mono">{t['rubric_pass']}/{t['rubric_total']}</td>
-  <td class="mono">{int(t['tool_calls_count'])}</td>
+  <td class="mono">{_safe_int(t['tool_calls_count'])}</td>
   <td class="mono">{_fmt_time_ms(t['wall_ms'])}</td>
 </tr>\n"""
 
@@ -1012,7 +1021,7 @@ function openDrawer(i) {{
   document.getElementById("dChips").innerHTML =
     '<span class="chip">' + esc(t.category) + '</span>' +
     '<span class="chip">' + esc(t.status) + '</span>' +
-    '<span class="chip">' + Math.floor(t.tool_calls_count) + ' tools</span>' +
+    '<span class="chip">' + esc(String(t.tool_calls_count)) + ' tools</span>' +
     '<span class="chip">' + formatTime(t.wall_ms) + '</span>' +
     (t.screenshots_taken ? '<span class="chip">' + Math.floor(t.screenshots_taken) + ' screenshots</span>' : '');
   var body = "";
@@ -1023,7 +1032,7 @@ function openDrawer(i) {{
     body += '<div id="fullTrace" class="full-trace" hidden>' + renderFullTrace(t) + '</div>';
   }}
   if (t.tool_calls_detail) {{
-    body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + t.tool_calls_count + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
+    body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + esc(String(t.tool_calls_count)) + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
   }}
   if (t.artifacts_detail) {{
     body += '<div class="block"><div class="block-head"><strong>Artifacts</strong><span>files</span></div><pre class="block-body">' + esc(t.artifacts_detail) + '</pre></div>';

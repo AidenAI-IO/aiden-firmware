@@ -15,8 +15,8 @@ root_suffix=
 for argument in $(cat "${cmdline_path}"); do
     case "${argument}" in
         aiden.slot_suffix=*) suffix=${argument#aiden.slot_suffix=} ;;
-        root=PARTLABEL=rootfs_a|root=*/rootfs_a|root=/dev/mmcblk0p9) root_suffix=_a ;;
-        root=PARTLABEL=rootfs_b|root=*/rootfs_b|root=/dev/mmcblk0p10) root_suffix=_b ;;
+        root=PARTLABEL=rootfs_a|root=*/rootfs_a|root=/dev/mmcblk0p7) root_suffix=_a ;;
+        root=PARTLABEL=rootfs_b|root=*/rootfs_b|root=/dev/mmcblk0p8) root_suffix=_b ;;
     esac
 done
 
@@ -48,12 +48,10 @@ partition_node() {
         misc) number=4 ;;
         boot_a) number=5 ;;
         boot_b) number=6 ;;
-        oem_a) number=7 ;;
-        oem_b) number=8 ;;
-        rootfs_a) number=9 ;;
-        rootfs_b) number=10 ;;
-        userdata) number=11 ;;
-        ota) number=12 ;;
+        rootfs_a) number=7 ;;
+        rootfs_b) number=8 ;;
+        userdata) number=9 ;;
+        ota) number=10 ;;
         *) return 1 ;;
     esac
 
@@ -63,7 +61,7 @@ partition_node() {
     printf '%s\n' "${label_path}"
 }
 
-for name in "rootfs${suffix}" "oem${suffix}" userdata ota; do
+for name in "rootfs${suffix}" userdata ota; do
     path=/dev/disk/by-partlabel/${name}
     elapsed=0
     while ! partition_node "${name}" >/dev/null 2>&1 && [ "${elapsed}" -lt "${wait_seconds}" ]; do
@@ -80,7 +78,7 @@ done
 # Populate every partition label used by the OTA writer as well as the
 # active-slot mounts. At this point the kernel partition nodes are known to
 # exist because the mandatory active-slot loop has completed.
-for name in misc boot_a boot_b oem_a oem_b rootfs_a rootfs_b; do
+for name in misc boot_a boot_b rootfs_a rootfs_b; do
     partition_node "${name}" >/dev/null 2>&1 || true
 done
 
@@ -88,7 +86,6 @@ done
 # link when the board exposes only numbered mmcblk0 partitions.
 partition_node misc >/dev/null 2>&1 || true
 
-ln -sfn "/dev/disk/by-partlabel/oem${suffix}" "${run_dir}/oem-device"
 ln -sfn "/dev/disk/by-partlabel/rootfs${suffix}" "${run_dir}/rootfs-device"
 tmp=${run_dir}/slot.env.tmp.$$
 {

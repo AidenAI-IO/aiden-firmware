@@ -7,9 +7,12 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const moduleRoot = path.join(repositoryRoot, 'src/config_web/web/assets/js/config');
 let fetchImpl = async () => { throw new Error('fetch is not configured'); };
+const elements = new Map();
 const context = vm.createContext({
   console,
-  document: {getElementById() { return null; }},
+  document: {getElementById(id) { return elements.get(id) || null; }, addEventListener() {}},
+  setTimeout() { return 1; },
+  clearTimeout() {},
   fetch: (...args) => fetchImpl(...args),
   URL,
   window: {location: {href: 'http://192.168.42.1/'}},
@@ -75,5 +78,28 @@ releaseSave();
 await firstFailure;
 await second;
 assert.equal(started.at(-1), '/api/config/locale');
+
+// Manual TOML edits and backup imports are configuration saves too.
+const stateModule = await loadModule(path.join(moduleRoot, 'state.js'));
+const savedStatuses = [];
+stateModule.namespace.registerRuntime({configApplicationSaved: (value) => savedStatuses.push(value)});
+let releaseConfig;
+started.length = 0;
+fetchImpl = async (url) => {
+  started.push(url);
+  if (url === '/api/config') await new Promise((resolve) => {releaseConfig = resolve;});
+  return {ok: true, status: 200, text: async () => JSON.stringify({persisted: true, state: 'pending', pending: true})};
+};
+const queuedConfig = request('/api/config', {method: 'PATCH', body: '{}'});
+const queuedImport = request('/api/config/backup', {method: 'PUT', body: '[agent]'});
+await request('/api/config/application', {method: 'GET'});
+assert.ok(!started.includes('/api/config/backup'), 'imports wait for earlier configuration writes');
+releaseConfig();
+await Promise.all([queuedConfig, queuedImport]);
+assert.equal(savedStatuses.length, 2, 'imports update the application status immediately');
+fetchImpl = async () => ({ok: false, status: 503, text: async () => JSON.stringify({persisted: true, applied: false, error: 'VAD unavailable'})});
+await assert.rejects(request('/api/config/backup', {method: 'PUT', body: '[agent]'}));
+assert.equal(savedStatuses.at(-1).state, 'failed');
+assert.equal(savedStatuses.at(-1).error, 'VAD unavailable');
 
 process.stdout.write('config web api tests passed\n');

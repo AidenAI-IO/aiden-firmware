@@ -36,7 +36,7 @@ load boundary; Config Web writes only the grouped paths below.
    - **Device Settings**: `[basic_settings.device]`, including `[basic_settings.device.hid].keyboard_layout`
 
 3. **Conversation Settings**:
-   - Custom Instructions: `custom_instruction`, `additional_prompt`
+   - Agent Prompt: `prompt`
    - Max Iterations: `max_iterations`
    - Context Management: `context_prune_threshold`, `context_compaction_threshold`
    - Screenshot Pruning: `screenshot_keep_n`, `screenshot_prune_interval`
@@ -70,8 +70,11 @@ load boundary; Config Web writes only the grouped paths below.
    exposed as product settings in Config Web.
 
 9. **About**:
-   - Firmware Version: Displayed through Config Web
-   - Component Versions: Boot, OEM, and RootFS versions for the running slot
+   - Firmware Version: Read from OTA state; before the first OTA transaction,
+     read from the factory baseline in `/userdata/debian/ota/config.json`
+   - Component Versions: Boot and RootFS versions for the running slot
+   - Version information refreshes with device status without initializing or
+     modifying OTA state
 
 The group tables are the canonical on-disk configuration schema. New options
 should be added to the closest existing group and its section rather than
@@ -136,7 +139,7 @@ is created on demand, so a directory holding only `agent.toml` is a valid start.
 ## Config Web: the device config page
 
 Config Web is the browser client served by the `config-web` subcommand of the
-Go Agent binary (`/oem/usr/bin/agent`). It maintains the device Agent
+Go Agent binary (`/usr/lib/aiden/agent`). It maintains the device Agent
 configuration, system environment variables, and Wi-Fi configuration, and is
 the primary way to edit the fields documented on this page without manually
 editing `agent.toml`. Its device operations use the
@@ -156,7 +159,7 @@ The firmware starts `agent config-web` on port 80.
 The page renders the following config sections. The Language & Time Zone controls persist the device-level `locale` and `timezone` and apply them online. Changing either value rotates the context at the next task boundary instead of rewriting the previous session. The selected time zone is included in Agent state and controls the current-date context and controller shell commands.
 
 - `[basic_settings.language_timezone]`: UI and response language plus controller time zone
-- `[conversation_settings.agent]`: custom instructions, iteration and context controls
+- `[conversation_settings.agent]`: Agent prompt, iteration and context controls
 - `[model_settings.model]`: provider, model, api_mode, temperature, max_response_tokens, context_window, model_max_output_tokens
 - `[voice_settings.classic.stt]`: provider, language and STT options
 - `[voice_settings.classic.tts]`: provider and playback options
@@ -187,7 +190,6 @@ locale = "en-US"
 timezone = "UTC"
 
 [conversation_settings.agent]
-custom_instruction = ""
 max_iterations = -1
 context_prune_threshold = 0.5
 context_compaction_threshold = 0.8
@@ -254,6 +256,45 @@ frame_socket = "/run/frame_service/frame_service.sock"
 
 > Provider credentials use one field everywhere. Set `api_key = "$VAR_NAME"` to read from an environment variable, or set a literal key directly. Config Web accepts the same two forms in its API Key box.
 
+### Google Gemini provider
+
+```toml
+[model_settings.providers.gemini-main]
+type = "gemini"
+api_key = "$GEMINI_API_KEY"
+
+[model_settings.model]
+provider = "gemini-main"
+model = "gemini-3.8-flash"
+api_mode = "interactions"  # or "interactions_stateful"
+reasoning_effort = "low"  # gemini-3.8-flash: low/medium/high
+max_response_tokens = 8192
+# Optional model metadata overrides
+# context_window = 1048576
+# model_max_output_tokens = 65536
+```
+
+**Gemini models**:
+- `gemini-3.8-flash`: Most capable Flash model for complex tasks
+- `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`: Earlier Flash generations
+- `gemini-2.5-flash`, `gemini-2.5-pro`: Gemini 2.5 series models
+
+**Thinking/reasoning**: Gemini 3.x and 2.5 models support internal reasoning through `reasoning_effort`:
+- `minimal`: Fastest, least reasoning; supported by Gemini 3.6 and 3.5 Flash
+- `low`: Balanced speed and quality (default for voice)
+- `medium`: More thorough reasoning
+- `high`: Maximum reasoning depth
+
+Gemini 3.8 Flash, 3.7 Flash, and the Gemini 2.5 models use `low`, `medium`, or `high` in native Interactions mode. Gemini 3 models and Gemini 2.5 Pro cannot disable thinking.
+
+**API key**: Get from [Google AI Studio](https://aistudio.google.com/apikey)
+
+**Native Interactions API**: `interactions` submits the complete local transcript as Gemini StepList input with `store=false`; `interactions_stateful` stores the interaction and continues with `previous_interaction_id`. Both use `https://generativelanguage.googleapis.com/v1beta/interactions` and authenticate with `x-goog-api-key`. Native generation settings `thinking_level`, `thinking_summaries`, `max_output_tokens`, `seed`, `stop_sequences`, and `tool_choice` are sent under `generation_config`. `store=true` retains the interaction on Google's servers, so use the local mode when server-side retention is not desired.
+
+**Only the native API is supported.** `api_mode` accepts `interactions` or `interactions_stateful`, and an unset `api_mode` selects `interactions`. The OpenAI-compatible `/chat/completions` path is deliberately not wired up for this provider: it cannot round-trip the `thought_signature` that Gemini 3 models require on replayed function calls, so multi-turn tool use fails there with `400 Function call is missing a thought_signature`. Google also documents `generateContent` as legacy and recommends calling the native API directly. Setting `api_mode = "chat_completions"`, `responses`, or `responses_stateful` on a `gemini` provider is rejected at config validation.
+
+**Base URL**: Defaults to `https://generativelanguage.googleapis.com/v1beta`. It can be overridden with `base_url` for a gateway that speaks the native Interactions protocol.
+
 ### STT voice mode
 
 ```toml
@@ -261,16 +302,13 @@ frame_socket = "/run/frame_service/frame_service.sock"
 locale = "en-US"
 timezone = "UTC"
 
-[conversation_settings.agent]
-custom_instruction = ""
-
 [voice_settings.mode]
 input_mode = "stt"
 
 [voice_settings.classic.runtime]
 vad_backend = "rknn"
-vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-vad_helper_path = "/oem/usr/bin/rknn_vad"
+vad_model_path = "/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+vad_helper_path = "/usr/lib/aiden/rknn_vad"
 vad_speech_threshold = 0.5
 silence_ms = 550
 min_speech_ms = 300
@@ -339,8 +377,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | --------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `locale`                    | `en-US` (default) / `zh-CN` | Device-level language for Config Web and user-facing Agent responses, including progress messages and `<tts>` content. This is independent from `[voice_settings.classic.stt].language`, which only controls speech recognition. |
 | `timezone`                  | `UTC` (default) / supported IANA zone | Controller time zone used for the model-facing current date, `controller_timezone` state, and shell child processes. Config Web provides the supported IANA zone list. |
-| `custom_instruction`        | -                           | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior.                    |
-| `additional_prompt`         | -                           | Additional prompt field; appended after the base instruction at runtime                                                                                                                                   |
+| `prompt`                    | -                           | Prompt appended after the built-in Agent instruction at runtime. The built-in instruction is not configurable. |
 | `max_iterations`            | `-1`                        | Maximum number of tool-call loops per run; `-1` means unlimited                                                                                                                                           |
 | `context_prune_threshold`   | `0.5`                       | Fraction of the usable model input budget that triggers deterministic cleanup of stale state snapshots and older tool exchanges, including while one long-running tool loop is still executing. It cleans down to 6/7 of the trigger (so the default cleans from 50% to ~43%). Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.5`. The effective value is capped at `context_compaction_threshold`, so this cheap deterministic pass always gets a chance to free tokens before the LLM summary runs. A value of `1` or greater is rejected, as are `nan` and `inf`; a legacy absolute token count (for example `12000`) is detected on load, logged, and replaced by the default. |
 | `context_compaction_threshold` | `0.8`                    | Fraction of the usable model input budget at which the conversation is summarized into a compaction message. Must be `0` or within `(0, 1)`; `0` (or an omitted value) uses `0.8`. Values of `1` or greater, `nan`, and `inf` are rejected. Compaction itself has no token target: the transcript is reduced structurally by retaining head and tail messages and replacing the middle with one LLM summary, so the post-compaction size follows from the summary rather than from a budget. |
@@ -378,8 +415,8 @@ These fields apply to the `stt` input mode.
 | Field                           | Default                                                     | Description                                                                                                                                                                            |
 | ------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `vad_backend`                   | `rknn`                                                      | VAD backend: `rknn` uses NPU encoder + CPU LSTM/decoder, `cpu` uses a pure-CPU helper                                                                                                  |
-| `vad_model_path`                | `/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
-| `vad_helper_path`               | `/oem/usr/bin/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/oem/usr/bin/cpu_vad`                                                                                                         |
+| `vad_model_path`                | `/usr/lib/aiden/models/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn` | Silero VAD RKNN encoder model path; not used when `vad_backend="cpu"`                                                                                                                  |
+| `vad_helper_path`               | `/usr/lib/aiden/rknn_vad`                                     | VAD helper executable path; the CPU backend defaults to `/usr/lib/aiden/cpu_vad`                                                                                                         |
 | `vad_speech_threshold`          | `0.5`                                                       | Silero VAD speech probability threshold                                                                                                                                                |
 | `silence_ms`                    | `550`                                                       | How many milliseconds of silence before an utterance is considered finished                                                                                                            |
 | `min_speech_ms`                 | `300`                                                       | Minimum valid speech duration                                                                                                                                                          |
@@ -439,9 +476,9 @@ so switching is a one-line change instead of a re-entry of keys.
 
 | Field       | Description                                                                                        |
 | ----------- | -------------------------------------------------------------------------------------------------- |
-| `type`      | Required provider type: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `deepseek`, `ollama`, `fake`   |
+| `type`      | Required provider type: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `deepseek`, `gemini`, `ollama`, `fake`   |
 | `api_key`   | Literal API key, or `$VAR_NAME` to read it from an environment variable                              |
-| `base_url`  | Custom endpoint; supported by `openai`, `anthropic`, and `ollama`                                  |
+| `base_url`  | Custom endpoint; supported by `openai`, `anthropic`, `gemini`, and `ollama`                         |
 
 ```toml
 [model_settings.providers.openai-work]
@@ -485,10 +522,10 @@ built. When a section is named exactly like a provider type, the section wins.
 
 | Field                     | Description                                                                                                                                                                                                                                          |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`                | A provider type, or the name of a `[model_settings.providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `deepseek`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`); `deepseek` targets DeepSeek's OpenAI-compatible endpoint (`https://api.deepseek.com`). |
+| `provider`                | A provider type, or the name of a `[model_settings.providers.<name>]` section. Types: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `deepseek`, `gemini`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); `volcengine` targets Volcengine Ark (`https://ark.cn-beijing.volces.com/api/v3`); `deepseek` targets DeepSeek's OpenAI-compatible endpoint (`https://api.deepseek.com`); `gemini` targets the native Interactions endpoint (`https://generativelanguage.googleapis.com/v1beta`) and has no OpenAI-compatible transport. |
 | `model`                   | Model name; usually required except for `fake`                                                                                                                                                                                                       |
 | `api_key`                 | API key written directly                                                                                                                                                                                                                             |
-| `api_mode`                | Wire protocol. Omit it (or use `chat_completions`) for the existing Chat Completions path; `responses` sends full local context to OpenAI, OpenRouter, Volcengine Ark, or DeepSeek. OpenAI and Ark receive `store=false`; OpenRouter and DeepSeek omit both `store` and `previous_response_id` because their Responses endpoints are stateless. `responses_stateful` sends `store=true`, resends top-level `instructions`, and chains follow-up requests with `previous_response_id` while submitting only newly appended items. The local transcript remains authoritative for audit, compaction, session rotation, and recovery. Stateful mode is enabled for OpenAI and Volcengine Ark. Moonshot Kimi exposes Chat Completions rather than `/responses`; native Anthropic and Ollama transports also do not implement this protocol. Custom compatible gateways can use provider type `openai`. |
+| `api_mode`                | Wire protocol. For providers with a Chat Completions transport, omit it (or use `chat_completions`) for that path; `responses` sends full local context to OpenAI, OpenRouter, Volcengine Ark, or DeepSeek. `responses_stateful` chains stored Responses with `previous_response_id` where supported. Gemini defaults an omitted value to `interactions` (native local StepList, `store=false`) and also supports `interactions_stateful` (native stored interaction, `previous_interaction_id`); it rejects `chat_completions`. The local transcript remains authoritative for audit, compaction, session rotation, and recovery. |
 | `responses_context_management` | Provider-side Responses context policy. `compaction` sends OpenAI's token-based compaction array; `ark_context_edit` sends Volcengine Ark's object-shaped `context_management.edits` policy; empty/`disabled` omits provider context management. DeepSeek does not support provider-side context management. This policy is independent from local historical state/tool-result pruning. |
 | `responses_compact_threshold` | Optional token threshold sent with provider compaction. `0` lets the provider choose. |
 | `responses_context_edit_trigger` | Ark tool-call count that triggers `clear_tool_uses`; `0` uses the recommended value `10`. |
@@ -496,8 +533,8 @@ built. When a section is named exactly like a provider type, the section wins.
 | `responses_context_edit_clear_thinking` | When true, adds Ark's `clear_thinking` edit and removes previous thinking turns. |
 | `responses_truncation` | OpenAI-compatible Responses truncation policy. Empty/`disabled` preserves the API default; `auto` lets OpenAI or OpenRouter discard the oldest input. This field is not sent to Ark or DeepSeek. |
 | `responses_include` | Optional array of provider-supported Responses include values. In stateless reasoning mode, use `reasoning.encrypted_content` when supported so Aiden can replay the complete opaque reasoning item. DeepSeek does not support `include`; its plain-text reasoning items are replayed directly. Aiden uses `previous_response_id` for provider-managed chaining and intentionally does not expose the separate `conversation` resource ID: the local session transcript remains authoritative and must not be shared across sessions accidentally. |
-| `temperature`             | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value normally takes precedence. DeepSeek thinking mode does not use temperature, so Aiden omits it whenever `reasoning_effort` is not `none`. |
-| `reasoning_effort`        | Reasoning effort. Unset is auto. Native Anthropic maps supported effort values to adaptive thinking `output_config.effort` and preserves signed thinking blocks across tool-call turns. `minimal` is supported by OpenRouter and Volcengine Ark; `none` is supported by OpenRouter, OpenAI, Kimi, DeepSeek, Ollama, and the fake provider, but not by native Anthropic or Ark. DeepSeek defaults to `none` for faster device interactions; explicit `low`, `high`, or `max` enables thinking with `reasoning_content` replay. Other models may also pin a lighter default in `model_specs.go`; an explicit value always wins. |
+| `temperature`             | Sampling temperature. When unset, the default is model-dependent. Kimi K3 uses its required value, Gemini 3 models use Google's documented default of `1.0`, and other non-Gemini providers fall back to `0.2`. Native Gemini models without a registered default omit `generation_config.temperature` so Google can choose the model default. An explicit value normally takes precedence and is forwarded to Gemini; Google warns that lowering Gemini 3 temperature from `1.0` may cause looping or degraded performance on complex reasoning and math. DeepSeek thinking mode does not use temperature, so Aiden omits it whenever `reasoning_effort` is not `none`. |
+| `reasoning_effort`        | Reasoning effort. Unset is auto. Native Anthropic maps supported effort values to adaptive thinking `output_config.effort` and preserves signed thinking blocks across tool-call turns. Gemini maps the shared model-specific effort values to native Interactions `generation_config.thinking_level`; Gemini 3.8/3.7 and Gemini 2.5 accept `low`, `medium`, or `high`. `minimal` is supported by OpenRouter, Volcengine Ark, and selected Gemini 3 models. `none` is supported by OpenRouter, OpenAI, Kimi, DeepSeek, Ollama, and the fake provider, but not by native Anthropic, Ark, or Gemini Interactions. DeepSeek defaults to `none` for faster device interactions; explicit `low`, `high`, or `max` enables thinking with `reasoning_content` replay. Other models may also pin a lighter default in `model_specs.go`; an explicit value always wins. |
 | `reasoning_budget_tokens` | Optional exact reasoning-token budget for models that expose a numeric budget. `0` uses the model default or effort preset. It is currently translated only to Anthropic's native `thinking.budget_tokens` field. |
 | `max_response_tokens`     | Maximum output tokens passed to the model on request                                                                                                                                                                                                 |
 | `context_window`          | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback.                                                                        |
@@ -655,16 +692,17 @@ Config Web renders the selector when `agent.input_mode = "realtime"`. Provider
 credentials and model settings live in `[voice_settings.realtime.providers.<name>]`, so
 switching the selector never overwrites another provider's saved configuration.
 The current adapters are Qwen, Speko S2S, OpenAI Realtime, Google Gemini Live, and xAI Grok Voice.
+The session always starts with the built-in realtime voice instruction. If
+`[conversation_settings.agent].prompt` is non-empty, it is appended after that
+base instruction; it does not replace it.
 
 | Field | Default | Description |
 | ----- | ------- | ----------- |
 | `provider` | `qwen` | Named `[voice_settings.realtime.providers.<name>]` record. Bare `qwen`, `speko`, `openai`, `gemini`, or `xai` values remain accepted for compatibility. |
-| `instructions` | built-in voice model instruction | Session instructions. Leave empty to use the built-in default voice model instruction. |
 | `enable_speech_emotion` | `true` | Enable realtime speech emotion. |
 | `input_audio_format` / `output_audio_format` | `pcm` | Audio formats accepted by the realtime API. |
-| `turn_detection` | `server_vad` | Qwen server turn detector: `server_vad` or `smart_turn`. Provider-direct Speko sessions use the selected provider VAD and do not use this selector. |
-| `turn_detection_threshold` | empty | Optional Qwen server VAD threshold; ignored by Speko S2S. |
-| `turn_detection_silence_ms` | `800` | Qwen silence duration before a response is generated. Ignored by provider-direct Speko sessions, which use the selected provider VAD. |
+
+Legacy Qwen `turn_detection*` fields under this section are migrated to the selected Qwen provider record when the configuration is loaded or next saved.
 
 ## `[voice_settings.realtime.providers.<name>]`
 
@@ -679,6 +717,9 @@ api_key = "$DASHSCOPE_API_KEY"
 model = "qwen-audio-3.0-realtime-plus"
 region = "cn-beijing"
 voice = "longanqian"
+turn_detection = "server_vad"
+turn_detection_threshold = 0.5
+turn_detection_silence_ms = 800
 
 [voice_settings.realtime.providers.speko-main]
 type = "speko"
@@ -714,10 +755,15 @@ provider = "speko-main"
 | `api_key` | all | Provider credential; supports `$ENV_VAR` expansion. For Gemini Vertex, this is an OAuth access token. |
 | `model` / `voice` | all | Provider-specific model and voice. Speko requires an explicit model; voice may stay empty for the selected upstream default. |
 | `workspace_id` / `region` | Qwen | Optional DashScope routing settings. |
+| `turn_detection` | Qwen | Qwen turn detector: `server_vad` (default) or `smart_turn`. Config Web exposes this under the provider's Advanced Settings. |
+| `turn_detection_threshold` | Qwen `server_vad` | Optional Qwen VAD threshold; leave unset to use the service default. Ignored by `smart_turn`. |
+| `turn_detection_silence_ms` | Qwen `server_vad` | Optional silence duration before Qwen completes a turn; leave unset to use the service default. Ignored by `smart_turn`. |
 | `auth_mode` | Gemini | `api_key` (default) for the Gemini Developer API, or `vertex` for Vertex OAuth. |
 | `project_id` / `location` | Gemini Vertex | Required Google Cloud project and Vertex region, for example `us-central1`. |
 | `endpoint` | Qwen, OpenAI, Gemini, xAI | Optional WebSocket endpoint override, primarily for regional gateways and protocol tests. |
 | `realtime_protocol` | OpenAI | OpenAI Realtime wire schema: empty or `ga` (default) uses the current GA session payload; `legacy` (alias `beta`) uses the older `modalities`, `input_audio_format`, and `output_audio_format` fields required by some compatible gateways. Set this explicitly; the endpoint URL is never used to infer the protocol. |
+| `use_backend_agent` | realtime mode (`[voice_settings.realtime]`) | Controls tool ownership: omitted/`false` (default) disables agent communication tools and exposes the runtime tools that the backend agent would otherwise use directly to the realtime model; `true` enables the backend agent and exposes its communication tools (`*_agent_task`). This setting does not control provider reasoning, which remains a provider/model capability. |
+| `thinking_level` | Gemini | Thinking depth for Live Extended Thinking models: `LOW` (default), `MINIMAL`, `MEDIUM`, or `HIGH`. Only applies to models that support thinking; other models ignore it. |
 | `upstream_provider` | Speko | Required S2S upstream: `google` (or `gemini`) or `xai`, paired with `model`. Automatic routing is disabled because it may select an unsupported WebRTC route. OpenAI is not a supported Speko route in Aiden; use the top-level `openai` provider instead. |
 | `agent_id` / `base_url` | Speko | Optional Speko agent ID and API base URL override. |
 

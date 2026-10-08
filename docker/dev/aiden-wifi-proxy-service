@@ -1,7 +1,7 @@
 #!/bin/sh
 
-AGENT_BIN=${AGENT_BIN:-${AIDEN_AGENT_BIN:-/oem/usr/bin/agent}}
-ENV_RUN_BIN=${ENV_RUN_BIN:-${AIDEN_ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}}
+AGENT_BIN=${AGENT_BIN:-${AIDEN_AGENT_BIN:-/usr/lib/aiden/agent}}
+ENV_RUN_BIN=${ENV_RUN_BIN:-${AIDEN_ENV_RUN_BIN:-/usr/lib/aiden/aiden-managed-env-run}}
 LISTEN_ADDRESS=${LISTEN_ADDRESS:-${AIDEN_WIFI_PROXY_ADDRESS:-127.0.0.1:18080}}
 PROXY_CONFIG=${PROXY_CONFIG:-${AIDEN_WIFI_PROXY_CONFIG:-/userdata/system/wifi-proxies.json}}
 PROXY_ENVIRONMENT=${PROXY_ENVIRONMENT:-${AIDEN_WIFI_PROXY_ENVIRONMENT:-/run/wifi_proxy/proxy-env}}

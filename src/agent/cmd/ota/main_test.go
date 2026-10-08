@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -13,8 +14,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"aiden-agent/internal/ota"
 )
@@ -143,6 +146,81 @@ func TestDefaultRebootIsRealUnlessDryRun(t *testing.T) {
 	}
 }
 
+func TestSelfCheckCommandOutcomes(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		agentStatus     string
+		configWebStatus string
+		passed          int
+		warnings        int
+		failures        int
+		wantError       string
+	}{
+		{"healthy", "pass", "pass", 2, 0, 0, ""},
+		{"agent only failure", "warn", "pass", 1, 1, 0, ""},
+		{"config web failure", "pass", "fail", 1, 0, 1, "self-check failed: 1 required check(s)"},
+		{"both unavailable", "warn", "fail", 0, 1, 1, "self-check failed: 1 required check(s)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := filepath.Join(dir, "state")
+			configPath := filepath.Join(dir, "config.json")
+			if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			startedAt := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
+			// Probe classification is covered by internal/ota tests. Here the
+			// report isolates the command's success/error and reporting contract.
+			wantReport := ota.SelfCheckReport{
+				StartedAt:  startedAt,
+				FinishedAt: startedAt.Add(time.Second),
+				Items: map[string]ota.SelfCheckItem{
+					"agent_http": {Status: tt.agentStatus},
+					"config_web": {Status: tt.configWebStatus},
+				},
+				Passed: tt.passed, Warnings: tt.warnings, Failures: tt.failures,
+			}
+			probeCalls := 0
+			var out bytes.Buffer
+			err := runWithDependencies([]string{"self-check", "--config", configPath, "--state-dir", stateDir}, &out,
+				func(config *ota.UpdaterConfig) { config.StorageMountPoint = stateDir },
+				func(ctx context.Context, config ota.SelfCheckConfig) ota.SelfCheckReport {
+					probeCalls++
+					if err := ctx.Err(); err != nil {
+						t.Fatalf("probe context: %v", err)
+					}
+					if config != ota.DefaultSelfCheckConfig() {
+						t.Fatalf("probe config = %+v, want defaults", config)
+					}
+					return wantReport
+				})
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("self-check returned an error: %v", err)
+				}
+			} else if err == nil || err.Error() != tt.wantError {
+				t.Fatalf("self-check error = %v, want %q", err, tt.wantError)
+			}
+			if probeCalls != 1 {
+				t.Fatalf("probe calls = %d, want 1", probeCalls)
+			}
+			persisted, err := os.ReadFile(filepath.Join(stateDir, "health", "current.json"))
+			if err != nil {
+				t.Fatalf("read self-check report: %v", err)
+			}
+			for name, data := range map[string][]byte{"stdout": out.Bytes(), "persisted": persisted} {
+				var report ota.SelfCheckReport
+				if err := json.Unmarshal(data, &report); err != nil {
+					t.Fatalf("decode %s report: %v", name, err)
+				}
+				if !reflect.DeepEqual(report, wantReport) {
+					t.Fatalf("%s report = %+v, want %+v", name, report, wantReport)
+				}
+			}
+		})
+	}
+}
+
 func TestUpdateRunsManualCheckWhenNoUpdate(t *testing.T) {
 	fixture := newNoUpdateFixture(t)
 
@@ -159,6 +237,23 @@ func TestUpdateRunsManualCheckWhenNoUpdate(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"NoUpdate":true`) {
 		t.Fatalf("output = %q, want no update", out.String())
+	}
+}
+
+func TestCheckReturnsAvailabilityWithoutStartingUpdate(t *testing.T) {
+	fixture := newNoUpdateFixture(t)
+	var out bytes.Buffer
+	err := runWithConfig([]string{"check", "--config", fixture.configPath,
+		"--manifest-url", fixture.manifestURL, "--public-key", fixture.keyPath}, &out, fixture.configureStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result ota.CheckResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Available || result.Version == "" {
+		t.Fatalf("result=%+v", result)
 	}
 }
 
@@ -239,7 +334,7 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	if err := os.WriteFile(storageDevicePath, nil, 0o644); err != nil {
 		t.Fatalf("WriteFile(storage device) error = %v", err)
 	}
-	mountInfo := fmt.Sprintf("36 25 179:12 / %s rw,relatime - ext4 %s rw\n", stateDir, storageDevicePath)
+	mountInfo := fmt.Sprintf("36 25 179:10 / %s rw,relatime - ext4 %s rw\n", stateDir, storageDevicePath)
 	if err := os.WriteFile(mountInfoPath, []byte(mountInfo), 0o644); err != nil {
 		t.Fatalf("WriteFile(mountinfo) error = %v", err)
 	}
@@ -252,7 +347,7 @@ func newNoUpdateFixture(t *testing.T) noUpdateFixture {
 	}
 
 	manifest := ota.Manifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Channel:       "stable",
 		Version:       version,
 		BuildTime:     buildTime,
@@ -322,7 +417,7 @@ func TestVerifyManifestSupportsRemoteURL(t *testing.T) {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	manifest := ota.Manifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Channel:       "stable",
 		Version:       "20260521-120000-abcdef0",
 		BuildTime:     "2026-05-21T12:00:00Z",

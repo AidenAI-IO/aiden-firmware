@@ -234,12 +234,12 @@ func emptyFirmwareInfo() map[string]any {
 		"version": "", "build_time": "", "phase": "", "health_status": "", "health_error": "",
 		"current_version": "", "current_build_time": "", "target_version": "", "target_build_time": "",
 		"previous_version": "", "previous_build_time": "", "running_slot": "", "target_slot": "",
-		"components": map[string]string{"boot": "", "oem": "", "rootfs": ""},
+		"components": map[string]string{"boot": "", "rootfs": ""},
 	}
 }
 
 func firmwareComponentVersions(state map[string]any, slot string) map[string]string {
-	result := map[string]string{"boot": "", "oem": "", "rootfs": ""}
+	result := map[string]string{"boot": "", "rootfs": ""}
 	slots, _ := state["slots"].(map[string]any)
 	slotState, _ := slots[slot].(map[string]any)
 	partitions, _ := slotState["partitions"].(map[string]any)
@@ -252,6 +252,9 @@ func firmwareComponentVersions(state map[string]any, slot string) map[string]str
 
 func (s *Server) firmwareInfo() map[string]any {
 	data, err := readFileLimited(s.options.OTAStatePath, maxAgentConfigSize)
+	if os.IsNotExist(err) {
+		return s.factoryFirmwareInfo()
+	}
 	if err != nil {
 		return emptyFirmwareInfo()
 	}
@@ -308,6 +311,36 @@ func (s *Server) firmwareInfo() map[string]any {
 	}
 }
 
+// A fresh factory image has no OTA transaction state yet. Read its shipped
+// baseline without creating state or invoking the updater from a status GET.
+// Existing (including unreadable or malformed) state must never be replaced
+// with a potentially stale factory version.
+func (s *Server) factoryFirmwareInfo() map[string]any {
+	info := emptyFirmwareInfo()
+	data, err := readFileLimited(s.options.OTAConfigPath, maxAgentConfigSize)
+	if err != nil {
+		return info
+	}
+	var config map[string]any
+	if json.Unmarshal(data, &config) != nil {
+		return info
+	}
+	version := strings.TrimSpace(jsonString(config, "factory_version"))
+	if version == "" {
+		return info
+	}
+	build := strings.TrimSpace(jsonString(config, "factory_build_time"))
+	info["version"], info["current_version"] = version, version
+	info["build_time"], info["current_build_time"] = build, build
+	info["phase"] = "factory"
+	// Both factory slots contain the boot/rootfs baseline from the same release.
+	info["components"] = map[string]string{"boot": version, "rootfs": version}
+	if cmdline, err := readFileLimited(s.options.CmdlinePath, 16*1024); err == nil {
+		info["running_slot"] = currentSlot(string(cmdline))
+	}
+	return info
+}
+
 func jsonString(values map[string]any, key string) string {
 	value, _ := values[key].(string)
 	return value
@@ -345,9 +378,9 @@ func currentSlot(cmdline string) string {
 		if strings.HasPrefix(field, "root=") {
 			value := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(field, "root=")))
 			switch {
-			case value == "partlabel=rootfs_a", value == "rootfs_a", value == "/dev/mmcblk0p9", strings.HasSuffix(value, "/rootfs_a"):
+			case value == "partlabel=rootfs_a", value == "rootfs_a", value == "/dev/mmcblk0p7", strings.HasSuffix(value, "/rootfs_a"):
 				rootSlot = "a"
-			case value == "partlabel=rootfs_b", value == "rootfs_b", value == "/dev/mmcblk0p10", strings.HasSuffix(value, "/rootfs_b"):
+			case value == "partlabel=rootfs_b", value == "rootfs_b", value == "/dev/mmcblk0p8", strings.HasSuffix(value, "/rootfs_b"):
 				rootSlot = "b"
 			}
 		}

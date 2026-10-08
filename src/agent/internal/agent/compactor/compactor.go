@@ -97,8 +97,8 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	if session == nil {
 		return nil, false, nil
 	}
-	messageList := session.CloneMessageList()
-	tokensBefore := estimateMessageListTokenUsage(messageList)
+	messageList, sourceVersion := session.MessageSnapshot()
+	tokensBefore := session.TokenCount()
 	c.lastCompactionStats = CompactionStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 
 	HeadN := c.ProtectRule.HeadN
@@ -161,7 +161,7 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	})
 	newMessageList = append(newMessageList, tails...)
 	c.lastCompactionStats.TokensAfter = estimateMessageListTokenUsage(newMessageList)
-	return newContextRevision(session, newMessageList)
+	return newContextRevision(session, newMessageList, sourceVersion)
 }
 
 // PruneHistorical removes expired state snapshots and bounds old tool results
@@ -189,8 +189,8 @@ func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targe
 	if session == nil {
 		return nil, false, nil
 	}
-	messageList := session.CloneMessageList()
-	tokensBefore := estimateMessageListTokenUsage(messageList)
+	messageList, sourceVersion := session.MessageSnapshot()
+	tokensBefore := session.TokenCount()
 	c.lastPruneStats = HistoricalPruneStats{TokensBefore: tokensBefore, TokensAfter: tokensBefore}
 	if targetTokens <= 0 {
 		return nil, false, nil
@@ -216,19 +216,27 @@ func (c *Compactor) pruneForBudget(session *contextmanager.ContextManager, targe
 		c.lastPruneStats.HistoricalToolResultsPruned == 0 &&
 		c.lastPruneStats.CurrentTurnStatesDropped == 0 &&
 		c.lastPruneStats.CurrentTurnToolExchangesPruned == 0 {
+		c.lastPruneStats.TokensAfter = tokensBefore
 		return nil, false, nil
 	}
-	return newContextRevision(session, messageList)
+	return newContextRevision(session, messageList, sourceVersion)
 }
 
-func newContextRevision(session *contextmanager.ContextManager, messageList []messages.Message) (*contextmanager.ContextManager, bool, error) {
+func newContextRevision(session *contextmanager.ContextManager, messageList []messages.Message, sourceVersion uint64) (*contextmanager.ContextManager, bool, error) {
 	// A revision starts a fresh provider conversation. Retaining a Responses
 	// response ID would chain the rewritten local transcript onto stale provider
 	// state. The original session remains on disk for audit and recovery.
+	//
+	// InteractionsSteps are deliberately kept. They are not server-side state
+	// pointers like a Responses ID: they are the Gemini thought and function-call
+	// steps replayed inside the next request, and the provider validates every
+	// replayed function call against the thought signature it was returned with.
+	// Dropping them here would leave the retained tool exchanges in exactly the
+	// shape Gemini rejects.
 	for i := range messageList {
 		messageList[i].ResponsesResponseID = ""
 	}
-	newManager, err := contextmanager.NewContextManagerRevisionFromMessageList(session, messageList)
+	newManager, err := contextmanager.NewContextManagerRevisionFromMessageListAtVersion(session, messageList, sourceVersion)
 	if err != nil {
 		return nil, false, err
 	}
@@ -470,6 +478,9 @@ func compactCurrentTurnToolExchange(callMessage, resultMessage messages.Message)
 	compactedCall.ResponsesResponseID = ""
 	compactedCall.ResponsesOutputItems = nil
 	compactedCall.ResponsesAssistantPhase = ""
+	// InteractionsSteps stay because the provider still requires the thought
+	// signatures that accompany the retained function calls; only the bulky tool
+	// payloads below are replaced with placeholders.
 	for i := range compactedCall.ToolCalls {
 		compactedCall.ToolCalls[i].Arguments = `{}`
 	}

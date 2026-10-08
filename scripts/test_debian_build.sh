@@ -32,7 +32,7 @@ help_output=$("${BUILD_SCRIPT}" --help)
 grep -Fq 'output/debian/image/update.img' <<<"${help_output}" \
     || fail "help does not describe the final update.img path"
 for artifact in \
-    boot_a.img.tar.gz boot_b.img.tar.gz manifest.json oem.img.tar.gz \
+    boot_a.img.tar.gz boot_b.img.tar.gz manifest.json \
     rootfs.img.tar.gz update.img.tar.gz; do
     grep -Fq "${artifact}" <<<"${help_output}" \
         || fail "help does not describe local release artifact ${artifact}"
@@ -86,7 +86,7 @@ manifest_line=$(grep -n 'Generating a locally signed OTA manifest' \
 image_dir=${TEST_ROOT}/images
 output_dir=${TEST_ROOT}/output
 mkdir -p "${image_dir}"
-for image in boot_a.img boot_b.img oem.img rootfs.img update.img; do
+for image in boot_a.img boot_b.img rootfs.img update.img; do
     printf '%s\n' "${image}" >"${image_dir}/${image}"
 done
 compress_release_assets \
@@ -112,7 +112,7 @@ jq -e '
     and all(.image_sha256 | test("^[0-9a-f]{64}$"))
 ' "${output_dir}/manifest.json" >/dev/null \
     || fail "manifest.json does not describe compressed image assets"
-for image in boot_a.img boot_b.img oem.img rootfs.img update.img; do
+for image in boot_a.img boot_b.img rootfs.img update.img; do
     archive=${output_dir}/${image}.tar.gz
     [ -s "${archive}" ] || fail "local release archive is missing: ${archive}"
     [ "$(tar -tzf "${archive}")" = "${image}" ] \

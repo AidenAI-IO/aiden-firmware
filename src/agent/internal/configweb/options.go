@@ -15,8 +15,13 @@ const (
 	defaultAgentConfigPath           = "/userdata/agent/agent.toml"
 	defaultWiFiConfigPath            = "/userdata/wpa_supplicant.conf"
 	defaultWiFiConfigEnvironmentPath = "/run/aiden/wpa_supplicant-config.env"
+	defaultWiFiRegionStatePath       = "/userdata/system/wifi-region.json"
 	defaultSystemEnvPath             = "/userdata/system/env"
-	defaultWebRoot                   = "/oem/usr/share/aiden/config-web"
+	defaultWebRoot                   = "/usr/share/aiden/config-web"
+	defaultMaintenanceLockPath       = "/run/aiden/backup.lock"
+	defaultBackupJobStateDir         = "/run/aiden/backup/jobs"
+	defaultUSBAddress                = "192.168.42.1"
+	defaultUSBSubnet                 = "192.168.42.0/24"
 )
 
 // Options contains the filesystem and process integration points used by the
@@ -30,6 +35,8 @@ type Options struct {
 	WiFiConfigEnvironmentPath string
 	WiFiInterface             string
 	WiFiBackend               string
+	WiFiRegionStatePath       string
+	WiFiRegionAutoApplyBeacon bool
 	OTAStatePath              string
 	CmdlinePath               string
 	SystemEnvPath             string
@@ -38,6 +45,20 @@ type Options struct {
 	LocalProxyEnvironmentPath string
 	StorageStatePath          string
 	WebRoot                   string
+	BackupUserdataRoot        string
+	BackupSDRoot              string
+	MaintenanceLockPath       string
+	BackupJobStateDir         string
+	USBAddress                string
+	USBSubnet                 string
+	USBInterface              string
+	HardwareIDPath            string
+	SystemctlBinary           string
+	RootHomeMountPoint        string
+	RootHomeScript            string
+	BluetoothStateMountPoint  string
+	BluetoothStateScript      string
+	OTAConfigPath             string
 
 	AgentBinary            string
 	AgentInitScript        string
@@ -45,10 +66,14 @@ type Options struct {
 	WiFiProxyInitScript    string
 	AgentHTTPBaseURL       string
 	OTABinary              string
+	HybridUpdateService    string
+	HybridUpdateMarkerPath string
+	BootIDPath             string
 	EnvRunBinary           string
 	OTAUpdateLockPath      string
 	OTAUpdateLogPath       string
 	OTAHealthLogPath       string
+	DmesgBinary            string
 }
 
 func DefaultOptions() Options {
@@ -57,13 +82,14 @@ func DefaultOptions() Options {
 		if executable, err := os.Executable(); err == nil {
 			agentBinary = executable
 		} else {
-			agentBinary = "/oem/usr/bin/agent"
+			agentBinary = "/usr/lib/aiden/agent"
 		}
 	}
 	return Options{
 		BindAddress:               "0.0.0.0",
 		Port:                      80,
 		AgentConfigPath:           defaultAgentConfigPath,
+		WiFiRegionStatePath:       defaultWiFiRegionStatePath,
 		WiFiConfigPath:            defaultWiFiConfigPath,
 		WiFiConfigEnvironmentPath: defaultWiFiConfigEnvironmentPath,
 		WiFiInterface:             "wlan0",
@@ -76,6 +102,20 @@ func DefaultOptions() Options {
 		LocalProxyEnvironmentPath: envOrDefault("AIDEN_WIFI_PROXY_ENVIRONMENT", wifiproxy.DefaultEnvironmentPath),
 		StorageStatePath:          "/run/aiden/storage.state",
 		WebRoot:                   defaultWebRoot,
+		BackupUserdataRoot:        "/userdata",
+		BackupSDRoot:              "/mnt/sdcard",
+		MaintenanceLockPath:       defaultMaintenanceLockPath,
+		BackupJobStateDir:         defaultBackupJobStateDir,
+		USBAddress:                defaultUSBAddress,
+		USBSubnet:                 defaultUSBSubnet,
+		USBInterface:              "usb0",
+		HardwareIDPath:            envOrDefault("AIDEN_HARDWARE_ID_PATH", "/sys/firmware/devicetree/base/serial-number"),
+		SystemctlBinary:           envOrDefault("AIDEN_SYSTEMCTL_BIN", "systemctl"),
+		RootHomeMountPoint:        "/root",
+		RootHomeScript:            envOrDefault("AIDEN_ROOT_HOME_SCRIPT", "/usr/lib/aiden/aiden-root-home"),
+		BluetoothStateMountPoint:  "/var/lib/bluetooth",
+		BluetoothStateScript:      envOrDefault("AIDEN_BLUETOOTH_STATE_SCRIPT", "/usr/lib/aiden/aiden-bluetooth-state"),
+		OTAConfigPath:             envOrDefault("AIDEN_OTA_CONFIG", "/userdata/debian/ota/config.json"),
 		AgentBinary:               agentBinary,
 		AgentInitScript:           envOrDefault("AIDEN_AGENT_INIT_SCRIPT", "/usr/lib/aiden/aiden-agent-control"),
 		FrameServiceInitScript:    envOrDefault("AIDEN_FRAME_SERVICE_INIT_SCRIPT", "/usr/lib/aiden/aiden-frame-control"),
@@ -83,12 +123,16 @@ func DefaultOptions() Options {
 		// Leave the Agent HTTP target empty by default so the portal follows the
 		// address reported by the agent control helper. AIDEN_AGENT_HTTP_BASE_URL
 		// remains an explicit override for development and tests.
-		AgentHTTPBaseURL:  strings.TrimSpace(os.Getenv("AIDEN_AGENT_HTTP_BASE_URL")),
-		OTABinary:         envOrDefault("AIDEN_OTA_BIN", "/oem/usr/bin/ota"),
-		EnvRunBinary:      envOrDefault("AIDEN_ENV_RUN_BIN", "/oem/usr/bin/aiden-env-run"),
-		OTAUpdateLockPath: envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", "/tmp/config_web_ota_update.lock"),
-		OTAUpdateLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", "/userdata/ota/config_web_ota_update.log"),
-		OTAHealthLogPath:  envOrDefault("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", "/var/log/ota/ota.log"),
+		AgentHTTPBaseURL:       strings.TrimSpace(os.Getenv("AIDEN_AGENT_HTTP_BASE_URL")),
+		OTABinary:              envOrDefault("AIDEN_OTA_BIN", "/usr/lib/aiden/ota"),
+		HybridUpdateService:    envOrDefault("AIDEN_HYBRID_UPDATE_SERVICE", "aiden-hybrid-update.service"),
+		HybridUpdateMarkerPath: envOrDefault("AIDEN_HYBRID_UPDATE_MARKER", "/userdata/ota/hybrid-update.pending"),
+		BootIDPath:             envOrDefault("AIDEN_BOOT_ID_PATH", "/proc/sys/kernel/random/boot_id"),
+		EnvRunBinary:           envOrDefault("AIDEN_ENV_RUN_BIN", "/usr/lib/aiden/aiden-managed-env-run"),
+		OTAUpdateLockPath:      envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOCK", "/tmp/config_web_ota_update.lock"),
+		OTAUpdateLogPath:       envOrDefault("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", "/userdata/ota/config_web_ota_update.log"),
+		OTAHealthLogPath:       envOrDefault("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", "/var/log/ota/ota.log"),
+		DmesgBinary:            envOrDefault("AIDEN_CONFIG_WEB_DMESG_BIN", "dmesg"),
 	}
 }
 
@@ -127,9 +171,37 @@ func (o Options) Validate() error {
 		"local-proxy-environment": o.LocalProxyEnvironmentPath,
 		"storage-state":           o.StorageStatePath,
 		"web-root":                o.WebRoot,
+		"backup-userdata-root":    o.BackupUserdataRoot,
+		"backup-sd-root":          o.BackupSDRoot,
+		"maintenance-lock":        o.MaintenanceLockPath,
+		"backup-job-state-dir":    o.BackupJobStateDir,
+		"usb-address":             o.USBAddress,
+		"usb-subnet":              o.USBSubnet,
+		"systemctl":               o.SystemctlBinary,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("--%s must not be empty", name)
+		}
+	}
+	usbAddress := net.ParseIP(strings.TrimSpace(o.USBAddress))
+	if usbAddress == nil {
+		return fmt.Errorf("invalid --usb-address %q", o.USBAddress)
+	}
+	_, usbNetwork, err := net.ParseCIDR(strings.TrimSpace(o.USBSubnet))
+	if err != nil {
+		return fmt.Errorf("invalid --usb-subnet: %w", err)
+	}
+	if !usbNetwork.Contains(usbAddress) {
+		return fmt.Errorf("--usb-address must belong to --usb-subnet")
+	}
+	for name, value := range map[string]string{
+		"backup-userdata-root": o.BackupUserdataRoot,
+		"backup-sd-root":       o.BackupSDRoot,
+		"maintenance-lock":     o.MaintenanceLockPath,
+		"backup-job-state-dir": o.BackupJobStateDir,
+	} {
+		if !filepath.IsAbs(value) || filepath.Clean(value) != value {
+			return fmt.Errorf("--%s must be an absolute clean path", name)
 		}
 	}
 	if o.LocalProxyAddress != "" {

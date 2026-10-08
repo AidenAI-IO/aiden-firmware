@@ -181,6 +181,30 @@ var displayModelsByProvider = map[string][]ModelDisplayInfo{
 		// 	},
 		// },
 	},
+	"gemini": {
+		{
+			ID: "gemini-3.8-flash",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Most intelligent Flash model for complex coding and agentic workflows, 1M context",
+				localeSimplifiedChinese: "最智能的 Flash 模型，适用于复杂编程和智能体工作流，100万上下文",
+			},
+			Recommended: true,
+		},
+		{
+			ID: "gemini-2.5-pro",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Advanced 2.5 model for complex reasoning and coding, 1M context",
+				localeSimplifiedChinese: "适用于复杂推理和编程的 2.5 高级模型，100万上下文",
+			},
+		},
+		{
+			ID: "gemini-2.5-flash",
+			Descriptions: map[string]string{
+				localeEnglishUS:         "Best price-performance for low-latency, high-volume reasoning, 1M context",
+				localeSimplifiedChinese: "最佳性价比，低延迟高吞吐推理，100万上下文",
+			},
+		},
+	},
 	"openrouter": {
 		{
 			ID: "anthropic/claude-fable-5",

@@ -97,11 +97,11 @@ func RunSelfCheck(ctx context.Context, cfg SelfCheckConfig) SelfCheckReport {
 	}
 	frameCLI := cfg.FrameCLI
 	if frameCLI == "" {
-		frameCLI = "/oem/usr/bin/frame_service_cli"
+		frameCLI = "/usr/lib/aiden/frame_service_cli"
 	}
 	audioCLI := cfg.AudioCLI
 	if audioCLI == "" {
-		audioCLI = "/oem/usr/bin/audio_service_cli"
+		audioCLI = "/usr/lib/aiden/audio_service_cli"
 	}
 	curlBin := cfg.Curl
 	if curlBin == "" {
@@ -121,11 +121,12 @@ func RunSelfCheck(ctx context.Context, cfg SelfCheckConfig) SelfCheckReport {
 	}
 	command("frame_service", true, frameCLI, "--socket", "/run/frame_service/frame_service.sock", "health")
 	command("audio_service", true, audioCLI, "--socket", "/run/audio_service/audio_service.sock", "health")
-	command("agent_http", true, curlBin, "--fail", "--silent", "--max-time", "3", "http://127.0.0.1:8080/health")
-	// Config Web is started after S54ota on the production image. It is
-	// therefore diagnostic-only here; requiring it would make a healthy Agent
-	// fail its own boot confirmation solely because rcS has not reached S56.
-	command("config_web", false, curlBin, "--fail", "--silent", "--max-time", "3", configWebURL)
+	// Agent startup is optional during OTA validation. A bad persisted Agent
+	// configuration must not turn an otherwise usable update into a rollback.
+	command("agent_http", false, curlBin, "--fail", "--silent", "--max-time", "3", "http://127.0.0.1:8080/health")
+	// Config Web is the recovery entry point when the Agent cannot start, so it
+	// must remain available for the update to be considered healthy.
+	command("config_web", true, curlBin, "--fail", "--silent", "--max-time", "3", configWebURL)
 	bleCtx, bleCancel := context.WithTimeout(ctx, cfg.CommandTimeout)
 	bleStatus, bleErr := ble.RequestStatus(bleCtx, bleSocketPath)
 	bleCancel()

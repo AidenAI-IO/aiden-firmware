@@ -159,7 +159,9 @@ func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.Mess
 // GenerateContentFromMessageList preserves provider-specific transcript
 // metadata through the runtime's ModelManager wrapper. Responses models need
 // this path for opaque stateless output replay and previous_response_id
-// chaining; ordinary models fall back to the common LangChain message shape.
+// chaining, and the native Gemini transport needs it to replay stored
+// Interactions steps with their thought signatures; ordinary models fall back to
+// the common LangChain message shape.
 func (m *ModelManager) GenerateContentFromMessageList(ctx context.Context, messageList []messages.Message, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	if next := m.replacement.Load(); next != nil {
 		return next.GenerateContentFromMessageList(ctx, messageList, options...)
@@ -340,6 +342,9 @@ func modelAPIEndpoint(provider, baseURL string) string {
 		return arkBeijingBaseURL
 	case "deepseek":
 		return deepseekBaseURL
+	case "gemini":
+		// Both native modes share one root; there is no compatible endpoint.
+		return geminiInteractionsBaseURL
 	case "ollama":
 		return "http://localhost:11434"
 	default:
@@ -353,6 +358,9 @@ func modelAPIShape(provider, apiMode string) string {
 		return "messages"
 	case "ollama":
 		return "ollama"
+	case "gemini":
+		// Gemini only speaks Interactions here, including when api_mode is unset.
+		return "interactions"
 	}
 	if normalized := normalizeModelAPIMode(apiMode); normalized == modelAPIModeResponses || normalized == modelAPIModeResponsesStateful {
 		return "responses"

@@ -308,8 +308,8 @@ type Config struct {
 	LiveActivity               LiveActivityConfig            `toml:"live_activity,omitempty"`
 	Locale                     string                        `toml:"locale,omitempty"`
 	Timezone                   string                        `toml:"timezone,omitempty"`
-	Instruction                string                        `toml:"custom_instruction,omitempty"`
-	AdditionalPrompt           string                        `toml:"additional_prompt,omitempty"`
+	Instruction                string                        `toml:"-"` // Built-in runtime instruction; the legacy custom_instruction key is read but ignored (see applyRuntimeInstructionDefault).
+	Prompt                     string                        `toml:"prompt,omitempty"`
 	InputMode                  string                        `toml:"input_mode,omitempty"`  // "stt" or "realtime"
 	VADBackend                 string                        `toml:"vad_backend,omitempty"` // "rknn", "cpu"
 	VADModelPath               string                        `toml:"vad_model_path,omitempty"`
@@ -435,15 +435,20 @@ type VoiceModelConfig struct {
 	Endpoint               string   `toml:"endpoint,omitempty"`
 	BaseURL                string   `toml:"base_url,omitempty"`
 	RealtimeProtocol       string   `toml:"realtime_protocol,omitempty"`
+	ThinkingLevel          string   `toml:"thinking_level,omitempty"`
 	Voice                  string   `toml:"voice,omitempty"`
-	Instructions           string   `toml:"instructions,omitempty"`
 	EnableSpeechEmotion    *bool    `toml:"enable_speech_emotion,omitempty"`
 	InputAudioFormat       string   `toml:"input_audio_format,omitempty"`
 	OutputAudioFormat      string   `toml:"output_audio_format,omitempty"`
 	TurnDetection          string   `toml:"turn_detection,omitempty"`
 	TurnDetectionThreshold *float64 `toml:"turn_detection_threshold,omitempty"`
 	TurnDetectionSilenceMs int      `toml:"turn_detection_silence_ms,omitempty"`
-	ActiveProviderRecord   string   `toml:"-"`
+	// UseBackendAgent controls whether the realtime model can delegate work to
+	// the backend agent. When disabled, the runtime tools that the backend agent
+	// would otherwise use are exposed directly to the realtime model. Provider
+	// reasoning is determined independently by the provider/model.
+	UseBackendAgent      bool   `toml:"use_backend_agent,omitempty"`
+	ActiveProviderRecord string `toml:"-"`
 }
 
 func (c VoiceModelConfig) Enabled() bool { return strings.TrimSpace(c.APIKey) != "" }
@@ -452,6 +457,13 @@ func (c VoiceModelConfig) Validate() error {
 	provider := strings.ToLower(strings.TrimSpace(c.Provider))
 	if provider != "" && !realtimevoice.IsProvider(provider) {
 		return fmt.Errorf("voice_model.provider: unsupported provider %q", c.Provider)
+	}
+	if level := strings.ToUpper(strings.TrimSpace(c.ThinkingLevel)); level != "" {
+		switch level {
+		case "MINIMAL", "LOW", "MEDIUM", "HIGH":
+		default:
+			return fmt.Errorf("voice_model.thinking_level: unsupported value %q (use LOW, MEDIUM, HIGH, or MINIMAL)", c.ThinkingLevel)
+		}
 	}
 	if provider == "speko" {
 		upstream := strings.TrimSpace(c.UpstreamProvider)
@@ -492,11 +504,10 @@ func (c VoiceModelConfig) Validate() error {
 			return fmt.Errorf("voice_model.base_url: invalid HTTP URL %q", c.BaseURL)
 		}
 	}
-	if provider != "speko" && c.TurnDetection != "" && c.TurnDetection != "server_vad" && c.TurnDetection != "smart_turn" {
-		return fmt.Errorf("voice_model.turn_detection: unsupported type %q", c.TurnDetection)
-	}
-	if c.TurnDetectionSilenceMs < 0 {
-		return errors.New("voice_model.turn_detection_silence_ms must be >= 0")
+	if provider == realtimevoice.ProviderQwen {
+		if err := validateQwenTurnDetection(c.TurnDetection, c.TurnDetectionThreshold, c.TurnDetectionSilenceMs, "voice_model"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -822,11 +833,11 @@ type ModelConfig struct {
 	Model    string `toml:"model"`
 	BaseURL  string `toml:"-"`
 	APIKey   string `toml:"api_key,omitempty"`
-	// APIMode selects the wire protocol for OpenAI-compatible providers. Empty
-	// and "chat_completions" preserve the historical default; "responses"
-	// sends the locally maintained context as Responses input items;
-	// "responses_stateful" chains provider-stored responses with
-	// previous_response_id.
+	// APIMode selects the model wire protocol. Empty and "chat_completions"
+	// preserve the historical default; "responses" and "responses_stateful"
+	// select OpenAI-compatible Responses transports. Gemini also supports its
+	// native "interactions" (local StepList) and "interactions_stateful"
+	// (previous_interaction_id) modes.
 	APIMode string `toml:"api_mode,omitempty"`
 	// ResponsesContextManagement selects provider-side context management for
 	// Responses requests. "compaction" is OpenAI's token-based policy and
@@ -847,8 +858,9 @@ type ModelConfig struct {
 	ResponsesInclude []string `toml:"responses_include,omitempty"`
 	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
 	// Unset means the effective value is resolved at runtime from model metadata
-	// (see applyModelTemperatureDefault); an explicit value, including 0, is
-	// always honored and sent to the provider.
+	// or left to providers whose defaults Aiden does not know (see
+	// applyModelTemperatureDefault). An explicit value, including 0, is always
+	// honored and sent to the provider.
 	Temperature       *float64 `toml:"temperature,omitempty"`
 	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool     `toml:"log_raw_http,omitempty"`
@@ -873,10 +885,10 @@ func (m ModelConfig) ResponsesProviderCompactionEnabled() bool {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction      string
-	AdditionalPrompt string
-	Locale           string
-	Timezone         string
+	Instruction string
+	Prompt      string
+	Locale      string
+	Timezone    string
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -941,7 +953,7 @@ func resolveBundledSkillsDir() string {
 }
 
 func bundledSkillsDirCandidates() []string {
-	return []string{"/oem/usr/share/aiden/skills"}
+	return []string{"/usr/share/aiden/skills"}
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -950,6 +962,7 @@ func LoadConfig(path string) (Config, error) {
 	if _, err := decodeConfigFile(path, &cfg); err != nil {
 		return Config{}, err
 	}
+	applyRuntimeInstructionDefault(&cfg)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -1034,12 +1047,14 @@ func applyDeviceConfigDefaults(cfg *Config, metadata toml.MetaData) {
 }
 
 // applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
-// the model when the user has not set it. The default is sourced
-// from the model's metadata (some models, e.g. Kimi K3, require a fixed
-// temperature) and falls back to defaultModelTemperature. An explicit
-// model.temperature always takes precedence. This is only called in
-// LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps temperature unset
-// so the editor displays empty and saves without baking defaults into agent.toml.
+// the model when the user has not set it. The default is sourced from the
+// model's metadata (some models, e.g. Kimi K3, require a fixed temperature).
+// Native Gemini models without a documented default stay unset so Google can
+// choose the model default; other providers fall back to
+// defaultModelTemperature. An explicit model.temperature always takes
+// precedence. This is only called in LoadRuntimeConfig; LoadResolvedConfig
+// (config editor) keeps temperature unset so the editor displays empty and saves
+// without baking defaults into agent.toml.
 func applyRuntimeModelTemperatureDefaults(cfg *Config) {
 	if cfg == nil {
 		return
@@ -1055,6 +1070,14 @@ func applyModelTemperatureDefault(m *ModelConfig) {
 		// Copy the value rather than aliasing the registry pointer.
 		temp := *spec.DefaultTemperature
 		m.Temperature = &temp
+		return
+	}
+	// Some native providers recommend using each model's own default. If the
+	// model registry has no reliable value for one of those providers, omit
+	// temperature rather than substituting Aiden's cross-provider fallback. The
+	// provider has already been resolved by applyRuntimeModelProviders, including
+	// named provider records.
+	if modelProviderUsesProviderTemperatureDefault(m.Provider) {
 		return
 	}
 	temp := defaultModelTemperature
@@ -1199,6 +1222,12 @@ func applyVoiceModelProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	}
 	if !metadata.IsDefined("voice_model", "turn_detection") {
 		cfg.VoiceModel.TurnDetection = ""
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection_threshold") {
+		cfg.VoiceModel.TurnDetectionThreshold = nil
+	}
+	if !metadata.IsDefined("voice_model", "turn_detection_silence_ms") {
+		cfg.VoiceModel.TurnDetectionSilenceMs = 0
 	}
 }
 
@@ -1345,6 +1374,11 @@ func inspectConfigFilePath(path string) (bool, error) {
 	return true, nil
 }
 
+// applyRuntimeInstructionDefault pins Config.Instruction to the built-in runtime
+// instruction. The field is no longer file-configurable (the legacy
+// `custom_instruction` key is read and ignored), so this is the single place
+// that decides the base instruction for every loader, including the ones that
+// do not start from DefaultConfig.
 func applyRuntimeInstructionDefault(cfg *Config) {
 	if cfg == nil {
 		return
@@ -1442,7 +1476,9 @@ func groupedConfigToRuntime(grouped map[string]interface{}) map[string]interface
 	mergeRootTable(grouped, result, []string{"voice_settings", "mode"})
 	mergeRootTable(grouped, result, []string{"voice_settings", "classic", "runtime"})
 	if realtime, ok := tableAt(grouped, "voice_settings", "realtime"); ok {
-		copyWithoutKey(realtime, result, "voice_model", "providers")
+		// Realtime session instructions now come from the built-in base plus
+		// conversation_settings.agent.prompt, not this removed voice field.
+		copyWithoutKey(realtime, result, "voice_model", "providers", "instructions")
 	}
 	moveTable([]string{"voice_settings", "classic", "stt"}, "stt")
 	moveTable([]string{"voice_settings", "classic", "stt", "providers"}, "stt_providers")
@@ -1725,13 +1761,26 @@ func (c Config) Validate() error {
 	}
 	apiMode := normalizeModelAPIMode(c.Model.APIMode)
 	if apiMode == "" {
-		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions, responses, or responses_stateful)", c.Model.APIMode)
+		return fmt.Errorf("invalid model.api_mode: %s (expected chat_completions, responses, responses_stateful, interactions, or interactions_stateful)", c.Model.APIMode)
 	}
 	if (apiMode == modelAPIModeResponses || apiMode == modelAPIModeResponsesStateful) && !c.modelProviderSupportsResponses() {
 		return fmt.Errorf("model.api_mode=%s requires a provider transport with an OpenAI-compatible /responses endpoint", apiMode)
 	}
 	if apiMode == modelAPIModeResponsesStateful && !c.modelProviderSupportsResponsesStateful() {
 		return fmt.Errorf("model.api_mode=responses_stateful requires a provider that supports stored Responses and previous_response_id; use responses for stateless-compatible endpoints")
+	}
+	if (apiMode == modelAPIModeInteractions || apiMode == modelAPIModeInteractionsStateful) && !c.modelProviderSupportsInteractions() {
+		return fmt.Errorf("model.api_mode=%s requires the native Gemini Interactions transport", apiMode)
+	}
+	if apiMode == modelAPIModeInteractionsStateful && !c.modelProviderSupportsInteractionsStateful() {
+		return fmt.Errorf("model.api_mode=interactions_stateful requires a provider that supports stored Gemini Interactions and previous_interaction_id; use interactions for local context")
+	}
+	// An unset api_mode is normalized to chat_completions for historical
+	// compatibility, but some providers have no compatible transport at all. Only
+	// reject the mode when it was configured explicitly, so a minimal provider
+	// record still resolves to that provider's native default.
+	if apiMode == modelAPIModeChatCompletions && strings.TrimSpace(c.Model.APIMode) != "" && !c.modelProviderSupportsChatCompletions() {
+		return fmt.Errorf("model.api_mode=chat_completions is not supported by provider type %s; leave api_mode empty or use its native transport", c.modelProviderType())
 	}
 	contextManagement := strings.ToLower(strings.TrimSpace(c.Model.ResponsesContextManagement))
 	switch contextManagement {
@@ -1968,6 +2017,27 @@ func (c Config) modelProviderSupportsResponsesStateful() bool {
 	providerType := c.modelProviderType()
 	definition, ok := lookupModelProviderDefinition(providerType)
 	return ok && definition.supportsResponsesStateful
+}
+
+func (c Config) modelProviderSupportsInteractions() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsInteractions
+}
+
+func (c Config) modelProviderSupportsInteractionsStateful() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.supportsInteractionsStateful
+}
+
+func (c Config) modelProviderSupportsChatCompletions() bool {
+	providerType := c.modelProviderType()
+	definition, ok := lookupModelProviderDefinition(providerType)
+	if !ok {
+		return true
+	}
+	return !definition.chatCompletionsUnsupported
 }
 
 func (c Config) modelProviderType() string {

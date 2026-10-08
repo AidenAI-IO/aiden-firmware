@@ -4,7 +4,6 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const configRoot = path.join(repositoryRoot, 'src/config_web/web/assets/js/config');
 
 for (const retiredPath of [
   'src/config_web.cpp',
@@ -38,20 +37,17 @@ for (const environmentPath of [
 const rootCMake = await fs.readFile(path.join(repositoryRoot, 'CMakeLists.txt'), 'utf8');
 assert.equal(rootCMake.includes('add_executable(config_web'), false, 'legacy C++ config_web target returned');
 
-const sources = await Promise.all([
-  'agent-status.js',
-  'config-form.js',
-  'config-application.js',
-  'i18n.js',
-  'logs.js',
-  'ota.js',
-  'providers.js',
-  'storage.js',
-  'stt-test.js',
-  'system-env.js',
-  'wifi.js',
-].map((name) => fs.readFile(path.join(configRoot, name), 'utf8')));
-sources.push(await fs.readFile(path.join(repositoryRoot, 'src/config_web/web/assets/js/llm-logs.js'), 'utf8'));
+// Every script the settings pages and the LLM log viewer ship.
+const webAssets = path.join(repositoryRoot, 'src/config_web/web/assets/js');
+async function scripts(dir) {
+  const entries = await fs.readdir(dir, {withFileTypes: true});
+  const nested = await Promise.all(entries.map((entry) => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? scripts(full) : [full];
+  }));
+  return nested.flat().filter((file) => file.endsWith('.js'));
+}
+const sources = await Promise.all((await scripts(webAssets)).map((file) => fs.readFile(file, 'utf8')));
 const bundle = sources.join('\n');
 
 for (const route of [
@@ -60,24 +56,21 @@ for (const route of [
   '/api/config/application',
   '/api/config/locale',
   '/api/config/test',
-  '/api/models?provider=',
-  '/api/config-test/stt/start',
-  '/api/config-test/stt/stop',
+  '/api/models?',
   '/api/storage/status',
   '/api/storage/format',
   '/api/storage/eject',
   '/api/device/snapshot',
-  '/api/device/status',
   '/api/device/reboot',
   '/api/network/wifi/scan',
   '/api/network/wifi/connection',
-  '/api/system/environment',
-  '/api/system/environment/apply',
   '/api/ota/status',
   '/api/ota/updates',
-  '/api/logs/agent',
   '/api/logs/llm',
   '/api/logs/support',
+  '/api/logs/agent',
+  '/api/device/status',
+  '/llm-logs',
 ]) {
   assert.ok(bundle.includes(route), `missing canonical frontend route: ${route}`);
 }

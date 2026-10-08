@@ -13,13 +13,14 @@ relationships rather than filename order.
 | Unit | Purpose |
 | --- | --- |
 | `aiden-slot-resolve.service` | Resolve A/B partition devices from the active slot |
-| `oem.mount`, `userdata.mount`, `userdata-ota.mount` | Mount product data partitions |
+| `userdata.mount`, `userdata-ota.mount` | Mount product data partitions |
 | `aiden-rootfs-grow.service` | Grow first-boot ext4 filesystems to their partition size |
 | `aiden-userdata-migrate.service` | Validate and migrate persistent Debian userdata |
 | `aiden-machine-id.service` | Provision a stable machine identity |
-| `aiden-oem-ldconfig.service` | Register libraries from the active OEM slot |
+| `aiden-platform-ldconfig.service` | Register platform libraries from the active rootfs slot |
 | `aiden-environment.service` | Generate the strict runtime environment |
 | `aiden-media-modules.service` | Load media modules and prepare video device access |
+| `aiden-audio-mixer.service` | Initialize RV1106 microphone controls before audio capture |
 | `aiden-wifi-driver.service` | Load AIC8800 Wi-Fi and Bluetooth firmware |
 | `aiden-bluetooth-attach.service` | Attach the AIC8800 UART transport |
 | `aiden-usb-gadget.service` | Create keyboard, pointer, Consumer Control, and ECM functions |
@@ -46,7 +47,7 @@ systemctl --failed
 The Rockchip boot arguments do not pass `rw` and there is no matching fstab
 entry, so `/` starts read-only. `aiden-rootfs-grow.service` runs
 `mount -o remount,rw /` on every boot before growing the rootfs and mounting
-OEM and userdata, which is why it is ordered ahead of `aiden-oem-ldconfig`,
+userdata and the OTA workspace, which is why it is ordered ahead of `aiden-platform-ldconfig`,
 `systemd-timesyncd`, and the media services. If those units fail with
 `Read-only file system`, check that `aiden-rootfs-grow.service` ran.
 
@@ -84,7 +85,7 @@ The unit starts `/usr/lib/aiden/aiden-frame-start`, which selects the HDMI
 bridge, applies EDID and trigger policy, reads
 `[advanced_settings.hardware.frame_service].keep_streamon` from
 `/userdata/agent/agent.toml`, and
-executes `/oem/usr/bin/frame_service`.
+executes `/usr/lib/aiden/frame_service`.
 
 ```bash
 systemctl start aiden-frame.service
@@ -100,8 +101,15 @@ is `/var/log/frame_service/frame_service.log`.
 
 Configuration: `/etc/aiden_audio_service.conf`
 
-`aiden-audio.service` executes `/oem/usr/bin/audio_service` in the foreground
+`aiden-audio.service` executes `/usr/lib/aiden/audio_service` in the foreground
 and lets systemd own restart and stop behavior.
+
+Before capture starts, `aiden-audio-mixer.service` waits for all microphone
+controls on the `rv1106acodec` ALSA card and restores the microphone gain,
+bias, ADC mode and ALC settings. It selects the card by its ID, independent
+of the default card and boot-time enumeration order. Missing controls, a
+missing mixer helper or failed control writes prevent the audio service
+from starting; inspect `journalctl -u aiden-audio-mixer.service` for details.
 
 ```bash
 systemctl restart aiden-audio.service
@@ -113,7 +121,7 @@ systemctl status aiden-audio.service --no-pager
 The Agent unit executes:
 
 ```bash
-/oem/usr/bin/agent -dir /userdata/agent -addr 0.0.0.0:8080
+/usr/lib/aiden/agent -dir /userdata/agent -addr 0.0.0.0:8080
 ```
 
 Before startup, `aiden-python-prepare` validates and prepares the persistent
@@ -151,7 +159,7 @@ not cause the regression: Debian already used the new loader.
 
 Both repository versions pin `pico-sdk` at
 `d1a279cbb7e29aa0801943cdf21f0575db69eed5`. All 21 files in the affected board's
-`/oem/usr/ko/aic8800dc_fw` matched that SDK firmware directory by SHA-256 during
+`/usr/lib/aiden/platform/modules/aic8800dc_fw` matched that SDK firmware directory by SHA-256 during
 the 2026-09-15 investigation. This establishes the missing load parameter as
 the concrete migration regression; it does not assert that separately built
 kernel-module binaries are byte-identical.
@@ -174,6 +182,21 @@ disconnecting the interface. `WLAN_GUARD_MAX_RECOVERIES` and
 restart the guard after changing them. Restarting the guard also resets its
 budget. `iw ... set power_save off` is not used as a fix: that operation is a
 no-op in the bundled driver's `rwnx_cfg80211_set_power_mgmt` implementation.
+
+The driver, supplicant, and guard also keep bounded persistent diagnostics:
+
+| Component | Path | Contents |
+| --- | --- | --- |
+| Driver loader | `/var/log/wifi_driver/wifi_driver.log` | Module path, load result, parameters, and `wlan0` creation; trimmed to the newest 1,000 lines when it exceeds 2,000 |
+| Supplicant | `/var/log/wpa_supplicant/wlan0.log` | Configuration parsing, association, authentication, and restart errors; trimmed to the newest 1,000 lines when it exceeds 2,000 |
+| Recovery guard | `/var/log/wlan_guard/wlan_guard.log` | Link state transitions, gateway failures, recovery attempts, and budget exhaustion |
+
+These files complement, rather than replace, journald. The driver and
+supplicant logs are trimmed at service start and once per guard monitoring
+interval to the newest 1,000 lines after exceeding 2,000 lines; the guard log
+is bounded to the newest 1,000 lines after it exceeds 2,000 lines. No Wi-Fi
+configuration contents or PSK are written. This avoids adding a continuously
+running diagnostic service while preserving evidence across reboot.
 
 Use the USB connection while investigating wireless connectivity:
 
@@ -215,12 +238,18 @@ protocol or the per-network `NO_PROXY` value.
 
 ## OTA
 
-`aiden-ota-health-marker.service` waits for required local services and writes
-a transaction-bound health result. `aiden-ota-health.service` then executes:
+`aiden-ota-health-marker.service` waits for the required local services and the
+Config Web recovery portal, then writes a transaction-bound health result. The
+Agent is allowed to fail during recovery; its failure does not block the portal
+or mark the OTA slot unhealthy. `aiden-ota-health.service` then executes:
 
 ```bash
-/oem/usr/bin/ota --config /userdata/debian/ota/config.json health
+/usr/lib/aiden/ota --config /userdata/debian/ota/config.json health
 ```
+
+Pending OTA validation always checks that Config Web is active and responds over
+HTTP. An unset or disabled `ENABLE_CONFIG_WEB` does not skip these checks; without
+the recovery portal, the slot cannot be marked healthy.
 
 The persistent OTA partition is mounted at `/userdata/ota/` and contains state,
 downloads, pending-boot data, and health markers. The immutable factory
@@ -234,7 +263,7 @@ See [OTA Overview](../08-ota/README.md) for the full state machine.
 The systemd unit executes:
 
 ```bash
-/oem/usr/bin/agent config-web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf --wifi-interface=wlan0 --wifi-backend=systemd-networkd --system-env=/userdata/system/env --web-root=/oem/usr/share/aiden/config-web
+/usr/lib/aiden/agent config-web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/debian/wifi/wpa_supplicant-wlan0.conf --wifi-interface=wlan0 --wifi-backend=systemd-networkd --system-env=/userdata/system/env --web-root=/usr/share/aiden/config-web
 ```
 
 Config Web uses Debian control helpers for Agent and frame-service restarts.

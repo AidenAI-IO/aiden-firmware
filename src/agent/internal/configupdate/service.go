@@ -33,8 +33,12 @@ type Result struct {
 	Applied       bool     `json:"applied"`
 	Revision      uint64   `json:"revision"`
 	RebootReasons []string `json:"reboot_reasons,omitempty"`
-	Error         string   `json:"error,omitempty"`
-	ErrorKind     string   `json:"error_kind,omitempty"`
+	// Apply is what the change needs before it takes effect; ApplyReasons
+	// names the settings that raised it (see agent.ConfigApplyLevel).
+	Apply        agent.ApplyLevel `json:"apply"`
+	ApplyReasons []string         `json:"apply_reasons,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	ErrorKind    string           `json:"error_kind,omitempty"`
 }
 
 const (
@@ -85,6 +89,17 @@ func NewService() *Service {
 
 // Update applies a config_web JSON merge patch and atomically persists it.
 func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
+	return s.update(path, patchJSON, true)
+}
+
+// Plan validates a patch exactly as Update would and reports its changed paths
+// and apply level, without writing anything. Settings pages call it while the
+// user edits, so the save button can say whether saving will restart.
+func (s *Service) Plan(path string, patchJSON []byte) (Result, error) {
+	return s.update(path, patchJSON, false)
+}
+
+func (s *Service) update(path string, patchJSON []byte, commit bool) (Result, error) {
 	var patch map[string]json.RawMessage
 	if err := json.Unmarshal(patchJSON, &patch); err != nil {
 		return Result{}, invalidConfigUpdate(fmt.Errorf("invalid JSON merge patch: %w", err))
@@ -162,7 +177,7 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 		if err != nil {
 			return Result{}, internalConfigUpdate(err)
 		}
-		return Result{OK: true, Config: FromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false, Persisted: true, Applied: false, Revision: configRevisionFromFile(resolvedPath)}, nil
+		return Result{OK: true, Config: FromAgentConfig(cfg), ChangedPaths: []string{}, RebootRequired: false, Persisted: commit, Applied: false, Revision: configRevisionFromFile(resolvedPath), Apply: agent.ApplyLive}, nil
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(resolvedPath), ".agent.toml.config-update-*.toml")
 	if err != nil {
@@ -181,8 +196,13 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	if n != len(updated) {
 		return Result{}, internalConfigUpdate(fmt.Errorf("write temporary config: %w", io.ErrShortWrite))
 	}
-	if err := tmp.Sync(); err != nil {
-		return Result{}, internalConfigUpdate(fmt.Errorf("sync temporary config: %w", err))
+	// A dry run only validates the candidate and then discards it, so it has
+	// nothing to make durable; skipping the fsync spares the flash on every
+	// settings change the page plans.
+	if commit {
+		if err := tmp.Sync(); err != nil {
+			return Result{}, internalConfigUpdate(fmt.Errorf("sync temporary config: %w", err))
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("close temporary config: %w", err))
@@ -193,6 +213,10 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	}
 	if err := candidate.ValidateVoiceProviders(); err != nil {
 		return Result{}, invalidConfigUpdate(fmt.Errorf("validate voice providers: %w", err))
+	}
+	apply, applyReasons := agent.ConfigApplyLevel(current, candidate)
+	if !commit {
+		return newResult(candidate, changed, apply, applyReasons, false, configRevision(original)), nil
 	}
 	if err := os.Rename(tmpPath, resolvedPath); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("replace config: %w", err))
@@ -205,20 +229,26 @@ func (s *Service) Update(path string, patchJSON []byte) (Result, error) {
 	if err := directory.Sync(); err != nil {
 		return Result{}, internalConfigUpdate(fmt.Errorf("sync config directory: %w", err))
 	}
-	rebootRequired := requiresConfigReboot(current, candidate)
+	return newResult(candidate, changed, apply, applyReasons, true, configRevision(updated)), nil
+}
+
+func newResult(candidate agent.Config, changed []string, apply agent.ApplyLevel, reasons []string, persisted bool, revision uint64) Result {
+	rebootRequired := apply == agent.ApplyReboot
 	result := Result{
 		OK:             true,
 		Config:         FromAgentConfig(candidate),
 		ChangedPaths:   changed,
 		RebootRequired: rebootRequired,
-		Persisted:      true,
+		Persisted:      persisted,
 		Applied:        false,
-		Revision:       configRevision(updated),
+		Revision:       revision,
+		Apply:          apply,
+		ApplyReasons:   reasons,
 	}
 	if rebootRequired {
 		result.RebootReasons = []string{"USB/HID identity or keyboard layout changed"}
 	}
-	return result, nil
+	return result
 }
 
 func configRevision(data []byte) uint64 {
@@ -384,7 +414,7 @@ func persistLegacyProviderFields(
 			providerType = record.Type
 		}
 		if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
-			"model_providers", provider, providerType, map[string]string{"api_key": current.Model.APIKey},
+			"model_providers", provider, providerType, map[string]any{"api_key": current.Model.APIKey},
 			map[string]bool{"api_key": true}); err != nil {
 			return err
 		}
@@ -395,7 +425,7 @@ func persistLegacyProviderFields(
 
 	if provider := current.TTS.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.TTSProviders[provider]; ok {
-			values := definedLegacyValues(metadata, map[string]string{
+			values := definedLegacyValues(metadata, map[string]any{
 				"api_key": record.APIKey, "model": record.Model, "voice_id": record.VoiceID,
 				"emotion": record.Emotion, "reference_id": record.ReferenceID,
 			}, []string{"tts"}, []string{"voice_settings", "classic", "tts"})
@@ -413,7 +443,7 @@ func persistLegacyProviderFields(
 
 	if provider := current.STT.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.STTProviders[provider]; ok {
-			values := definedLegacyValues(metadata, map[string]string{
+			values := definedLegacyValues(metadata, map[string]any{
 				"api_key": record.APIKey, "model": record.Model, "base_url": record.BaseURL,
 				"app_id": record.AppID, "secret_id": record.SecretID, "secret_key": record.SecretKey,
 				"region": record.Region, "engine_model_type": record.EngineModelType,
@@ -433,7 +463,7 @@ func persistLegacyProviderFields(
 
 	if provider := current.VoiceModel.Provider; strings.TrimSpace(provider) != "" {
 		if record, ok := current.VoiceModelProviders[provider]; ok {
-			values := definedLegacyValues(metadata, map[string]string{
+			legacyValues := map[string]any{
 				"upstream_provider": record.UpstreamProvider,
 				"agent_id":          record.AgentID,
 				"api_key":           record.APIKey,
@@ -446,8 +476,15 @@ func persistLegacyProviderFields(
 				"endpoint":          record.Endpoint,
 				"base_url":          record.BaseURL,
 				"realtime_protocol": record.RealtimeProtocol,
+				"thinking_level":    record.ThinkingLevel,
 				"voice":             record.Voice,
-			}, []string{"voice_model"}, []string{"voice_settings", "realtime"})
+			}
+			if strings.EqualFold(strings.TrimSpace(record.Type), "qwen") {
+				legacyValues["turn_detection"] = record.TurnDetection
+				legacyValues["turn_detection_threshold"] = record.TurnDetectionThreshold
+				legacyValues["turn_detection_silence_ms"] = record.TurnDetectionSilenceMs
+			}
+			values := definedLegacyValues(metadata, legacyValues, []string{"voice_model"}, []string{"voice_settings", "realtime"})
 			if len(values) > 0 {
 				if err := persistLegacyProviderRecord(patch, metadata, renames, explicitCredentials,
 					"voice_model_providers", provider, record.Type, values,
@@ -473,8 +510,8 @@ func metadataHasAny(metadata toml.MetaData, key string, sections ...[]string) bo
 	return false
 }
 
-func definedLegacyValues(metadata toml.MetaData, values map[string]string, sections ...[]string) map[string]string {
-	result := make(map[string]string)
+func definedLegacyValues(metadata toml.MetaData, values map[string]any, sections ...[]string) map[string]any {
+	result := make(map[string]any)
 	for key, value := range values {
 		if metadataHasAny(metadata, key, sections...) {
 			result[key] = value
@@ -489,7 +526,7 @@ func persistLegacyProviderRecord(
 	renames providerRenames,
 	explicitCredentials providerFieldEdits,
 	section, sourceName, providerType string,
-	values map[string]string,
+	values map[string]any,
 	credentialFields map[string]bool,
 ) error {
 	targetName := sourceName
@@ -577,7 +614,7 @@ func addLegacyFieldDeletes(patch map[string]json.RawMessage, section string, fie
 	return nil
 }
 
-func mapKeys(values map[string]string) []string {
+func mapKeys(values map[string]any) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -1219,11 +1256,4 @@ func normalizeJSONValue(value any) (any, error) {
 	default:
 		return value, nil
 	}
-}
-
-// Source spelling remains lossless; reboot decisions use the resolved runtime
-// values so aliases do not masquerade as USB/HID behavior changes.
-func requiresConfigReboot(current, candidate agent.Config) bool {
-	return current.PointerModeOrDefault() != candidate.PointerModeOrDefault() ||
-		current.HID.KeyboardLayoutOrDefault() != candidate.HID.KeyboardLayoutOrDefault()
 }

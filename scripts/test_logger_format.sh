@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-HELPER="$ROOT_DIR/overlay-debian-oem/usr/lib/aiden-log.sh"
+HELPER="$ROOT_DIR/overlay-debian/usr/lib/aiden/aiden-log.sh"
 
 sh -n "$HELPER"
 . "$HELPER"

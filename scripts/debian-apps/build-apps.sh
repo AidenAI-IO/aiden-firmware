@@ -90,7 +90,7 @@ run_container_script() {
     shift
     image_id=$(docker image inspect "${BUILD_IMAGE}" --format '{{.Id}}')
     source_git_common_dir=$(git -C "${REPO_ROOT}" rev-parse \
-        --path-format=absolute --git-common-dir)
+        --path-format=absolute --git-common-dir 2>/dev/null || true)
     if [ ! -x "${GO_ROOT}/bin/go" ] || [ ! -f "${GO_ROOT}/VERSION" ] ||
         ! grep -qx 'go1.26.0' "${GO_ROOT}/VERSION"; then
         echo "Pinned Go 1.26.0 toolchain is missing: ${GO_ROOT}" >&2
@@ -110,26 +110,36 @@ run_container_script() {
     # proxy.golang.org, which the self-hosted builders cannot resolve. Build
     # inputs that would change output (GOFLAGS) and the container-local
     # GOCACHE/GOMODCACHE/GOPATH/GOTOOLCHAIN are deliberately not forwarded.
-    docker run --rm \
-        -u "$(id -u):$(id -g)" \
-        -e "DEBIAN_APPS_OUTPUT_DIR=/out" \
-        -e "DEBIAN_APPS_BUILD_IMAGE_ID=${image_id}" \
-        -e "RK_JOBS=${JOBS}" \
-        -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}" \
-        -e GOPROXY \
-        -e GONOPROXY \
-        -e GOPRIVATE \
-        -e GOSUMDB \
-        -e GONOSUMDB \
-        -v "${REPO_ROOT}:/work" \
-        -v "${source_git_common_dir}:${source_git_common_dir}:ro" \
-        -v "${OUTPUT_DIR}:/out" \
-        -v "${GO_ROOT}:/usr/local/go:ro" \
-        -v "${GO_BUILD_CACHE}:/go-build-cache" \
-        -v "${GO_MODULE_CACHE}:/go-mod-cache" \
-        -w /work \
-        "${BUILD_IMAGE}" \
-        bash "${script}" "$@"
+    # Submodule core.worktree paths are resolved from the host Git metadata
+    # when the common directory is available. Dockerized Delta worktrees can
+    # expose only the worktree, so the metadata mount is optional there.
+    # Preserve the checkout's absolute path as well as the /work build alias.
+    local -a docker_args=(
+        docker run --rm
+        -u "$(id -u):$(id -g)"
+        -e "DEBIAN_APPS_OUTPUT_DIR=/out"
+        -e "DEBIAN_APPS_BUILD_IMAGE_ID=${image_id}"
+        -e "RK_JOBS=${JOBS}"
+        -e "SOURCE_DATE_EPOCH=${BUILD_EPOCH}"
+        -e GOPROXY
+        -e GONOPROXY
+        -e GOPRIVATE
+        -e GOSUMDB
+        -e GONOSUMDB
+        -v "${REPO_ROOT}:/work"
+        -v "${REPO_ROOT}:${REPO_ROOT}:ro"
+        -v "${OUTPUT_DIR}:/out"
+        -v "${GO_ROOT}:/usr/local/go:ro"
+        -v "${GO_BUILD_CACHE}:/go-build-cache"
+        -v "${GO_MODULE_CACHE}:/go-mod-cache"
+        -w /work
+    )
+    if [ -n "${source_git_common_dir}" ]; then
+        docker_args+=(
+            -v "${source_git_common_dir}:${source_git_common_dir}:ro"
+        )
+    fi
+    "${docker_args[@]}" "${BUILD_IMAGE}" bash "${script}" "$@"
 }
 
 run_opencv() {

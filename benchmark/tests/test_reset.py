@@ -808,6 +808,28 @@ def test_call_environment_setup_posts_to_api_setup(monkeypatch):
     assert result["data"]["episode_id"] == "reset-1"
 
 
+def test_call_environment_setup_sends_foreground_app_id(monkeypatch):
+    class FakeResponse:
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    bodies = []
+
+    def fake_urlopen(req, timeout=None):
+        bodies.append(json.loads(req.data))
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    call_environment_setup("http://127.0.0.1:9090", app_ids=["settings"], foreground_app_id="scroll_lab")
+    assert bodies == [{"app_ids": ["settings"], "foreground_app_id": "scroll_lab"}]
+
+
 def test_call_environment_setup_sends_benchmark_task_id_header(monkeypatch):
     seen = {}
 

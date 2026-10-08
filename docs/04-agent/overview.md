@@ -21,12 +21,12 @@ output/debian-apps/apps/bin/agent
 In the firmware, it is installed by default to:
 
 ```text
-/oem/usr/bin/agent
+/usr/lib/aiden/agent
 ```
 
 ## Current Capabilities
 
-- Registered model providers: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `ollama`
+- Registered model providers: `openai`, `anthropic`, `openrouter`, `kimi`, `kimi-cn`, `volcengine`, `deepseek`, `gemini`, `ollama`
 - Built-in tool calling: HID, screenshots, audio volume, shell
 - HTTP Tool API for Web UI, external agents, or manual invocation
 - Auto-discovery and runtime activation of skills from `SKILL.md`
@@ -61,7 +61,7 @@ go run ./cmd/daemon -dir ./config -addr :8080
 Device service:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/agent -dir /userdata/agent -addr :8080
+/usr/lib/aiden/aiden-managed-env-run /usr/lib/aiden/agent -dir /userdata/agent -addr :8080
 ```
 
 ## Built-in Tools

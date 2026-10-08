@@ -104,6 +104,7 @@ list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 
 add_executable(aiden_tests
     test_main.cpp
+    contract_fixtures_test.cpp
     aiden_log_test.cpp
     frame_service_protocol_test.cpp
     frame_service_defaults_test.cpp
@@ -182,9 +183,6 @@ add_test(NAME board_low_level_smoke_scripts
 
 find_program(NODE_EXECUTABLE node)
 if(NODE_EXECUTABLE)
-    add_test(NAME config_web_dynamic_form
-        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_dynamic_form_test.mjs
-    )
     add_test(NAME config_web_i18n
         COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_i18n_test.mjs
     )
@@ -194,14 +192,23 @@ if(NODE_EXECUTABLE)
     add_test(NAME config_web_routes
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_routes_test.mjs
     )
-    add_test(NAME config_web_providers
-        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_providers_test.mjs
+    add_test(NAME config_web_tokens
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_tokens_test.mjs
     )
-    add_test(NAME config_web_storage
-        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_storage_test.mjs
+    add_test(NAME config_web_ota_progress
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_ota_progress_test.mjs
     )
-    add_test(NAME config_web_ota
-        COMMAND ${NODE_EXECUTABLE} --experimental-vm-modules ${CMAKE_CURRENT_SOURCE_DIR}/config_web_ota_test.mjs
+    add_test(NAME config_web_settings_shell
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_settings_shell_test.mjs
+    )
+    add_test(NAME config_web_ui_components
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_ui_components_test.mjs
+    )
+    add_test(NAME config_web_router
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_router_test.mjs
+    )
+    add_test(NAME config_web_wifi_service
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/config_web_wifi_service_test.mjs
     )
     add_test(NAME llm_logs_anthropic
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/llm_logs_anthropic_test.mjs

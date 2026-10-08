@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,7 +65,7 @@ func TestTraceReleaseAndVersionFromEpisodeExtra(t *testing.T) {
 	}
 }
 
-func TestBuildLangfuseBatchIncludesModelAndRelease(t *testing.T) {
+func TestBuildLangfuseSpansIncludesModelAndRelease(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	episode := TaskEpisode{
 		ID:        "ep_meta_test",
@@ -81,28 +80,18 @@ func TestBuildLangfuseBatchIncludesModelAndRelease(t *testing.T) {
 		},
 	}
 	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	spans, _, err := exporter.buildLangfuseSpans(context.Background(), episode, t.TempDir())
 	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
+		t.Fatalf("buildLangfuseSpans() error = %v", err)
 	}
-	if len(batch) == 0 {
-		t.Fatal("expected batch events")
+	root := singleLangfuseSpan(t, spans, langfuseRunSpanName)
+	if root.Trace.Release != "abc1234" {
+		t.Fatalf("release = %q", root.Trace.Release)
 	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(batch[0].Body, &body); err != nil {
-		t.Fatalf("decode trace body: %v", err)
+	if root.Trace.Version != "20260603-120000-abc1234" {
+		t.Fatalf("version = %q", root.Trace.Version)
 	}
-	if body["release"] != "abc1234" {
-		t.Fatalf("release = %v", body["release"])
-	}
-	if body["version"] != "20260603-120000-abc1234" {
-		t.Fatalf("version = %v", body["version"])
-	}
-	meta, ok := body["metadata"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("metadata = %T", body["metadata"])
-	}
-	if meta["model"] != "openrouter/google/gemini-3.5-flash" {
-		t.Fatalf("metadata.model = %v", meta["model"])
+	if root.Trace.Metadata["model"] != "openrouter/google/gemini-3.5-flash" {
+		t.Fatalf("metadata.model = %v", root.Trace.Metadata["model"])
 	}
 }

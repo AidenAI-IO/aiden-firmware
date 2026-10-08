@@ -4,14 +4,14 @@ sidebar_position: 1
 
 # OTA Architecture and Runtime
 
-OTA is accomplished through three layers: `debian_build.sh` orchestrates the Debian apps/system images and signed local artifacts, the vendor SDK supplies BSP and image-packing internals, and the device-side `ota` completes download, write, and switching on manual trigger. One-shot systemd health handling commits a healthy slot after startup. Publication automation is outside the current scope.
+OTA is accomplished through three layers: `debian_build.sh` orchestrates the Debian apps/system images and signed artifacts, the vendor SDK supplies BSP and image-packing internals, and the device-side `ota` completes download, write, and switching on manual trigger. One-shot systemd health handling commits a healthy slot after startup. The manually dispatched [channel release workflow](channel-release.md) automates classification, contracts, builds and publication.
 
 ## Partition Layout
 
 Production images use A/B layout:
 
 ```text
-32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)
+32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)
 ```
 
 | Partition | A/B | OTA Behavior |
@@ -21,7 +21,6 @@ Production images use A/B layout:
 | `uboot` | No | Not updated via OTA; old bootloader requires full flash update |
 | `misc` | No | Stores A/B metadata, OTA only modifies slot state |
 | `boot` | Yes | Write to inactive `boot_a` or `boot_b` |
-| `oem` | Yes | Write to inactive `oem_a` or `oem_b` |
 | `rootfs` | Yes | Write to inactive `rootfs_a` or `rootfs_b` |
 | `userdata` | No | Preserved across upgrades, stores non-OTA persistent data |
 | `ota` | No | Dedicated OTA config, state, health markers, and download cache; factory flash only |
@@ -34,26 +33,36 @@ Production images use A/B layout:
 4. Slot-specific FIT boot image provides `root=PARTLABEL=rootfs_a|rootfs_b` and `aiden.slot_suffix=_a|_b`.
 5. Linux mounts the matching `rootfs_*`.
 6. `aiden-slot-resolve.service` resolves stable partition paths for the active slot.
-7. `userdata.mount`, `userdata-ota.mount`, and `oem.mount` mount persistent data, the dedicated OTA workspace, and the active OEM slot.
-8. `aiden-ota-health-marker.service` aggregates application health, then `aiden-ota-health.service` processes pending OTA state once.
+7. `userdata.mount` and `userdata-ota.mount` mount persistent data and the dedicated OTA workspace. Platform files and business binaries are already in the active rootfs.
+8. `aiden-ota-health-marker.service` aggregates required application health and
+   the Config Web recovery portal, then `aiden-ota-health.service` processes
+   pending OTA state once. Agent startup is optional during this confirmation.
+   The OTA command controls the health-marker wait through `health_timeout_seconds`
+   (five minutes by default). The health service has a ten-minute outer startup
+   timeout for interruptible stalls. If increasing the health wait beyond that
+   budget, also increase `TimeoutStartSec` in a systemd drop-in, leaving time for
+   the metadata commit.
 
 ## Update Process
 
-1. `ota` reads `/userdata/debian/ota/config.json` and `/oem/etc/ota_pubkey.pem`.
-2. Fetch the manifest from the configured `manifest_url`. For older factory
-   configurations that have no direct URL, the client retains a GitHub
-   `releases/latest` fallback for compatibility; current local/self-hosted
-   deployments should use an explicit manifest URL.
-3. Download `manifest.json`, remove `signature.value`, and perform canonical JSON Ed25519 signature verification.
+1. `ota` reads `/userdata/debian/ota/config.json` and `/usr/share/keyrings/aiden-ota.pem`.
+2. Fetch the configured `manifest_url`, or discover the highest OTA version for
+   the configured dev/staging/prod channel from the repository's release list.
+   Business-only releases are skipped. Older factory configurations retain the
+   `releases/latest` fallback; custom static sources use an explicit manifest URL.
+3. Download `manifest.json`, remove `signature.value`, and verify its canonical JSON Ed25519 signature. Managed channels must also match the signed channel and version prefix, including when a direct manifest URL is used.
 4. Reject downgrades with older `build_time` or different version with same build time.
 5. Select inactive slot and parse corresponding slot assets from manifest.
 6. Clean stale download cache and calculate the remaining bytes after verified cache and resumable partials.
 7. Read actual available bytes from the dedicated OTA filesystem and require the remaining downloads plus the configured safety margin.
-8. Download images and verify archive size, SHA256, extracted image hash, and target partition size.
-9. Write to inactive `boot_*`, `oem_*`, `rootfs_*`, and fsync.
-10. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
-11. Modify `misc`, set target slot as active trial slot with default tries of 3.
-12. Reboot into target slot.
+8. Download images and verify the archive size and signed SHA256 before touching a partition.
+9. Mark the inactive target slot unbootable, then stream each extracted image to its partition while calculating and checking `image_sha256`; fsync after the hash passes, and reject the update without activating the slot on any mismatch.
+10. Read the written image bytes back from eMMC and verify the same image SHA256, then personalize rootfs when required.
+11. Delete old `health.ok`, write `/userdata/ota/pending_boot.json`.
+12. Modify `misc`, set target slot as active trial slot with default tries of 3.
+13. Reboot into target slot.
+
+Normal updates therefore decompress a compressed image once, during the write, instead of separately for pre-write image verification and archive pre-scans. The full eMMC readback remains as the independent write-integrity check. Dry-run mode still decompresses and hashes the image without writing it.
 
 ## Health Confirmation and Rollback
 
@@ -66,22 +75,33 @@ After the new slot boots, the Go daemon calls OTA health write logic after runti
 
 When `ota` sees a matching marker:
 
-1. Call `abctl`/slot logic to mark successful.
+1. Durably save the current CRC-protected `misc` metadata to
+   `/userdata/ota/ab-commit.pending`, then mark the slot successful, sync `misc`,
+   and verify the metadata readback.
 2. Update committed version/build time and per-slot partition hashes in `/userdata/ota/state.json`.
-3. Delete `pending_boot.json` and `health.ok`.
+3. Durably delete `pending_boot.json`, then retire the metadata backup.
+
+Health processing, early boot recovery, and manual rollback recover an interrupted
+health commit before using `misc`. Valid metadata is preserved and synced;
+CRC-invalid metadata is restored from the backup. If committed state was already
+published, recovery finishes the pending-marker cleanup. This permits retrying a
+process interrupted during the write, sync, or state publication. Recovery runs
+in Linux; it does not add redundant metadata support to SPL or guarantee slot
+selection after power loss before Linux can start. A systemd timeout also cannot
+terminate a process stuck in uninterruptible kernel I/O.
 
 If the health window times out, `ota health` actively reboots, allowing SPL to consume tries. When tries are exhausted and the target slot is not successful, SPL falls back to the previous successful slot. When `ota health` observes a rollback in the old slot, it cleans up pending state and marks the state phase as `rolled-back`.
 
 ## Manifest Convention
 
-`parts[].name` in the manifest can only be `boot`, `oem`, or `rootfs`. Each part uses one of the following asset forms:
+Manifest schema 2 is required; schema 1 and OEM parts are rejected. `parts[].name` in the manifest can only be `boot` or `rootfs`. Each part uses one of the following asset forms:
 
 - `asset`: slot-neutral `{name,size,sha256}`, only applicable to byte-identical images on both sides.
 - `asset_a` and `asset_b`: slot-specific `{name,size,sha256}`.
 
 For `.img.tar.gz` assets, `size` and `sha256` describe the downloaded archive. The required `image_sha256` field describes the extracted `.img`; OTA state and `requires_partitions` compare this extracted image hash.
 
-`boot` must use `asset_a` and `asset_b` because the boot image contains slot-specific DTB bootargs. `oem` and `rootfs` can use slot-specific assets or slot-neutral assets when confirmed as byte-identical.
+Production Debian OTA must include both boot and rootfs atomically. `boot` must use `asset_a` and `asset_b` because the boot image contains slot-specific DTB bootargs. `rootfs` can use slot-specific assets or slot-neutral assets when confirmed as byte-identical.
 
 ## Factory Baseline
 
@@ -94,13 +114,13 @@ repacks `update.img` before the final mounted-image audit.
 
 - `factory_version` - factory flash version number, used for downgrade protection and selective update verification
 - `factory_build_time` - factory flash build time
-- `factory_partition_hashes.a.boot|oem|rootfs` - SHA256 of each slot A partition
-- `factory_partition_hashes.b.boot|oem|rootfs` - SHA256 of each slot B partition
+- `factory_partition_hashes.a.boot|rootfs` - SHA256 of each slot A partition
+- `factory_partition_hashes.b.boot|rootfs` - SHA256 of each slot B partition
 
 Optional configuration fields:
 
 - `manifest_url` - directly specify the manifest URL (the current local/self-hosted path)
-- `public_key_path` - override default public key path (default `/oem/etc/ota_pubkey.pem`)
+- `public_key_path` - override default public key path (default `/usr/share/keyrings/aiden-ota.pem`)
 - `github_token_path` - GitHub token file path (required for private repositories)
 - `download_safety_margin_bytes` - free bytes retained beyond remaining downloads (default 16 MiB)
 

@@ -1,0 +1,110 @@
+/*
+ * GENERATED FILE — do not edit by hand. Edit src/config_web/design/tokens.mjs
+ * and run: node scripts/gen_config_web_tokens.mjs
+ *
+ * Custom properties cannot be used inside a media query condition, so
+ * `--layout-breakpoint-desktop` is for JavaScript (matchMedia) only; the
+ * stylesheets repeat that width in their own `@media` rules.
+ */
+
+:root {
+  --color-canvas: #F6F8FA;
+  --color-card: #FFFFFF;
+  --color-ink: #111214;
+  --color-ink-secondary: #8A8A8E;
+  --color-ink-placeholder: #9A9AA0;
+  --color-ink-tertiary: #C7C7CC;
+  --color-chevron: #738294;
+  --color-separator: #F3F3F3;
+  --color-accent: #4B8EFF;
+  --color-success: #34C759;
+  --color-danger: #FF3B30;
+  --color-warning: #B86E00;
+  --color-primary-fill: #000000;
+  --color-primary-fill-disabled: #D2D5DD;
+  --color-primary-ink: #FFFFFF;
+  --color-field-border: #D6D6DA;
+  --color-input-border: rgba(230, 230, 230, 0.45);
+  --color-input-focus: #5478FF;
+  --color-input-invalid: #FF5454;
+  --color-switch-track-off: #D9D9D9;
+  --color-overlay: rgba(0, 0, 0, 0.4);
+  --color-sheet-title: #545B66;
+  --color-option-border: #E5E7EB;
+  --color-option-selected: #F7F8FA;
+  --color-success-tint: #E9F9EE;
+  --color-action-sheet-surface: rgba(249, 249, 249, 0.94);
+  --color-action-sheet-separator: rgba(60, 60, 67, 0.29);
+  --color-action-sheet-tint: #007AFF;
+  --color-pressed: rgba(0, 0, 0, 0.05);
+  --color-selected: rgba(0, 0, 0, 0.06);
+  --color-toast: rgba(17, 18, 20, 0.92);
+  --color-code-string: #1E9E4A;
+  --color-code-literal: #E0532D;
+  --color-code-selection: rgba(75, 142, 255, 0.25);
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 20px;
+  --space-xxl: 24px;
+
+  --radius-card: 12px;
+  --radius-field: 10px;
+  --radius-sheet: 20px;
+  --radius-tile: 12px;
+  --radius-action-sheet: 14px;
+  --radius-option: 16px;
+  --radius-option-icon: 10px;
+  --radius-pill: 999px;
+
+  --size-row: 56px;
+  --size-control: 50px;
+  --size-tile: 46px;
+  --size-icon: 18px;
+  --size-chevron: 13px;
+  --size-action-sheet-button: 57px;
+  --size-action-sheet-inset: 10px;
+  --size-mark: 32px;
+  --size-row-compact: 48px;
+  --size-field-action: 48px;
+  --size-option: 66px;
+  --size-option-icon: 40px;
+  --size-sheet-handle: 36px;
+  --size-sheet-grabber: 24px;
+  --size-sheet-top: 30px;
+  --size-hairline: 0.5px;
+
+  --font-body: 17px;
+  --font-body-sm: 15px;
+  --font-caption: 13px;
+  --font-input: 16px;
+  --font-title: 20px;
+  --font-line-body: 22px;
+  --font-line-caption: 18px;
+  --font-line-code: 22px;
+  --font-sheet-title: 14px;
+  --font-action-sheet-text: 13px;
+  --font-action-sheet-button: 20px;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-family-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --motion-sheet: 320ms;
+  --motion-fast: 180ms;
+  --motion-sheet-bezier: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --shadow-sheet: 0px -8px 36px rgba(0, 0, 0, 0.22);
+  --shadow-knob: 0px 3px 8px rgba(0, 0, 0, 0.15);
+  --shadow-dropdown: 0px 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-raised: 0px 1px 3px rgba(0, 0, 0, 0.08);
+
+  --layout-page-margin: 20px;
+  --layout-nav-width: 350px;
+  --layout-breakpoint-desktop: 900px;
+  --layout-max-content: 720px;
+}

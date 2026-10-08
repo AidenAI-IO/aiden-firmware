@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -52,7 +53,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		WidgetText: true, WidgetTextarea: true, WidgetNumber: true,
 		WidgetBoolean: true, WidgetSelect: true, WidgetList: true,
 	}
-	validOps := map[string]bool{"eq": true, "ne": true, "in": true, "notIn": true, "truthy": true}
+	validOps := map[string]bool{"eq": true, "ne": true, "in": true, "notIn": true, "truthy": true, "providerType": true}
 
 	idx := fieldIndex(t)
 	seenSections := map[string]bool{}
@@ -190,14 +191,9 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		},
 		"agent.vad_model_path":  {layout: "wide"},
 		"agent.vad_helper_path": {layout: "wide"},
-		"agent.custom_instruction": {
-			label:  "Primary instruction",
-			help:   "Replaces the built-in Agent instruction when set. Leave empty to use the built-in instruction.",
-			layout: "wide",
-		},
-		"agent.additional_prompt": {
-			label:  "Additional prompt",
-			help:   "Appended after the primary instruction. Use it for device, project, or environment-specific requirements.",
+		"agent.prompt": {
+			label:  "Prompt",
+			help:   "Appended after the built-in Agent instruction. Use it for device, project, or environment-specific requirements.",
 			layout: "wide",
 		},
 		"agent.max_iterations": {
@@ -217,7 +213,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.api_mode": {
 			layout: "wide",
 			label:  "Conversation API",
-			help:   "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+			help:   "Choose the conversation wire protocol and who manages context. Local modes submit the transcript; provider modes continue from provider state.",
 		},
 		"agent.context_prune_threshold": {
 			label:       "Context prune threshold (fraction)",
@@ -252,7 +248,7 @@ func TestConfigMeta_PreservesExistingFormPresentation(t *testing.T) {
 		"model.responses_context_edit_trigger":        {label: "Ark tool-call trigger", placeholder: "10 = recommended", help: "After this many tool calls, Ark clears old tool inputs. 0 uses the recommended value 10."},
 		"model.responses_context_edit_keep":           {label: "Ark tool calls to keep", placeholder: "3 = recommended", help: "Number of recent tool calls Ark keeps after cleanup. 0 uses the recommended value 3."},
 		"model.responses_context_edit_clear_thinking": {label: "Clear old thinking", help: "Ask Ark to remove previous thinking turns when it applies the context edit."},
-		"model.temperature":                           {label: "Temperature", help: "Controls response randomness. Lower values are more deterministic; 0 is sent as an explicit value."},
+		"model.temperature":                           {label: "Temperature", help: "Controls response randomness. Leave empty to use the Agent-selected default; some models defer to their provider default. 0 is sent as an explicit value."},
 		"model.max_response_tokens":                   {label: "Maximum response tokens", help: "Maximum number of tokens allowed in one model response."},
 		"model.log_raw_http":                          {label: "Raw HTTP logging", help: "Write raw model HTTP requests and responses to the Agent log directory. Enable only while troubleshooting."},
 		"model.reasoning_effort":                      {label: "Reasoning effort", help: "Empty = auto. Options follow the selected model capability; none is shown only when the model supports disabling reasoning."},
@@ -322,6 +318,23 @@ func TestConfigMeta_SpecialRendererFieldsRemainAddressable(t *testing.T) {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("special renderer field %s is missing from metadata", path)
 		}
+	}
+}
+
+// TestConfigMeta_OmitsCustomInstruction pins the removal of the
+// custom_instruction control. The built-in Agent instruction is not user
+// configurable, so the form must offer only prompt; a leftover
+// metadata entry would render a dead control that config-update rejects.
+func TestConfigMeta_OmitsCustomInstruction(t *testing.T) {
+	idx := fieldIndex(t)
+	if _, ok := idx["agent.custom_instruction"]; ok {
+		t.Error("agent.custom_instruction must not be exposed in metadata")
+	}
+	if _, ok := idx["agent.additional_prompt"]; ok {
+		t.Error("agent.additional_prompt must not be exposed after the prompt rename")
+	}
+	if _, ok := idx["agent.prompt"]; !ok {
+		t.Error("agent.prompt metadata is missing")
 	}
 }
 
@@ -466,6 +479,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"voice_model.provider", defaults.VoiceModel.Provider},
 		{"voice_model_providers.model", defaults.VoiceModel.Model},
 		{"voice_model_providers.region", defaults.VoiceModel.Region},
+		{"voice_model_providers.turn_detection", defaults.VoiceModel.TurnDetection},
 		{"voice_model_providers.voice", defaults.VoiceModel.Voice},
 		{"audio_archive.enabled", defaults.AudioArchive.Enabled},
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
@@ -522,6 +536,95 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 				t.Fatalf("%s default = %#v, want runtime default %#v", tt.path, field.Default, tt.want)
 			}
 		})
+	}
+}
+
+// TestConfigMeta_TemperaturePlaceholderFollowsModelSpec pins the editor
+// placeholder to the value the runtime resolves. The static Default is the
+// non-Gemini global fallback, so conditional placeholders cover both pinned
+// model values and native Gemini's provider-managed default.
+func TestConfigMeta_TemperaturePlaceholderFollowsModelSpec(t *testing.T) {
+	idx := fieldIndex(t)
+	field, ok := idx["model.temperature"]
+	if !ok {
+		t.Fatal("missing model.temperature metadata")
+	}
+	// The field must stay Nullable with the global fallback as Default: an
+	// untouched field saves as unset so the runtime keeps resolving it.
+	if !field.Nullable {
+		t.Error("model.temperature must stay nullable so an empty field saves as unset")
+	}
+	if !reflect.DeepEqual(field.Default, defaultModelTemperature) {
+		t.Errorf("model.temperature default = %#v, want global fallback %#v", field.Default, defaultModelTemperature)
+	}
+
+	// modelsFor returns the model ids carried by the placeholder for a value.
+	modelsFor := func(value float64) []string {
+		for _, candidate := range field.PlaceholderWhen {
+			if !reflect.DeepEqual(candidate.Value, value) {
+				continue
+			}
+			if len(candidate.When.All) != 1 || candidate.When.All[0].Field != "model.model" || candidate.When.All[0].Op != "in" {
+				t.Fatalf("placeholder for %v has unexpected condition: %#v", value, candidate.When)
+			}
+			return candidate.When.All[0].Values
+		}
+		return nil
+	}
+
+	pinnedToOne := modelsFor(1)
+	if pinnedToOne == nil {
+		t.Fatalf("model.temperature missing placeholder for 1.0: %#v", field.PlaceholderWhen)
+	}
+	contains := func(ids []string, want string) bool {
+		for _, id := range ids {
+			if id == want {
+				return true
+			}
+		}
+		return false
+	}
+	// Both spellings must be covered: model.model is free text and the UI
+	// matches it exactly, so a provider-prefixed id must hit the same placeholder.
+	for _, want := range []string{
+		"gemini-3.8-flash", "google/gemini-3.8-flash",
+		"gemini-3.5-pro", "google/gemini-3.5-pro",
+		"kimi-k3",
+	} {
+		if !contains(pinnedToOne, want) {
+			t.Errorf("placeholder for 1.0 missing %q: %#v", want, pinnedToOne)
+		}
+	}
+	// Gemini 2.5 has no documented default constant, so it must not inherit the
+	// Gemini 3 pin.
+	for _, unwanted := range []string{"gemini-2.5-flash", "google/gemini-2.5-pro"} {
+		if contains(pinnedToOne, unwanted) {
+			t.Errorf("placeholder for 1.0 must not cover %q: %#v", unwanted, pinnedToOne)
+		}
+	}
+	for _, providerType := range modelProviderTypesUsingProviderTemperatureDefault() {
+		wantProviderUnset := VisibleRule{All: []Condition{providerTypeIs("model.provider", providerType)}}
+		hasProviderUnset := false
+		for _, candidate := range field.PlaceholderWhen {
+			if candidate.Value == nil && reflect.DeepEqual(candidate.When, wantProviderUnset) {
+				hasProviderUnset = true
+				break
+			}
+		}
+		if !hasProviderUnset {
+			t.Errorf("model.temperature missing empty placeholder for provider %q: %#v", providerType, field.PlaceholderWhen)
+		}
+	}
+
+	// Ids are sorted so `agent config-meta` output does not churn between runs.
+	for _, candidate := range field.PlaceholderWhen {
+		if len(candidate.When.All) != 1 || candidate.When.All[0].Op != "in" {
+			continue
+		}
+		ids := candidate.When.All[0].Values
+		if !sort.StringsAreSorted(ids) {
+			t.Errorf("placeholder ids for %v are not sorted: %#v", candidate.Value, ids)
+		}
 	}
 }
 
@@ -677,8 +780,10 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 		t.Fatal("missing model.api_mode metadata")
 	}
 	wantProviders := map[string][]string{
-		"responses":          {"openai", "openrouter", "volcengine", "deepseek"},
-		"responses_stateful": {"openai", "volcengine"},
+		"responses":             {"openai", "openrouter", "volcengine", "deepseek"},
+		"responses_stateful":    {"openai", "volcengine"},
+		"interactions":          {"gemini"},
+		"interactions_stateful": {"gemini"},
 	}
 	for _, option := range field.Enum {
 		want, tracked := wantProviders[option.Value]
@@ -692,6 +797,23 @@ func TestConfigMeta_ResponsesProviderScoping(t *testing.T) {
 	}
 	if len(wantProviders) != 0 {
 		t.Fatalf("model.api_mode enum missing scoped options: %#v", wantProviders)
+	}
+	// The empty value means "the provider's compatible default". Gemini has no
+	// compatible transport, so offering that value would both mislabel its
+	// resolved Interactions mode and let the UI save an api_mode the config
+	// validator rejects.
+	excluded := false
+	for _, option := range field.Enum {
+		if option.Value != "" {
+			continue
+		}
+		if !reflect.DeepEqual(option.ExcludeProviders, []string{"gemini"}) {
+			t.Errorf("empty api_mode excludeProviders = %#v, want [gemini]", option.ExcludeProviders)
+		}
+		excluded = true
+	}
+	if !excluded {
+		t.Fatal("model.api_mode enum has no empty option")
 	}
 
 	for _, tt := range []struct {
@@ -744,9 +866,11 @@ func TestConfigMeta_ResponsesOptionsUsePlainLanguage(t *testing.T) {
 
 	apiMode := idx["model.api_mode"]
 	wantOptions := map[string]string{
-		"":                   "Chat Completions (compatible)",
-		"responses":          "Responses (local context)",
-		"responses_stateful": "Responses (provider context)",
+		"":                      "Chat Completions (compatible)",
+		"responses":             "Responses (local context)",
+		"responses_stateful":    "Responses (provider context)",
+		"interactions":          "Interactions (local context)",
+		"interactions_stateful": "Interactions (provider context)",
 	}
 	for _, option := range apiMode.Enum {
 		if want, ok := wantOptions[option.Value]; ok && option.Label != want {
@@ -833,8 +957,36 @@ func TestConfigMeta_AudioArchiveRequiresSTTInputMode(t *testing.T) {
 func TestConfigMeta_VoiceModelRequiresRealtimeInputMode(t *testing.T) {
 	idx := fieldIndex(t)
 	for _, section := range ConfigMeta().Sections {
-		if section.Name == "voice_model" && (len(section.Fields) != 1 || section.Fields[0].Key != "provider") {
-			t.Fatalf("voice_model fields = %#v, want only the provider reference", section.Fields)
+		if section.Name == "voice_model" {
+			want := map[string]bool{"provider": true, "use_backend_agent": true}
+			if len(section.Fields) != len(want) || section.Fields[0].Key != "provider" {
+				t.Fatalf("voice_model fields = %#v, want provider + use_backend_agent", section.Fields)
+			}
+			for _, field := range section.Fields {
+				want[field.Key] = false
+			}
+			for key, seen := range want {
+				if seen {
+					t.Errorf("voice_model missing metadata field %s", key)
+				}
+			}
+			agentSwitch := idx["voice_model.use_backend_agent"]
+			if !agentSwitch.Advanced {
+				t.Fatal("voice_model.use_backend_agent must be an advanced field")
+			}
+			if enabled, ok := agentSwitch.Default.(bool); !ok || enabled {
+				t.Fatalf("voice_model.use_backend_agent default = %#v, want false", agentSwitch.Default)
+			}
+			if agentSwitch.VisibleWhen == nil {
+				t.Fatal("voice_model.use_backend_agent has no visibleWhen rule")
+			}
+			for _, cond := range agentSwitch.VisibleWhen.All {
+				if cond.Field == "agent.input_mode" && cond.Op == "eq" && cond.Value == "realtime" {
+					goto backendSwitchVisible
+				}
+			}
+			t.Fatal("voice_model.use_backend_agent must require realtime input mode")
+		backendSwitchVisible:
 		}
 	}
 
@@ -857,6 +1009,8 @@ providerVisible:
 		"voice_model_providers.region", "voice_model_providers.auth_mode",
 		"voice_model_providers.project_id", "voice_model_providers.location", "voice_model_providers.endpoint",
 		"voice_model_providers.realtime_protocol", "voice_model_providers.base_url", "voice_model_providers.voice",
+		"voice_model_providers.turn_detection", "voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
 	} {
 		if _, ok := idx[path]; !ok {
 			t.Errorf("missing metadata field %s", path)
@@ -884,6 +1038,8 @@ providerVisible:
 		"voice_model_providers.agent_id", "voice_model_providers.workspace_id",
 		"voice_model_providers.endpoint", "voice_model_providers.base_url",
 		"voice_model_providers.region", "voice_model_providers.realtime_protocol",
+		"voice_model_providers.turn_detection", "voice_model_providers.turn_detection_threshold",
+		"voice_model_providers.turn_detection_silence_ms",
 	} {
 		if !idx[path].Advanced {
 			t.Errorf("%s must be collapsed under advanced settings", path)

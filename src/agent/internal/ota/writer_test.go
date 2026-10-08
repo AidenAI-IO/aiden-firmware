@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestDefaultProductionRootFSPartitionSizeMatchesBoardConfig(t *testing.T) {
-	const wantRootFSSize = int64(1536 << 20)
+	const wantRootFSSize = int64(1792 << 20)
 
 	if DefaultRootFSPartitionSize != wantRootFSSize {
 		t.Fatalf("DefaultRootFSPartitionSize = %d, want %d", DefaultRootFSPartitionSize, wantRootFSSize)
@@ -25,7 +26,7 @@ func TestDefaultProductionRootFSPartitionSizeMatchesBoardConfig(t *testing.T) {
 
 func TestWriterWritesOnlyInactiveCanonicalPartitions(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"boot_b", "oem_b", "rootfs_b"} {
+	for _, name := range []string{"boot_b", "rootfs_b"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte{}, 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", name, err)
 		}
@@ -88,6 +89,77 @@ func TestWriterExtractsTarGzImageBeforeWriting(t *testing.T) {
 	}
 	if string(got) != "rootfs image" {
 		t.Fatalf("block content = %q", got)
+	}
+}
+
+func TestWriterHashesTarGzImageWhileWriting(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rootfs_b"), []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	body := []byte("rootfs image")
+	src := filepath.Join(dir, "rootfs.img.tar.gz")
+	if err := os.WriteFile(src, testTarGzImage(t, "rootfs.img", body), 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"rootfs_b": 100}}
+
+	imageSize, err := w.writePartWithProgressAndVerify("rootfs", SlotB, src, testSHA256Hex(body), nil)
+	if err != nil {
+		t.Fatalf("writePartWithProgressAndVerify() error = %v", err)
+	}
+	if imageSize != int64(len(body)) {
+		t.Fatalf("image size = %d, want %d", imageSize, len(body))
+	}
+	if err := w.verifyPartWithSize("rootfs", SlotB, imageSize, testSHA256Hex(body)); err != nil {
+		t.Fatalf("verifyPartWithSize() error = %v", err)
+	}
+}
+
+func TestWriterRejectsImageHashMismatchAfterStreamingWrite(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rootfs_b"), []byte("old rootfs"), 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	body := []byte("rootfs image")
+	src := filepath.Join(dir, "rootfs.img.tar.gz")
+	if err := os.WriteFile(src, testTarGzImage(t, "rootfs.img", body), 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"rootfs_b": 100}}
+
+	_, err := w.writePartWithProgressAndVerify("rootfs", SlotB, src, strings.Repeat("d", 64), nil)
+	if !errors.Is(err, errPartitionImageSHA256Mismatch) {
+		t.Fatalf("writePartWithProgressAndVerify() error = %v, want hash mismatch", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(dir, "rootfs_b"))
+	if readErr != nil {
+		t.Fatalf("ReadFile(block) error = %v", readErr)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("block content = %q, want streamed image %q", got, body)
+	}
+}
+
+func TestWriterStreamingWriteRejectsMultiEntryTarGz(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rootfs_b"), []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile(block) error = %v", err)
+	}
+	body := []byte("rootfs image")
+	src := filepath.Join(dir, "rootfs.img.tar.gz")
+	archive := testTarGzWithEntries(t, []testTarEntry{
+		{name: "rootfs.img", body: body},
+		{name: "extra.img", body: []byte("extra image")},
+	})
+	if err := os.WriteFile(src, archive, 0o644); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"rootfs_b": 100}}
+
+	_, err := w.writePartWithProgressAndVerify("rootfs", SlotB, src, testSHA256Hex(body), nil)
+	if err == nil || !strings.Contains(err.Error(), "multiple image files") {
+		t.Fatalf("writePartWithProgressAndVerify() error = %v, want multiple image rejection", err)
 	}
 }
 
@@ -290,7 +362,7 @@ func TestWriterPreservesDefaultLimitsWithPartialOverrides(t *testing.T) {
 	if err := os.WriteFile(src, make([]byte, 32<<20+1), 0o644); err != nil {
 		t.Fatalf("WriteFile(src) error = %v", err)
 	}
-	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"oem_b": 1}}
+	w := PartitionWriter{BlockDir: dir, ActiveSlot: SlotA, PartitionSizes: map[string]int64{"rootfs_b": 1}}
 	if err := w.WritePart("boot", SlotB, src); err == nil || !strings.Contains(err.Error(), "larger than partition") {
 		t.Fatalf("partial override oversize error = %v", err)
 	}
@@ -321,4 +393,11 @@ func testTarGzWithEntries(t *testing.T, entries []testTarEntry) []byte {
 		t.Fatalf("Close(gzip) error = %v", err)
 	}
 	return buf.Bytes()
+}
+
+func TestWriterRejectsRetiredOEMPartition(t *testing.T) {
+	w := PartitionWriter{ActiveSlot: SlotA}
+	if _, err := w.ResolveBlockName("oem", SlotB); err == nil {
+		t.Fatal("retired OEM partition accepted")
+	}
 }

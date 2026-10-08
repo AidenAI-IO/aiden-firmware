@@ -69,7 +69,7 @@ func TestCanonicalManifestJSONRemovesOnlySignatureValue(t *testing.T) {
 }
 
 func TestCanonicalManifestJSONBytesPreservesUnknownSignedFields(t *testing.T) {
-	raw := []byte(`{"signature":{"value":"abc","algorithm":"ed25519"},"schema_version":1,"channel":"stable","version":"20260521-120000-abcdef0","build_time":"2026-05-21T12:00:00Z","compatibility":{"board":"luckfox-pico-zero"},"parts":[{"name":"boot","asset_a":{"name":"boot_a.img","size":1,"sha256":"` + testHashA + `"},"asset_b":{"name":"boot_b.img","size":2,"sha256":"` + testHashB + `"}}]}`)
+	raw := []byte(`{"signature":{"value":"abc","algorithm":"ed25519"},"schema_version":2,"channel":"stable","version":"20260521-120000-abcdef0","build_time":"2026-05-21T12:00:00Z","compatibility":{"board":"luckfox-pico-zero"},"parts":[{"name":"boot","asset_a":{"name":"boot_a.img","size":1,"sha256":"` + testHashA + `"},"asset_b":{"name":"boot_b.img","size":2,"sha256":"` + testHashB + `"}}]}`)
 
 	canonical, err := CanonicalManifestJSONBytes(raw)
 	if err != nil {
@@ -88,7 +88,7 @@ func TestVerifyManifestJSONPreservesUnknownSignedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-	rawTemplate := []byte(`{"schema_version":1,"channel":"stable","version":"20260521-120000-abcdef0","build_time":"2026-05-21T12:00:00Z","compatibility":{"board":"luckfox-pico-zero"},"parts":[{"name":"boot","asset_a":{"name":"boot_a.img","size":1,"sha256":"` + testHashA + `"},"asset_b":{"name":"boot_b.img","size":2,"sha256":"` + testHashB + `"}}],"signature":{"algorithm":"ed25519"}}`)
+	rawTemplate := []byte(`{"schema_version":2,"channel":"stable","version":"20260521-120000-abcdef0","build_time":"2026-05-21T12:00:00Z","compatibility":{"board":"luckfox-pico-zero"},"parts":[{"name":"boot","asset_a":{"name":"boot_a.img","size":1,"sha256":"` + testHashA + `"},"asset_b":{"name":"boot_b.img","size":2,"sha256":"` + testHashB + `"}}],"signature":{"algorithm":"ed25519"}}`)
 	canonical, err := CanonicalManifestJSONBytes(rawTemplate)
 	if err != nil {
 		t.Fatalf("CanonicalManifestJSONBytes() error = %v", err)
@@ -142,7 +142,7 @@ func TestManifestVerifyParsesPEMPublicKey(t *testing.T) {
 }
 
 func TestManifestValidationAllowsOnlyCanonicalPartNames(t *testing.T) {
-	for _, name := range []string{"boot", "oem", "rootfs"} {
+	for _, name := range []string{"boot", "rootfs"} {
 		manifest := validTestManifest()
 		manifest.Parts = []ManifestPart{{Name: name, Asset: &ManifestAsset{Name: name + ".img", Size: 1, SHA256: testHashA}}}
 		if name == "boot" {
@@ -168,12 +168,8 @@ func TestManifestValidationAllowsTarGzCompressedImageAssets(t *testing.T) {
 	manifest.Parts[0].AssetA.ImageSHA256 = testHashA
 	manifest.Parts[0].AssetB.Name = "boot_b.img.tar.gz"
 	manifest.Parts[0].AssetB.ImageSHA256 = testHashB
-	manifest.Parts[1].AssetA.Name = "oem_a.img.tar.gz"
-	manifest.Parts[1].AssetA.ImageSHA256 = testHashA
-	manifest.Parts[1].AssetB.Name = "oem_b.img.tar.gz"
-	manifest.Parts[1].AssetB.ImageSHA256 = testHashB
-	manifest.Parts[2].Asset.Name = "rootfs.img.tar.gz"
-	manifest.Parts[2].Asset.ImageSHA256 = testHashC
+	manifest.Parts[1].Asset.Name = "rootfs.img.tar.gz"
+	manifest.Parts[1].Asset.ImageSHA256 = testHashC
 
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -212,11 +208,9 @@ func TestManifestValidationEnforcesAssetNameCoherence(t *testing.T) {
 	}{
 		{"boot asset_a", func(m *Manifest) { m.Parts[0].AssetA.Name = "boot_b.img" }},
 		{"boot asset_b", func(m *Manifest) { m.Parts[0].AssetB.Name = "boot_a.img" }},
-		{"oem asset_a", func(m *Manifest) { m.Parts[1].AssetA.Name = "oem.img" }},
-		{"oem asset_b", func(m *Manifest) { m.Parts[1].AssetB.Name = "rootfs_b.img" }},
-		{"rootfs neutral", func(m *Manifest) { m.Parts[2].Asset.Name = "rootfs_a.img" }},
+		{"rootfs neutral", func(m *Manifest) { m.Parts[1].Asset.Name = "rootfs_a.img" }},
 		{"rootfs asset_a", func(m *Manifest) {
-			m.Parts[2] = ManifestPart{Name: "rootfs", AssetA: &ManifestAsset{Name: "rootfs.img", Size: 1, SHA256: testHashA}, AssetB: &ManifestAsset{Name: "rootfs_b.img", Size: 2, SHA256: testHashB}}
+			m.Parts[1] = ManifestPart{Name: "rootfs", AssetA: &ManifestAsset{Name: "rootfs.img", Size: 1, SHA256: testHashA}, AssetB: &ManifestAsset{Name: "rootfs_b.img", Size: 2, SHA256: testHashB}}
 		}},
 	}
 
@@ -266,7 +260,7 @@ func TestAssetResolutionSelectsTargetSlotAssets(t *testing.T) {
 	}
 }
 
-func TestAssetResolutionFallsBackToNeutralForOEMRootfs(t *testing.T) {
+func TestAssetResolutionFallsBackToNeutralForRootfs(t *testing.T) {
 	part := ManifestPart{Name: "rootfs", Asset: &ManifestAsset{Name: "rootfs.img", Size: 33, SHA256: testHashC}}
 
 	asset, err := ResolveAsset(part, SlotB)
@@ -308,8 +302,6 @@ func TestManifestGeneratorScriptOutputVerifies(t *testing.T) {
 	for name, content := range map[string]string{
 		"boot_a.img":   "boot-a",
 		"boot_b.img":   "boot-b",
-		"oem_a.img":    "oem-a",
-		"oem_b.img":    "oem-b",
 		"rootfs_a.img": "rootfs-a",
 		"rootfs_b.img": "rootfs-b",
 	} {
@@ -345,8 +337,8 @@ func TestManifestGeneratorScriptOutputVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyManifestJSONWithPublicKeyPEM() error = %v", err)
 	}
-	if len(manifest.Parts) != 3 {
-		t.Fatalf("generated parts = %d, want 3", len(manifest.Parts))
+	if len(manifest.Parts) != 2 {
+		t.Fatalf("generated parts = %d, want 2", len(manifest.Parts))
 	}
 }
 
@@ -365,7 +357,7 @@ func TestManifestGeneratorRejectsDeviceInvalidMetadata(t *testing.T) {
 	if err := os.Mkdir(imageDir, 0o755); err != nil {
 		t.Fatalf("Mkdir(imageDir) error = %v", err)
 	}
-	for _, name := range []string{"boot_a.img", "boot_b.img", "oem.img", "rootfs.img"} {
+	for _, name := range []string{"boot_a.img", "boot_b.img", "rootfs.img"} {
 		if err := os.WriteFile(filepath.Join(imageDir, name), []byte(name), 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", name, err)
 		}
@@ -420,13 +412,12 @@ func runCommand(t *testing.T, dir string, name string, args ...string) {
 
 func validTestManifest() Manifest {
 	return Manifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Channel:       "stable",
 		Version:       "20260521-120000-abcdef0",
 		BuildTime:     time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
 		Parts: []ManifestPart{
 			{Name: "boot", AssetA: &ManifestAsset{Name: "boot_a.img", Size: 11, SHA256: testHashA}, AssetB: &ManifestAsset{Name: "boot_b.img", Size: 22, SHA256: testHashB}},
-			{Name: "oem", AssetA: &ManifestAsset{Name: "oem_a.img", Size: 33, SHA256: testHashB}, AssetB: &ManifestAsset{Name: "oem_b.img", Size: 44, SHA256: testHashC}},
 			{Name: "rootfs", Asset: &ManifestAsset{Name: "rootfs.img", Size: 55, SHA256: testHashC}},
 		},
 		Signature: ManifestSignature{Algorithm: "ed25519"},
@@ -504,5 +495,42 @@ func TestManifestWithURLsSignatureVerification(t *testing.T) {
 
 	if verified.Parts[0].AssetA.URL != "https://cdn.example.com/firmware/boot_a.img" {
 		t.Errorf("URL not preserved: got %q", verified.Parts[0].AssetA.URL)
+	}
+}
+
+func TestManifestRejectsLegacyLayout(t *testing.T) {
+	manifest := validTestManifest()
+	manifest.SchemaVersion = 1
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("legacy schema was accepted")
+	}
+	manifest = validTestManifest()
+	manifest.Parts = append(manifest.Parts, ManifestPart{Name: "oem", Asset: &ManifestAsset{Name: "oem.img", Size: 1, SHA256: testHashA}})
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("retired OEM partition was accepted")
+	}
+	if err := requireAtomicProductionManifest(validTestManifest()); err != nil {
+		t.Fatal(err)
+	}
+	manifest = validTestManifest()
+	manifest.Parts = manifest.Parts[:1]
+	if err := requireAtomicProductionManifest(manifest); err == nil {
+		t.Fatal("partial production manifest was accepted")
+	}
+}
+
+func TestManifestRootFSSlotAssets(t *testing.T) {
+	manifest := validTestManifest()
+	manifest.Parts[1] = ManifestPart{Name: "rootfs", AssetA: &ManifestAsset{Name: "rootfs_a.img", Size: 1, SHA256: testHashA}, AssetB: &ManifestAsset{Name: "rootfs_b.img", Size: 2, SHA256: testHashB}}
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := ResolveAsset(manifest.Parts[1], SlotB)
+	if err != nil || asset.Name != "rootfs_b.img" {
+		t.Fatalf("asset=%+v err=%v", asset, err)
+	}
+	manifest.Parts[1].AssetB.Name = "rootfs_a.img"
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("wrong slot asset accepted")
 	}
 }

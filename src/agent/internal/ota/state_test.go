@@ -21,7 +21,7 @@ func TestStateAtomicWriteReadAndFactoryInitialization(t *testing.T) {
 		t.Fatalf("LoadState() error = %v", err)
 	}
 	for _, slot := range []Slot{SlotA, SlotB} {
-		for _, part := range []string{"boot", "oem", "rootfs"} {
+		for _, part := range []string{"boot", "rootfs"} {
 			name, err := slotName(slot)
 			if err != nil {
 				t.Fatalf("slotName(%v) error = %v", slot, err)
@@ -72,19 +72,19 @@ func TestStateSelectiveUpdateRequiresOmittedTargetPartitions(t *testing.T) {
 		Version:   "20260521-120000-new",
 		BuildTime: "2026-05-21T12:00:00Z",
 		Parts: []ManifestPart{
-			{Name: "boot", AssetA: &ManifestAsset{Name: "boot_a.img", Size: 1, SHA256: testHashB}, AssetB: &ManifestAsset{Name: "boot_b.img", Size: 1, SHA256: testHashB}, RequiresPartitions: []string{"oem=factory:" + testHashA, "rootfs=factory:" + testHashA}},
+			{Name: "boot", AssetA: &ManifestAsset{Name: "boot_a.img", Size: 1, SHA256: testHashB}, AssetB: &ManifestAsset{Name: "boot_b.img", Size: 1, SHA256: testHashB}, RequiresPartitions: []string{"rootfs=factory:" + testHashA}},
 		},
 	}
 	if err := state.ValidateSelectiveUpdate(manifest, SlotB); err != nil {
 		t.Fatalf("ValidateSelectiveUpdate() error = %v", err)
 	}
 
-	manifest.Parts[0].RequiresPartitions = []string{"oem=factory:" + testHashA}
+	manifest.Parts[0].RequiresPartitions = nil
 	if err := state.ValidateSelectiveUpdate(manifest, SlotB); err == nil || !strings.Contains(err.Error(), "rootfs") {
 		t.Fatalf("missing requirement error = %v", err)
 	}
 
-	manifest.Parts[0].RequiresPartitions = []string{"oem=factory:" + testHashA, "rootfs=other:" + testHashA}
+	manifest.Parts[0].RequiresPartitions = []string{"rootfs=other:" + testHashA}
 	if err := state.ValidateSelectiveUpdate(manifest, SlotB); err == nil || !strings.Contains(err.Error(), "rootfs") {
 		t.Fatalf("stale requirement error = %v", err)
 	}
@@ -93,7 +93,7 @@ func TestStateSelectiveUpdateRequiresOmittedTargetPartitions(t *testing.T) {
 func TestStateCommitUpdateRecordsTargetSlotAndCommittedVersion(t *testing.T) {
 	state := NewFactoryState("factory", "2026-05-21T10:00:00Z", uniformFactoryPartitionHashes(testHashA))
 	manifest := Manifest{Version: "20260521-120000-new", BuildTime: "2026-05-21T12:00:00Z"}
-	assets := map[string]ManifestAsset{"boot": {SHA256: testHashB}, "oem": {SHA256: testHashC}}
+	assets := map[string]ManifestAsset{"boot": {SHA256: testHashB}}
 	if err := state.CommitUpdate(manifest, SlotB, assets); err != nil {
 		t.Fatalf("CommitUpdate() error = %v", err)
 	}
@@ -121,5 +121,16 @@ func TestStateRejectsInvalidTargetSlot(t *testing.T) {
 	}
 	if err := state.CommitUpdate(manifest, Slot(99), map[string]ManifestAsset{"boot": {SHA256: testHashB}}); err == nil || !strings.Contains(err.Error(), "invalid slot") {
 		t.Fatalf("CommitUpdate invalid slot error = %v", err)
+	}
+}
+
+func TestFactoryHashesRejectLegacyLayout(t *testing.T) {
+	hashes := uniformFactoryPartitionHashes(testHashA)
+	if err := validateFactoryPartitionHashes(hashes); err != nil {
+		t.Fatal(err)
+	}
+	hashes["a"]["oem"] = testHashB
+	if err := validateFactoryPartitionHashes(hashes); err == nil {
+		t.Fatal("legacy hashes accepted")
 	}
 }

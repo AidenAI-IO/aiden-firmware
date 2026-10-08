@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"sort"
+
 	"aiden-agent/internal/agent/realtimevoice"
 	"aiden-agent/internal/agent/tts"
 )
@@ -31,6 +33,24 @@ type EnumOption struct {
 	Value     string   `json:"value"`
 	Label     string   `json:"label,omitempty"`
 	Providers []string `json:"providers,omitempty"`
+	// ExcludeProviders hides a choice from provider types that cannot use it.
+	// It exists for values such as the empty api_mode: that value means "the
+	// provider's compatible default", which providers without a compatible
+	// transport (Gemini) must not be offered.
+	ExcludeProviders []string `json:"excludeProviders,omitempty"`
+}
+
+// chatCompletionsUnsupportedProviderTypes lists provider types that have no
+// usable OpenAI-compatible /chat/completions transport, so the empty api_mode
+// value cannot stand for their default.
+func chatCompletionsUnsupportedProviderTypes() []string {
+	var types []string
+	for _, definition := range modelProviderDefinitions {
+		if definition.chatCompletionsUnsupported {
+			types = append(types, definition.providerType)
+		}
+	}
+	return types
 }
 
 func realtimeProviderEnumOptions() []EnumOption {
@@ -61,6 +81,53 @@ func realtimeProviderPlaceholders(field string) []ConditionalPlaceholder {
 	return placeholders
 }
 
+// modelTemperaturePlaceholders derives the temperature placeholder from the
+// model spec registry so the editor advertises the value the runtime will
+// actually resolve for the selected model. Without it the field shows the global
+// defaultModelTemperature for every model, which contradicts the runtime
+// wherever a spec pins its own default: the Gemini 3 models pin Google's
+// documented 1.0 (Google warns a lower value may cause looping or degraded
+// reasoning) and Kimi K3 pins the temperature it requires. Native Gemini models
+// without a registered default get an empty placeholder because the runtime
+// omits temperature and lets Google choose.
+//
+// This is a placeholder, not a Default, so an untouched field still saves as
+// unset and keeps the resolve-at-load contract in applyModelTemperatureDefault
+// instead of baking a value into agent.toml.
+//
+// Ids are grouped by pinned value so one condition covers every spelling the
+// registry holds (bare name and provider-prefixed). The registry stays the
+// single source of truth: pinning a new model in model_specs.go extends this
+// automatically.
+func modelTemperaturePlaceholders() []ConditionalPlaceholder {
+	grouped := map[float64][]string{}
+	for id, spec := range modelSpecRegistry {
+		if spec.DefaultTemperature == nil {
+			continue
+		}
+		grouped[*spec.DefaultTemperature] = append(grouped[*spec.DefaultTemperature], id)
+	}
+	temperatures := make([]float64, 0, len(grouped))
+	for temperature := range grouped {
+		temperatures = append(temperatures, temperature)
+	}
+	// Map iteration order is random; sort so `agent config-meta` output is stable.
+	sort.Float64s(temperatures)
+	providerDefaultTypes := modelProviderTypesUsingProviderTemperatureDefault()
+	placeholders := make([]ConditionalPlaceholder, 0, len(grouped)+len(providerDefaultTypes))
+	for _, temperature := range temperatures {
+		ids := grouped[temperature]
+		sort.Strings(ids)
+		placeholders = append(placeholders, placeholderWhen(temperature, in("model.model", ids...)))
+	}
+	// Keep provider-level rules after model-specific rules so a known model
+	// default wins. The provider registry owns which provider types defer.
+	for _, providerType := range providerDefaultTypes {
+		placeholders = append(placeholders, placeholderWhen(nil, providerTypeIs("model.provider", providerType)))
+	}
+	return placeholders
+}
+
 // Range describes the bounds for a numeric field. When a number field also
 // carries a Range, the UI renders it as a select of discrete steps.
 type Range struct {
@@ -74,7 +141,7 @@ type Range struct {
 // Field is a dotted path like "model.provider" or "agent.input_mode".
 type Condition struct {
 	Field  string   `json:"field"`
-	Op     string   `json:"op"`               // eq | ne | in | notIn | truthy
+	Op     string   `json:"op"`               // eq | ne | in | notIn | truthy | providerType
 	Value  string   `json:"value,omitempty"`  // for eq / ne
 	Values []string `json:"values,omitempty"` // for in / notIn
 }
@@ -146,6 +213,9 @@ func enumOptions(values ...string) []EnumOption {
 func eq(field, value string) Condition { return Condition{Field: field, Op: "eq", Value: value} }
 func ne(field, value string) Condition { return Condition{Field: field, Op: "ne", Value: value} }
 func truthy(field string) Condition    { return Condition{Field: field, Op: "truthy"} }
+func providerTypeIs(field, value string) Condition {
+	return Condition{Field: field, Op: "providerType", Value: value}
+}
 func in(field string, vs ...string) Condition {
 	return Condition{Field: field, Op: "in", Values: vs}
 }
@@ -175,10 +245,9 @@ func withDisplayDefaults(metadata ConfigMetadata) ConfigMetadata {
 }
 
 // ConfigMeta returns the full field metadata for the config web UI. Defaults
-// here are the canonical defaults for the device's agent.toml. Free-text
-// fields (custom_instruction, additional_prompt) intentionally carry no
-// metadata default: the built-in prompt is runtime content, while
-// custom_instruction is only an override.
+// here are the canonical defaults for the device's agent.toml. The free-text
+// prompt intentionally carries no metadata default: the built-in
+// Agent instruction is runtime content, and prompt only extends it.
 func ConfigMeta() ConfigMetadata {
 	defaults := DefaultConfig()
 	tencentSTTProviderNames := sttProviderNamesForCanonical(tencentASRProvider)
@@ -205,11 +274,13 @@ func ConfigMeta() ConfigMetadata {
 						Help:    "Select or enter the model name exposed by the configured provider.",
 						Default: defaults.Model.Model, Layout: "wide"},
 					{Key: "api_mode", Label: "Conversation API", Widget: WidgetSelect,
-						Help: "Choose who manages conversation context. Local context sends history without provider storage; provider context stores responses and continues from the previous response ID.",
+						Help: "Choose the conversation wire protocol and who manages context. Local modes submit the transcript; provider modes continue from provider state.",
 						Enum: []EnumOption{
-							{Value: "", Label: "Chat Completions (compatible)"},
+							{Value: "", Label: "Chat Completions (compatible)", ExcludeProviders: chatCompletionsUnsupportedProviderTypes()},
 							{Value: "responses", Label: "Responses (local context)", Providers: []string{"openai", "openrouter", "volcengine", "deepseek"}},
 							{Value: "responses_stateful", Label: "Responses (provider context)", Providers: []string{"openai", "volcengine"}},
+							{Value: "interactions", Label: "Interactions (local context)", Providers: []string{"gemini"}},
+							{Value: "interactions_stateful", Label: "Interactions (provider context)", Providers: []string{"gemini"}},
 						},
 						Default: defaults.Model.APIMode, Layout: "wide"},
 					{Key: "responses_context_management", Label: "Provider compaction", Widget: WidgetSelect,
@@ -252,10 +323,13 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(in("model.api_mode", "responses", "responses_stateful")),
 						Default:     defaults.Model.ResponsesInclude},
 					// The effective default is model-dependent (resolved at load
-					// time); show the global fallback here as the UI placeholder.
+					// time). Default carries the non-Gemini global fallback;
+					// PlaceholderWhen overrides it for pinned models and native
+					// Gemini models that defer to Google's default.
 					{Key: "temperature", Label: "Temperature", Widget: WidgetNumber,
-						Help:    "Controls response randomness. Lower values are more deterministic; 0 is sent as an explicit value.",
-						Default: defaultModelTemperature, Nullable: true},
+						Help:            "Controls response randomness. Leave empty to use the Agent-selected default; some models defer to their provider default. 0 is sent as an explicit value.",
+						PlaceholderWhen: modelTemperaturePlaceholders(),
+						Default:         defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Label: "Maximum response tokens", Widget: WidgetNumber,
 						Help:    "Maximum number of tokens allowed in one model response.",
 						Default: defaults.Model.MaxResponseTokens},
@@ -458,6 +532,11 @@ func ConfigMeta() ConfigMetadata {
 						Enum:        realtimeProviderEnumOptions(),
 						Default:     defaults.VoiceModel.Provider,
 						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
+					{Key: "use_backend_agent", Label: "Use Backend Agent", Widget: WidgetBoolean,
+						Help:        "Disabled by default. Enable to use the backend agent and expose its communication tools. When disabled, the realtime model gets the runtime tools that the backend agent would otherwise use. Provider reasoning is unaffected.",
+						Default:     defaults.VoiceModel.UseBackendAgent,
+						Advanced:    true,
+						VisibleWhen: all(eq("agent.input_mode", "realtime"))},
 				},
 			},
 			{
@@ -502,6 +581,17 @@ func ConfigMeta() ConfigMetadata {
 						Help:        "Optional provider WebSocket endpoint override. Leave empty to use the provider default.",
 						Advanced:    true,
 						VisibleWhen: all(in("voice_model_providers.type", "qwen", "openai", "gemini", "xai"))},
+					{Key: "thinking_level", Label: "Thinking Level", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "", Label: "LOW (default)"},
+							{Value: "MINIMAL", Label: "MINIMAL"},
+							{Value: "LOW", Label: "LOW"},
+							{Value: "MEDIUM", Label: "MEDIUM"},
+							{Value: "HIGH", Label: "HIGH"},
+						},
+						Help:        "Thinking depth for Gemini Live Extended Thinking models. Only applies to models that support thinking; other providers ignore it.",
+						Advanced:    true,
+						VisibleWhen: all(eq("voice_model_providers.type", "gemini"))},
 					{Key: "realtime_protocol", Label: "Realtime Protocol", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "", Label: "OpenAI GA (default)"},
@@ -521,6 +611,19 @@ func ConfigMeta() ConfigMetadata {
 						},
 						Default: defaults.VoiceModel.Region, Advanced: true,
 						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "turn_detection", Label: "Turn Detection", Widget: WidgetSelect,
+						Enum: []EnumOption{
+							{Value: "server_vad", Label: "Server VAD"},
+							{Value: "smart_turn", Label: "Smart Turn"},
+						},
+						Default: defaults.VoiceModel.TurnDetection, Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"))},
+					{Key: "turn_detection_threshold", Label: "Turn Detection Threshold", Widget: WidgetNumber,
+						Help: "Optional Qwen server_vad threshold. Leave empty to use the provider default.", Placeholder: "Default: 0.5", Nullable: true, Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"), eq("voice_model_providers.turn_detection", "server_vad"))},
+					{Key: "turn_detection_silence_ms", Label: "Turn Detection Silence (ms)", Widget: WidgetNumber,
+						Help: "Optional Qwen server_vad silence duration before completing a turn. Leave empty to use the provider default.", Placeholder: "Default: 800", Advanced: true,
+						VisibleWhen: all(eq("voice_model_providers.type", "qwen"), eq("voice_model_providers.turn_detection", "server_vad"))},
 					{Key: "voice", Label: "Voice", Widget: WidgetText, Default: defaults.VoiceModel.Voice,
 						Help:            "Realtime system voice name or voice-clone ID (provider-specific).",
 						PlaceholderWhen: realtimeProviderPlaceholders("voice")},
@@ -725,10 +828,8 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},
 					{Key: "screen_stable_ms", Widget: WidgetNumber, Default: defaults.ScreenStableMs},
 					{Key: "screen_stable_diff_threshold", Widget: WidgetNumber, Default: defaults.ScreenStableDiffThreshold},
-					{Key: "custom_instruction", Label: "Primary instruction", Widget: WidgetTextarea, Layout: "wide",
-						Help: "Replaces the built-in Agent instruction when set. Leave empty to use the built-in instruction."},
-					{Key: "additional_prompt", Label: "Additional prompt", Widget: WidgetTextarea, Layout: "wide",
-						Help: "Appended after the primary instruction. Use it for device, project, or environment-specific requirements."},
+					{Key: "prompt", Label: "Prompt", Widget: WidgetTextarea, Layout: "wide",
+						Help: "Appended after the built-in Agent instruction. Use it for device, project, or environment-specific requirements."},
 				},
 			},
 		},

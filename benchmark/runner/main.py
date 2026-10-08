@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,7 @@ from runner.report import (
 )
 from runner.recovery import (
     DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
+    recover_agent_after_timeout,
     wait_for_agent_ready,
 )
 from runner.reset import (
@@ -87,6 +89,15 @@ def wait_for_agent_clock(
         if now >= deadline:
             return False
         time.sleep(min(max(0, poll_sec), max(0, deadline - now)))
+
+
+def recover_agent_after_timeout(client: AgentClient, timeout_sec: int = 90) -> bool:
+    """Wait for an Agent to become usable after a task timeout.
+
+    Keep this small compatibility seam separate from task execution so callers
+    and tests can replace the recovery policy without replacing the runner.
+    """
+    return wait_for_agent_ready(client, timeout_sec=timeout_sec)
 
 
 def cli(argv: list[str] | None = None) -> int:
@@ -178,6 +189,9 @@ def cli(argv: list[str] | None = None) -> int:
     )
     p_compare = sub.add_parser("compare")
     p_compare.add_argument("--runs", nargs=2, required=True)
+    p_publish = sub.add_parser("publish-langfuse")
+    p_publish.add_argument("--run-dir", required=True)
+    p_publish.add_argument("--dataset-prefix", default="aiden-benchmark")
     p_webui = sub.add_parser("webui")
     p_webui.add_argument("--host", default="127.0.0.1")
     p_webui.add_argument("--port", type=int, default=8765)
@@ -200,6 +214,29 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "compare":
         from runner.compare import compare_runs
         return compare_runs(Path(args.runs[0]), Path(args.runs[1]))
+    if args.cmd == "publish-langfuse":
+        from runner.langfuse_reporter import LangfusePublishError, publish_run
+        try:
+            published = publish_run(
+                Path(args.run_dir),
+                dataset_prefix=args.dataset_prefix,
+                progress=lambda message: print(
+                    f"Langfuse publish: {message}",
+                    flush=True,
+                ),
+            )
+        except LangfusePublishError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        state = "already published" if published.already_exists else "published"
+        print(
+            f"Langfuse experiment {state}: dataset={published.dataset_name} "
+            f"run={published.run_name} items={published.item_count}",
+            flush=True,
+        )
+        if published.dataset_run_url:
+            print(f"View experiment: {published.dataset_run_url}", flush=True)
+        return 0
     if args.cmd == "webui":
         from runner.webui import cli as webui_cli
         forwarded = [
@@ -314,9 +351,13 @@ def _result_totals(results: list[object], total_tasks: int | None = None) -> dic
 
 
 def _run_exit_code(totals: dict[str, int]) -> int:
-    if totals.get("failed", 0) or totals.get("judge_error", 0) or totals.get("timeout", 0):
+    if totals.get("judge_error", 0) or totals.get("timeout", 0):
         return 1
-    accounted = totals.get("passed", 0) + totals.get("skipped", 0)
+    accounted = (
+        totals.get("passed", 0)
+        + totals.get("failed", 0)
+        + totals.get("skipped", 0)
+    )
     return 0 if accounted == totals.get("tasks", 0) else 1
 
 
@@ -477,6 +518,23 @@ def _planned_metrics_k(units: list[TaskRunUnit]) -> int:
     return min(repeats, default=1)
 
 
+def _planned_task_attempts(units: list[TaskRunUnit]) -> list[dict[str, object]]:
+    return [
+        {"task_id": unit.task.id, "attempt": unit.attempt}
+        for unit in units
+    ]
+
+
+def _write_suite_snapshot(run_dir: Path, suite: Suite) -> str:
+    snapshot_name = "suite.json"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    source_bytes = suite.source_bytes or suite.source_path.read_bytes()
+    if hashlib.sha256(source_bytes).hexdigest() != suite.sha256:
+        raise ValueError("suite source no longer matches its loaded SHA-256")
+    (run_dir / snapshot_name).write_bytes(source_bytes)
+    return snapshot_name
+
+
 def _cmd_run_auto_agent_setup(
     args: argparse.Namespace,
     suite: Suite,
@@ -514,7 +572,13 @@ def _cmd_run_auto_agent_setup(
         print(f"mock environment started: {mock_server.redacted_url}", flush=True)
     try:
         return _cmd_run_auto_agent_setup_inner(
-            args, suite, selected_task_ids, target_platform, run_id, run_dir, mock_server=mock_server
+            args,
+            suite,
+            selected_task_ids,
+            target_platform,
+            run_id,
+            run_dir,
+            mock_server=mock_server,
         )
     finally:
         if mock_server is not None:
@@ -540,6 +604,7 @@ def _cmd_run_auto_agent_setup_inner(
     from runner.webui import (
         Job,
         append_log,
+        container_boot_failure_detail,
         docker_published_port,
         endpoint_for_docker,
         ensure_daemon_image,
@@ -696,11 +761,24 @@ def _cmd_run_auto_agent_setup_inner(
                 environment_bridge_mode=bool(args.environment_url),
                 log_path=runner_log,
             )
-            published_port = docker_published_port(container_id, 8080)
+            append_log(runner_log, f"container {container_id}")
+            # Stream daemon logs before probing the published port so a
+            # container that exits at startup (e.g. config validation failure)
+            # still leaves its output in daemon.log.
+            log_proc = start_daemon_logs(job, daemon_log)
+            try:
+                published_port = docker_published_port(container_id, 8080)
+            except Exception as exc:
+                boot_detail = container_boot_failure_detail(container_id)
+                append_log(runner_log, f"daemon failed to publish port 8080: {exc}")
+                if boot_detail:
+                    append_log(runner_log, boot_detail)
+                raise RuntimeError(
+                    "daemon container is not serving port 8080: "
+                    + (boot_detail or str(exc))
+                ) from exc
             job.agent_url = f"http://127.0.0.1:{published_port}"
             client = _new_agent_client(job.agent_url, benchmark_token)
-            append_log(runner_log, f"container {container_id}")
-            log_proc = start_daemon_logs(job, daemon_log)
             if not wait_for_agent_ready(client, timeout_sec=args.agent_ready_timeout_sec):
                 return skipped_task_result(
                     suite,
@@ -799,9 +877,11 @@ def _cmd_run_auto_agent_setup_inner(
             })
 
     totals = _result_totals(results, total_runs)
+    suite_snapshot_path = _write_suite_snapshot(run_dir, suite)
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
+        "suite_snapshot_path": suite_snapshot_path,
         "selected_task_ids": selected_task_ids,
         "agent_url": None,
         "environment_url": display_environment_url or None,
@@ -817,6 +897,7 @@ def _cmd_run_auto_agent_setup_inner(
         "totals": totals,
         "metrics_schema_version": "p0-v1",
         "metrics_k": _planned_metrics_k(units),
+        "planned_task_attempts": _planned_task_attempts(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
@@ -838,6 +919,10 @@ def _cmd_run_auto_agent_setup_inner(
     print(f"Passed:        {manifest['totals']['passed']}", flush=True)
     print(f"Failed:        {manifest['totals']['failed']}", flush=True)
     print(f"Skipped:       {manifest['totals']['skipped']}", flush=True)
+    if manifest["totals"]["timeout"] > 0:
+        print(f"Timeout:        {manifest['totals']['timeout']}", flush=True)
+    if manifest["totals"]["judge_error"] > 0:
+        print(f"Judge Error:    {manifest['totals']['judge_error']}", flush=True)
     print(f"Results saved to: {run_dir}", flush=True)
     print("="*60 + "\n", flush=True)
     return _run_exit_code(manifest["totals"])
@@ -895,6 +980,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.auto_agent_setup and _suite_has_mock_environment(suite):
         requested_platform = str(args.target_platform or "").strip().lower()
         target_platform = "" if requested_platform == "auto" else requested_platform
+    if args.repeats is not None and args.repeats <= 0:
+        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
+        return 2
     if (
         args.environment_url
         and os.environ.get(MOBILEGYM_PREFLIGHT_COMPLETE_ENV) != "1"
@@ -907,6 +995,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         except Exception as exc:
             print(f"Error: environment preflight failed: {exc}", file=sys.stderr)
             return 2
+    if run_dir.exists() and (
+        not run_dir.is_dir() or any(run_dir.iterdir())
+    ):
+        print(f"Error: benchmark run directory already exists: {run_dir}", file=sys.stderr)
+        return 2
     if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(
             args,
@@ -916,9 +1009,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             run_id,
             run_dir,
         )
-    if args.repeats is not None and args.repeats <= 0:
-        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
-        return 2
     units = _build_task_units(args, suite, target_platform)
     has_runnable_units = any(not unit.skip_reason for unit in units)
     if args.environment_url:
@@ -1076,9 +1166,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if client is not None:
             client.close()
     totals = _result_totals(results, total_runs)
+    suite_snapshot_path = _write_suite_snapshot(run_dir, suite)
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
+        "suite_snapshot_path": suite_snapshot_path,
         "selected_task_ids": selected_task_ids,
         "agent_url": args.agent_url,
         "environment_url": args.environment_url or None,
@@ -1092,6 +1184,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "totals": totals,
         "metrics_schema_version": "p0-v1",
         "metrics_k": _planned_metrics_k(units),
+        "planned_task_attempts": _planned_task_attempts(units),
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)

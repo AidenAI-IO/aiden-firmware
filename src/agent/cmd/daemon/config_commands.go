@@ -265,6 +265,7 @@ func runConfigUpdateIO(args []string, stdin io.Reader, stdout, stderr io.Writer)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read JSON merge patch from stdin")
 	configFlag := fs.String("config", "", "path to a TOML config file")
+	dryRunFlag := fs.Bool("dry-run", false, "validate and report the apply level without writing the config")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -281,7 +282,11 @@ func runConfigUpdateIO(args []string, stdin io.Reader, stdout, stderr io.Writer)
 		writeConfigUpdateError(stdout, err, configupdate.ErrorKindInternal)
 		return 1
 	}
-	result, err := configupdate.NewService().Update(strings.TrimSpace(*configFlag), patch)
+	update := configupdate.NewService().Update
+	if *dryRunFlag {
+		update = configupdate.NewService().Plan
+	}
+	result, err := update(strings.TrimSpace(*configFlag), patch)
 	if err != nil {
 		writeConfigUpdateError(stdout, err, configupdate.ErrorKind(err))
 		return 1

@@ -18,6 +18,16 @@ import (
 
 type telemetryPromptContextKey struct{}
 
+// withTelemetryRole tags model calls made with the returned context with the
+// role of the operation issuing them. Captured generations are named after
+// that role, so a run's model calls stay distinguishable in Langfuse.
+func withTelemetryRole(ctx context.Context, role string) context.Context {
+	if strings.TrimSpace(role) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, telemetryPromptContextKey{}, role)
+}
+
 func telemetryRoleFromContext(ctx context.Context) string {
 	if value, ok := ctx.Value(telemetryPromptContextKey{}).(string); ok {
 		return value
@@ -73,7 +83,9 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 		}
 	}
 	call := telemetryPromptCall{
-		ID:              uuid.NewString(),
+		// The call ID doubles as the Langfuse observation ID of its generation,
+		// so it must be an OTLP span ID.
+		ID:              telemetryObservationID(),
 		Role:            telemetryRoleFromContext(ctx),
 		StartedAt:       startedAt.UTC(),
 		EndedAt:         endedAt.UTC(),

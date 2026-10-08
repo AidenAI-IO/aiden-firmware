@@ -80,13 +80,17 @@ def call_environment_setup(
     timeout: int = 30,
     task_id: str | None = None,
     app_ids: list[str] | None = None,
+    foreground_app_id: str | None = None,
 ) -> dict[str, Any]:
     return _post_environment(
         _environment_endpoint(environment_url).setup,
         timeout=timeout,
         headers=_environment_headers(task_id),
         action="setup",
-        payload={"app_ids": list(app_ids or [])},
+        payload={
+            "app_ids": list(app_ids or []),
+            **({"foreground_app_id": foreground_app_id} if foreground_app_id else {}),
+        },
     )
 
 

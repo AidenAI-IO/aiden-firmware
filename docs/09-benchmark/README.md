@@ -172,6 +172,27 @@ Reports include:
 Judge uses only the pre/post screenshots plus trace/final response. It does not
 consume every intermediate screenshot.
 
+CI treats a benchmark as complete when every planned task has a result row and
+the manifest totals match those rows. Task-level `failed`, `skipped`,
+`judge_error`, `timeout`, setup, environment, and agent errors remain visible in
+`summary.md` and `report.html`, but do not fail the workflow. A missing or
+invalid manifest, missing result rows, inconsistent totals, or a killed runner
+still fails the workflow because no complete report exists.
+
+When artifact upload succeeds, the Actions job summary links the report bundle.
+To expose the same self-contained, interactive `report.html` directly from CI, configure
+both repository variables below. The publish step copies the generated HTML
+unchanged, so its layout and drawer interactions are identical to the WebUI
+report.
+
+- `BENCHMARK_REPORT_PUBLISH_DIR`: persistent directory served by a static HTTP
+  server on the self-hosted runner.
+- `BENCHMARK_REPORT_BASE_URL`: public or internal URL mapped to that directory.
+
+Direct report publishing is optional and does not affect the benchmark result.
+The repository GitHub Pages site is reserved for the APT repository and must
+not be used as this directory without a coordinated combined deployment.
+
 ## Directory Structure
 
 ```text
@@ -244,7 +265,153 @@ uv run python -m runner compare --runs runs/<run_a> runs/<run_b>
 
 Compare task status flips, latency, and pass-rate changes between two runs.
 
-## Environment Variables
+### Publish a completed run to Langfuse
+
+Publishing is a separate post-run step, so a failed upload can be retried without
+rerunning the Agent or device environment. Each stable suite name maps to one
+Langfuse Dataset, every task attempt maps to a stable Dataset Item, and each
+benchmark execution creates an Experiment Run with item-level and aggregate
+benchmark scores. Updating a suite upserts new Dataset Item versions instead of
+creating a new Dataset. Each new run also stores `suite.json` beside its manifest,
+so it remains publishable after the source suite changes.
+
+```bash
+cd benchmark
+export LANGFUSE_PUBLIC_KEY="pk-lf-..."
+export LANGFUSE_SECRET_KEY="sk-lf-..."
+export LANGFUSE_BASE_URL="http://127.0.0.1:3010"
+
+uv run python -m runner publish-langfuse --run-dir runs/<run-id>
+```
+
+Runs with the same suite name appear in the same Dataset. The experiment metadata
+records the Git SHA, suite hash, workload hash, model, judge, platform, metrics
+schema, and fixed `k`. The workload hash covers only task and attempt keys. For a
+like-for-like regression, require matching suite hash, workload hash, `k`, Agent
+model, judge provider/model/prompt version, target platform, and active skills.
+When comparing models or judges intentionally, treat that changed field as the
+experiment axis and keep the other score-affecting metadata fixed. Runs from
+different suite versions can still be inspected in Langfuse, but their aggregate
+scores should not be treated as a like-for-like regression unless the unchanged
+item intersection is used or the old product version is rerun against the new
+suite definition. When an Agent episode ID is present, the experiment trace also
+records the deterministic Agent trace ID for correlation with Aiden telemetry.
+
+Publishing is idempotent by run ID. A retry verifies the Dataset Run Item set,
+adds any missing items, and rewrites scores with stable IDs. A conflicting run ID
+fails instead of silently mixing results. Langfuse's native Latency and Cost
+columns describe the artifact replay used to construct the Experiment Run; use
+the `benchmark.*`, `efficiency.*`, `reliability.*`, and
+`cost_to_first_success.*` scores for real benchmark measurements.
+
+Artifact replay is intentionally serialized. Langfuse creates or finds the
+Dataset Run while linking each Dataset Item, and concurrent first-item requests
+can create duplicate same-name runs on self-hosted deployments. The publish CLI
+logs dataset/run identity, item preparation, replay, read-back retries, score
+publication, and the final CI publication totals so a partial ingestion is not
+mistaken for a successful publish.
+
+The separate publish command is the CI integration point. A GitHub Actions job
+can run a suite with a unique run ID and publish the completed artifacts in a
+second step:
+
+```yaml
+- name: Run benchmark
+  working-directory: benchmark
+  run: |
+    RUN_ID="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA::8}"
+    echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+    uv run python -m runner run \
+      --suite suites/<suite>.json \
+      --run-id "$RUN_ID" \
+      <environment-options>
+
+- name: Publish benchmark to Langfuse
+  working-directory: benchmark
+  env:
+    LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+    LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+    LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+  run: uv run python -m runner publish-langfuse --run-dir "runs/$RUN_ID"
+```
+
+## GitHub Actions CI
+
+The benchmark workflow is `.github/workflows/benchmark.yml`. It deliberately
+uses the CLI runner rather than the WebUI, so every case has a stable exit code,
+self-contained artifacts, and an idempotent Langfuse publication step.
+
+The source of truth for suite selection is `benchmark/ci/suites.json`. The CI
+catalog validation job fails when a new `benchmark/suites/**/*.json` file is not
+classified, which prevents a new suite from being silently omitted. A suite can
+be represented by more than one case when its tasks need different platforms;
+`connection_capabilities_v1.json` is currently split into iOS and Android cases.
+
+The execution policy is based only on whether CI can prepare the environment:
+
+| Trigger | Profile | Purpose |
+| --- | --- | --- |
+| Monday, Wednesday, Friday schedule | `runnable` | Every automatic case CI can run without external hardware (13 cases) |
+| Manual dispatch | `runnable` | Rerun all isolated, mock, and MobileGym cases |
+| Manual dispatch | `hardware` | ADB, VPhone, desktop, and real-phone bridge cases (12 cases) |
+| Manual dispatch | `all` | Every catalog case; requires all configured environments |
+
+The scheduled sweep runs at 02:17 Asia/Shanghai on Monday, Wednesday, and
+Friday. It selects every case whose environment is `isolated` or `mobilegym`.
+The workflow starts Android MobileGym environments in Docker; isolated and mock
+suites run with isolated Agent workers and need no external device.
+VPhone is currently excluded because it requires a separately hosted macOS
+Apple Silicon bridge; it remains available through manual `hardware`/`all`
+dispatch once `BENCHMARK_VPHONE_ENVIRONMENT_URL` points to a reachable bridge.
+
+The 100-task MobileGym calibration suite is excluded from the automatic sweep;
+it remains explicitly selectable for a manual calibration run. A manual
+single-suite run must use the matching `runnable` or `hardware` profile; use
+`all` when intentionally overriding that boundary.
+
+Pull requests run the catalog and planner tests in the normal `CI` workflow, but
+do not receive Agent/Judge/Langfuse secrets and therefore do not operate a
+device. Real benchmark execution comes from the Monday/Wednesday/Friday schedule
+on the default branch or a manual dispatch on any repository branch. Manual
+dispatch remains unavailable to pull request and fork refs.
+
+Treat the first two weeks as a baseline period. Review each scheduled case's run
+duration, Langfuse cost, and failure class before deciding whether the policy of
+running every locally runnable case needs to change. Only add VPhone or another
+external environment to the schedule after its bridge has at least 99% health
+availability over that baseline period.
+
+The workflow expects these GitHub configuration values. GitHub-facing names omit
+the `AIDEN_` prefix; the workflow maps them to the runner variables documented
+below.
+
+- Variables: `BENCHMARK_AGENT_PROVIDER`, `BENCHMARK_AGENT_MODEL`,
+  `BENCHMARK_AGENT_BASE_URL`, `BENCHMARK_JUDGE_MODEL`,
+  `BENCHMARK_JUDGE_BASE_URL`, `DAEMON_IMAGE`, `ANDROID_SERIAL`,
+  `LANGFUSE_BASE_URL`, `BENCHMARK_PHONE_ENVIRONMENT_URL`,
+  `BENCHMARK_IOS_ENVIRONMENT_URL`, `BENCHMARK_MAC_ENVIRONMENT_URL`,
+  `BENCHMARK_VPHONE_ENVIRONMENT_URL`,
+  `BENCHMARK_AIDEN_APP_IOS_ENVIRONMENT_URL`, and
+  `BENCHMARK_AIDEN_APP_ANDROID_ENVIRONMENT_URL`.
+- Secrets: `BENCHMARK_AGENT_API_KEY`, `BENCHMARK_JUDGE_API_KEY`,
+  `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`.
+
+The benchmark job uses the dedicated `aiden-hosted-01` runner because the
+MobileGym and agent-daemon paths require Docker. One job performs checkout,
+dependency and Docker setup once, prepares the reusable images, and fans the
+selected cases out with a configurable concurrency limit. MobileGym cases are
+scheduled first so multiple container-backed benchmarks can overlap;
+hardware-backed cases share an exclusive lock to avoid device/bridge contention.
+Every completed run uploads a 14-day diagnostic bundle containing its manifest,
+metrics, results, summary, HTML report, suite snapshot, setup/case logs, and an
+image-build log when an image had to be built. The upload is retried once after a
+transient failure. The per-task trace and screenshot tree is omitted to keep the
+bundle reliable on the self-hosted runner's constrained uplink. The bundle is
+sufficient to inspect statuses and retry `runner publish-langfuse`; generated
+worker configs are also excluded because they contain materialized Agent
+credentials.
+
+## Runner and Local CLI Environment Variables
 
 - `AIDEN_BENCHMARK_AGENT_PROVIDER` - Agent provider type for the default config template.
 - `AIDEN_BENCHMARK_AGENT_MODEL` - Agent model for the default config template and run manifest.
@@ -257,6 +424,7 @@ Compare task status flips, latency, and pass-rate changes between two runs.
 - `AIDEN_AGENT_URL` - Default `--agent-url`.
 - `AIDEN_ENVIRONMENT_URL` - Default `--environment-url`.
 - `AIDEN_DAEMON_IMAGE` - Default daemon worker image for auto agent setup.
+- `LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS` - Maximum publication read-back wait; defaults to 660 seconds to cover Langfuse asynchronous ingestion lag.
 
 ## Execution Modes
 
@@ -271,7 +439,6 @@ runner APIs, but benchmark does not expose SkillOpt runs, suites, or reports.
 ## Related Documentation
 
 - [Architecture Design](./architecture.md)
-- [Implementation Backlog](./implementation-backlog.md)
 - [Detailed Guide](./quickstart.md)
 - [Environment Bridge Protocol](../../benchmark/environment_bridge.md)
 - [Full Manual](../../benchmark/manual.md)

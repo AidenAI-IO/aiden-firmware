@@ -139,8 +139,8 @@ def test_prepare_task_isolation_retries_clear_before_environment_setup(monkeypat
 def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkeypatch):
     setup_calls = []
 
-    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
-        setup_calls.append((environment_url, task_id, timeout, app_ids))
+    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None, foreground_app_id=None):
+        setup_calls.append((environment_url, task_id, timeout, app_ids, foreground_app_id))
 
     monkeypatch.setattr(
         "runner.recovery.call_environment_setup",
@@ -164,6 +164,7 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
         hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
         setup={"type": "agent_prompt", "prompt": "open a settings sub-page", "timeout_sec": 45},
         app_ids=["settings"],
+        foreground_app_id="settings",
     )
 
     prepare_task_isolation(
@@ -177,7 +178,7 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
     )
 
     assert setup_calls == [
-        ("http://127.0.0.1:9090", "suite.json:open_settings", 180, ["settings"])
+        ("http://127.0.0.1:9090", "suite.json:open_settings", 180, ["settings"], "settings")
     ]
     assert client.chats == [("ADB benchmark rules\n\nopen a settings sub-page", 45)]
     assert client.clears == 2
@@ -186,7 +187,7 @@ def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkey
 def test_prepare_task_isolation_rebuilds_environment_after_agent_prompt_timeout(monkeypatch):
     events = []
 
-    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
+    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None, foreground_app_id=None):
         events.append(("environment_setup", task_id))
 
     class TimeoutThenSuccessClient(SetupClient):
@@ -257,7 +258,7 @@ def test_prepare_task_isolation_rebuilds_environment_after_agent_prompt_timeout(
 def test_prepare_task_isolation_runs_seed_memory_with_environment_setup(monkeypatch):
     setup_calls = []
 
-    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
+    def fake_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None, foreground_app_id=None):
         setup_calls.append((environment_url, task_id, timeout, app_ids))
 
     monkeypatch.setattr(
@@ -420,7 +421,7 @@ def test_prepare_task_isolation_does_not_retry_consolidation_contract_failure(
 def test_prepare_task_isolation_does_not_repeat_failed_environment_setup(monkeypatch):
     setup_calls = 0
 
-    def fail_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None):
+    def fail_environment_setup(environment_url, task_id=None, timeout=30, app_ids=None, foreground_app_id=None):
         nonlocal setup_calls
         setup_calls += 1
         raise ResetError("environment reset failed")

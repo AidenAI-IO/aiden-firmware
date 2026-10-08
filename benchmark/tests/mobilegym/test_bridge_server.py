@@ -281,6 +281,8 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert body["data"]["platform"] == "android"
         assert body["data"]["concurrent"] == 1
         assert "/api/concurrent" in body["data"]["interfaces"]
+        assert "/state" in body["data"]["interfaces"]
+        assert "/route" in body["data"]["interfaces"]
 
         status, body = request_json(bridge.base_url, "GET", "/api/concurrent")
         assert status == 200
@@ -363,6 +365,72 @@ def test_setup_treats_null_app_ids_as_empty():
         assert bridge.env.reset_app_ids == [[]]
 
 
+def test_setup_foregrounds_only_explicit_app_id():
+    class Page:
+        def __init__(self):
+            self.calls = []
+
+        async def evaluate(self, script, app_id):
+            self.calls.append(app_id)
+            if app_id != "scroll_lab":
+                raise RuntimeError(f"app is not installed: {app_id}")
+
+    with RunningBridge() as bridge:
+        bridge.env.page = Page()
+        status, body = request_json(
+            bridge.base_url, "POST", "/api/setup",
+            {"app_ids": ["settings"], "foreground_app_id": "scroll_lab"},
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert bridge.env.reset_app_ids == [["settings"]]
+        assert bridge.env.page.calls == ["scroll_lab"]
+
+
+def test_setup_fails_when_foreground_app_cannot_open():
+    with RunningBridge() as bridge:
+        status, body = request_json(
+            bridge.base_url, "POST", "/api/setup",
+            {"foreground_app_id": "scroll_lab"},
+        )
+        assert status == 500
+        assert body["ok"] is False
+        assert "browser page" in body["error"]["message"]
+
+
+def test_setup_token_cache_includes_foreground_app_id():
+    class Page:
+        def __init__(self):
+            self.calls = []
+
+        async def evaluate(self, script, app_id):
+            self.calls.append(app_id)
+
+    with RunningBridge() as bridge:
+        bridge.env.page = Page()
+        for app_id in ("scroll_lab", "settings"):
+            status, body = request_json(
+                bridge.base_url,
+                "POST",
+                "/api/setup",
+                {"setup_token": "same-token", "foreground_app_id": app_id},
+            )
+            assert status == 200
+            assert body["ok"] is True
+
+        assert bridge.env.reset_calls == 2
+        assert bridge.env.page.calls == ["scroll_lab", "settings"]
+
+
+@pytest.mark.parametrize("value", ["", " scroll_lab ", 42, []])
+def test_setup_rejects_invalid_foreground_app_id(value):
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"foreground_app_id": value})
+        assert status == 400
+        assert body["error"]["code"] == "bad_request"
+        assert bridge.env.reset_calls == 0
+
+
 def test_setup_timeout_preserves_mobilegym_phase_diagnostic():
     with RunningBridge() as bridge:
         async def timeout_reset(app_ids=None):
@@ -380,6 +448,23 @@ def test_setup_timeout_preserves_mobilegym_phase_diagnostic():
         assert status == 504
         assert body["error"]["code"] == "timeout"
         assert "phase=waitForData" in body["error"]["message"]
+
+
+def test_submit_to_state_cancels_work_after_wait_timeout():
+    with RunningBridge() as bridge:
+        cancelled = threading.Event()
+
+        async def wait_forever():
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with pytest.raises(TimeoutError, match="bridge request timed out"):
+            bridge.server.submit_to_state(bridge.state, wait_forever(), timeout=0.01)
+
+        assert cancelled.wait(timeout=1)
 
 
 def test_api_screen_is_removed():
@@ -470,6 +555,38 @@ def test_provider_screenshot_routes_by_task_id():
             assert base64.b64decode(body["data"]["image"]) == b"beta-frame"
         finally:
             server.stop()
+
+
+@pytest.mark.parametrize("operation", ["swipe", "drag"])
+@pytest.mark.parametrize("duration_ms", [None, 0, 1, 120, 2400, 10_000])
+def test_provider_mnk_preserves_motion_duration_to_environment(operation, duration_ms):
+    with RunningBridge() as bridge:
+        status, _ = start_episode(bridge)
+        assert status == 200
+        params = {"path": [[500, 800], [500, 400]], "button": "left"}
+        if duration_ms is not None:
+            params["duration_ms"] = duration_ms
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/providers/mnk",
+            {"operation": operation, operation: params},
+        )
+
+        assert status == 200
+        assert body == {"success": True}
+        assert len(bridge.env.actions) == 1
+        # Legacy callers without a positive duration keep the backend default.
+        expected_duration = duration_ms or (160 if operation == "swipe" else 700)
+        assert action_to_dict(bridge.env.actions[0]) == {
+            "action_type": operation.upper(),
+            "data": {
+                "point1": [500.0, 800.0],
+                "point2": [500.0, 400.0],
+                "duration": expected_duration,
+            },
+        }
 
 
 def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordinates():

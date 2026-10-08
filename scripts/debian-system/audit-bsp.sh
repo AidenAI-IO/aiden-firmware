@@ -30,7 +30,7 @@ readonly -a EXPECTED_SERIAL_CONTRACTS=(
     '4:/serial@ff4e0000:okay'
     '5:/serial@ff4f0000:okay'
 )
-readonly PARTITION_LAYOUT='32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),256M(oem_a),256M(oem_b),1536M(rootfs_a),1536M(rootfs_b),3G(userdata),300M(ota)'
+readonly PARTITION_LAYOUT='32K(env),512K@32K(idblock),256K(uboot),4M(misc),32M(boot_a),32M(boot_b),1792M(rootfs_a),1792M(rootfs_b),3G(userdata),300M(ota)'
 readonly MISC_METADATA_HEX=00414230010000000f00010000000000000000000000000000000000671e21a4
 readonly BUILD_EPOCH=${SOURCE_DATE_EPOCH:-1767360516}
 

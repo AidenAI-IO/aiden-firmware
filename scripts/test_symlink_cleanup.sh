@@ -17,22 +17,19 @@ echo "Simulating build_updateimg() symlink lifecycle..."
 # 1. Create base images (as build_firmware does)
 printf 'boot_a\n' > "$image_dir/boot_a.img"
 printf 'boot_b\n' > "$image_dir/boot_b.img"
-printf 'oem\n' > "$image_dir/oem.img"
 printf 'rootfs\n' > "$image_dir/rootfs.img"
 printf 'userdata\n' > "$image_dir/userdata.img"
 
 echo "✓ Created base images"
 
 # 2. Create temporary symlinks (as build_updateimg does before mk-update_pack.sh)
-ln -sf oem.img "$image_dir/oem_a.img"
-ln -sf oem.img "$image_dir/oem_b.img"
 ln -sf rootfs.img "$image_dir/rootfs_a.img"
 ln -sf rootfs.img "$image_dir/rootfs_b.img"
 
 echo "✓ Created temporary symlinks"
 
 # Verify symlinks exist
-if [ ! -L "$image_dir/oem_a.img" ] || [ ! -L "$image_dir/rootfs_a.img" ]; then
+if [ ! -L "$image_dir/rootfs_a.img" ]; then
   echo "ERROR: Failed to create symlinks" >&2
   exit 1
 fi
@@ -43,7 +40,6 @@ printf 'update\n' > "$image_dir/update.img"
 echo "✓ Simulated update.img packaging"
 
 # 4. Clean up symlinks (as build_updateimg does after mk-update_pack.sh)
-rm -f "$image_dir/oem_a.img" "$image_dir/oem_b.img"
 rm -f "$image_dir/rootfs_a.img" "$image_dir/rootfs_b.img"
 
 echo "✓ Cleaned up symlinks"
@@ -66,7 +62,7 @@ if [ "${#remaining_symlinks[@]}" -gt 0 ]; then
 fi
 
 # 6. Verify only expected files remain
-expected_files=("boot_a.img" "boot_b.img" "oem.img" "rootfs.img" "userdata.img" "update.img")
+expected_files=("boot_a.img" "boot_b.img" "rootfs.img" "userdata.img" "update.img")
 for expected in "${expected_files[@]}"; do
   if [ ! -f "$image_dir/$expected" ]; then
     echo "ERROR: Expected file missing: $expected" >&2

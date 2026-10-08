@@ -122,6 +122,21 @@ def test_execute_mnk_request_rejects_invalid_payload(payload):
     assert response["error"]
 
 
+@pytest.mark.parametrize("operation", ["swipe", "drag"])
+@pytest.mark.parametrize("duration_ms", [-1, 10_001, True, 120.5, "120", None])
+def test_execute_mnk_request_rejects_invalid_motion_duration(operation, duration_ms):
+    status, response = execute_mnk_request(
+        {
+            "operation": operation,
+            operation: {"path": [[500, 800], [500, 400]], "duration_ms": duration_ms},
+        },
+        lambda *_: pytest.fail("must not invoke a tool"),
+    )
+
+    assert status == 400
+    assert "duration_ms" in response["error"]
+
+
 def test_execute_mnk_request_stops_on_tool_error():
     calls = []
 

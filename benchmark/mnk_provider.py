@@ -11,6 +11,7 @@ class MNKRequestError(ValueError):
 
 ToolCall = tuple[str, dict[str, Any]]
 ToolInvoker = Callable[[str, dict[str, Any]], dict[str, Any]]
+MAX_MOTION_DURATION_MS = 10_000
 
 
 def execute_mnk_request(
@@ -65,11 +66,18 @@ def mnk_tool_calls(payload: dict[str, Any]) -> list[ToolCall]:
                 f"{operation} path must contain exactly 2 points; multi-point paths are unsupported"
             )
         start, end = path
-        return [("touch_gesture", {
+        gesture = {
             "type": operation,
             "start": {"x": start[0], "y": start[1]},
             "end": {"x": end[0], "y": end[1]},
-        })]
+        }
+        duration_ms = _non_negative_int(params.get("duration_ms", 0), "duration_ms")
+        if duration_ms > MAX_MOTION_DURATION_MS:
+            raise MNKRequestError(f"duration_ms must be in range [0, {MAX_MOTION_DURATION_MS}]")
+        # The Go provider uses zero/omitted duration for backend defaults.
+        if duration_ms > 0:
+            gesture["duration_ms"] = duration_ms
+        return [("touch_gesture", gesture)]
 
     if operation == "keypress":
         params = _params(payload, "keypress")

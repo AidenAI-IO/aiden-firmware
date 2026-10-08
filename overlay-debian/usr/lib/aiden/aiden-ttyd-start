@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-TTYD_BIN=${TTYD_BIN:-${WETTY_BIN:-/oem/usr/bin/ttyd}}
+TTYD_BIN=${TTYD_BIN:-${WETTY_BIN:-/usr/lib/aiden/ttyd}}
 TTYD_INTERFACE=${TTYD_INTERFACE:-${WETTY_HOST:-}}
 TTYD_PORT=${TTYD_PORT:-${WETTY_PORT:-3000}}
 TTYD_BASE=${TTYD_BASE:-${WETTY_BASE:-/webtty/}}

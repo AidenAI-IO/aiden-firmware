@@ -92,6 +92,40 @@ def test_generate_report_marks_timeout_as_fail_and_escapes_drawer_chips(tmp_path
     assert "formatTime(t.wall_ms)" in html
 
 
+def test_generate_report_handles_missing_tool_call_metric(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 0, "failed": 0, "skipped": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "infrastructure",
+                "status": "skipped",
+                "rubric_pass_count": 0,
+                "rubric_total": 0,
+                "metrics": {"tool_calls": None},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert '<td class="mono">0</td>' in html
+    assert _report_tasks(html)[0]["tool_calls_count"] == 0
+
+
 def test_generate_report_shows_capability_metrics(tmp_path: Path):
     run_dir = tmp_path / "2026-05-28_091421"
     run_dir.mkdir()
@@ -457,6 +491,36 @@ def test_generate_report_includes_llm_analysis_section(tmp_path: Path):
 
     assert "LLM 分析" in html
     assert "Root cause summary" in html
+
+
+def test_generate_report_includes_all_task_error_fields(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run", "totals": {"tasks": 1, "passed": 1}}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "status": "passed",
+                "metrics": {
+                    "environment_state_error": "bridge unavailable",
+                    "pre_screenshot_error": "provider unavailable",
+                    "episode_error": "episode unavailable",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "Environment State Error" in html
+    assert "Pre Screenshot Error" in html
+    assert "Episode Error" in html
 
 
 def test_upload_report_uploads_analysis_artifacts(tmp_path: Path):

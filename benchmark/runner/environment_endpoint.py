@@ -49,5 +49,13 @@ class EnvironmentEndpoint:
         return f"{self.base}/api/providers/screenshot"
 
     @property
+    def state(self) -> str:
+        return f"{self.base}/state"
+
+    @property
+    def route(self) -> str:
+        return f"{self.base}/route"
+
+    @property
     def concurrent(self) -> str:
         return self.api("concurrent")

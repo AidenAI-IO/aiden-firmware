@@ -35,8 +35,8 @@ EOF
 
 "$CLEAN_SCRIPT" --catalog "$catalog" --managed-state "$managed_state" --dest-overlay "$dest_overlay"
 
-if [ -e "$dest_overlay/usr/share/aiden" ]; then
-    echo "cleanup script must remove legacy rootfs bundled Aiden share staging" >&2
+if [ "$(cat "$dest_overlay/usr/share/aiden/quick_actions.json")" != actions ]; then
+    echo "cleanup script must preserve Aiden rootfs assets" >&2
     exit 1
 fi
 

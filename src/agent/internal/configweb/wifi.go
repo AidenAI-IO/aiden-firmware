@@ -17,12 +17,21 @@ import (
 	"unicode/utf8"
 
 	"aiden-agent/internal/wifiproxy"
+	"aiden-agent/internal/wifiregion"
 )
 
 const (
 	wifiConnectionTaskTimeout               = 2 * time.Minute
 	wifiCandidateApplyTimeout               = 75 * time.Second
 	wifiSupplicantConfigEnvironmentVariable = "AIDEN_WPA_SUPPLICANT_CONFIG"
+	wifiFailureWrongPassword                = "wrong_password"
+	wifiFailureAssociation                  = "association_failed"
+	wifiFailureIP                           = "ip_unavailable"
+	wifiFailureApply                        = "apply_failed"
+	wifiFailurePersistence                  = "persistence_failed"
+	wifiFailureTimeout                      = "timeout"
+	wifiFailureUnconfirmed                  = "connection_unconfirmed"
+	wifiFailureConfiguration                = "configuration_error"
 )
 
 type wiFiNetwork struct {
@@ -52,7 +61,6 @@ func (c wiFiConfig) publicValue(proxyConfigs ...wifiproxy.Config) map[string]any
 		}
 		if configured, ok := proxyConfig.Networks[network.SSID]; ok {
 			value["proxy_mode"] = string(configured.Mode)
-			value["proxy_url"] = wifiproxy.RedactedURL(configured.ProxyURL)
 			value["no_proxy"] = configured.NoProxy
 		}
 		networks = append(networks, value)
@@ -63,7 +71,7 @@ func (c wiFiConfig) publicValue(proxyConfigs ...wifiproxy.Config) map[string]any
 func loadWiFiConfig(path string) (wiFiConfig, error) {
 	data, err := readFileLimited(path, maxAgentConfigSize)
 	if err != nil {
-		return wiFiConfig{Country: "CN", Networks: []wiFiNetwork{}}, err
+		return wiFiConfig{Networks: []wiFiNetwork{}}, err
 	}
 	config := wiFiConfig{Networks: []wiFiNetwork{}}
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
@@ -111,16 +119,15 @@ func loadWiFiConfig(path string) (wiFiConfig, error) {
 		return wiFiConfig{}, err
 	}
 	normalizeWiFiPriorities(&config)
-	config.Country = normalizeWiFiCountry(config.Country)
-	return config, nil
-}
-
-func normalizeWiFiCountry(value string) string {
-	value = strings.ToUpper(strings.TrimSpace(value))
-	if len(value) != 2 || value[0] < 'A' || value[0] > 'Z' || value[1] < 'A' || value[1] > 'Z' {
-		return "CN"
+	// An unusable country is reported as empty rather than replaced with a
+	// default: substituting one silently is how a device ends up transmitting
+	// under rules nobody chose.
+	if country, ok := wifiregion.Normalize(config.Country); ok {
+		config.Country = country
+	} else {
+		config.Country = ""
 	}
-	return value
+	return config, nil
 }
 
 func decodeWiFiValue(value string, rawPSK bool) string {
@@ -140,10 +147,17 @@ func decodeWiFiValue(value string, rawPSK bool) string {
 	return value
 }
 
-func renderWiFiConfig(config wiFiConfig) string {
+// renderWiFiConfig serializes the configuration. It is the last gate before the
+// value reaches the radio, so it refuses an unusable country instead of
+// substituting one; callers resolve the country before getting here.
+func renderWiFiConfig(config wiFiConfig) (string, error) {
+	country, ok := wifiregion.Normalize(config.Country)
+	if !ok {
+		return "", fmt.Errorf("refusing to write invalid Wi-Fi country %q", config.Country)
+	}
 	var output strings.Builder
 	output.WriteString("ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\ncountry=")
-	output.WriteString(normalizeWiFiCountry(config.Country))
+	output.WriteString(country)
 	output.WriteByte('\n')
 	for _, network := range config.Networks {
 		if network.SSID == "" {
@@ -176,11 +190,15 @@ func renderWiFiConfig(config wiFiConfig) string {
 		}
 		output.WriteString("}\n")
 	}
-	return output.String()
+	return output.String(), nil
 }
 
 func saveWiFiConfig(path string, config wiFiConfig) error {
-	return atomicWriteFile(path, []byte(renderWiFiConfig(config)), 0o600)
+	rendered, err := renderWiFiConfig(config)
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(path, []byte(rendered), 0o600)
 }
 
 type fileSnapshot struct {
@@ -296,6 +314,11 @@ func (s *Server) queryWiFiStatusContext(ctx context.Context) map[string]any {
 			if status["connected"] == true && status["ip_address"] == "" {
 				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
 			}
+			if status["connected"] == true {
+				if signal, ok := s.queryWiFiLinkSignalContext(ctx); ok {
+					status["signal_dbm"] = signal
+				}
+			}
 			if values["wpa_state"] != "" || values["ssid"] != "" {
 				return status
 			}
@@ -312,9 +335,25 @@ func (s *Server) queryWiFiStatusContext(ctx context.Context) map[string]any {
 				status["connected"], status["state"] = true, "COMPLETED"
 				status["ip_address"] = interfaceIPv4Context(ctx, s.options.WiFiInterface)
 			}
+			if signal, ok := parseWiFiSignalDBM(line); ok {
+				status["signal_dbm"] = signal
+			}
 		}
 	}
 	return status
+}
+
+func (s *Server) queryWiFiLinkSignalContext(ctx context.Context) (float64, bool) {
+	if !commandExists("iw") {
+		return 0, false
+	}
+	result := runCommandContext(ctx, 5*time.Second, nil, nil, "iw", "dev", s.options.WiFiInterface, "link")
+	for _, line := range strings.Split(string(result.Output), "\n") {
+		if signal, ok := parseWiFiSignalDBM(strings.TrimSpace(line)); ok {
+			return signal, true
+		}
+	}
+	return 0, false
 }
 
 func interfaceIPv4(interfaceName string) string {
@@ -358,11 +397,33 @@ func keyValueLines(text string) map[string]string {
 	return result
 }
 
-func parseWiFiScanOutput(text string) []string {
-	seen := make(map[string]bool)
-	result := []string{}
+// wifiScanResult holds what a scan tells us: the visible network names, and how
+// many distinct radios advertised each 802.11d country code.
+type wifiScanResult struct {
+	SSIDs     []string
+	Countries map[string]int
+}
+
+// parseWiFiScanOutput extracts SSIDs and 802.11d country information elements.
+//
+// Country votes are counted per radio, not per BSS: an access point hosting
+// several SSIDs publishes one BSS each, and counting those separately would let
+// a single device outvote a neighbourhood. BSSIDs on one radio normally differ
+// only in the last octet, so the first five are used as the radio's identity.
+// This is a heuristic, and it still cannot establish that two radios are
+// independently operated.
+func parseWiFiScanOutput(text string) wifiScanResult {
+	result := wifiScanResult{SSIDs: []string{}, Countries: map[string]int{}}
+	seenSSID := make(map[string]bool)
+	// radio identity -> country, so a radio only ever contributes one vote.
+	radioCountry := make(map[string]string)
+	radio := ""
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
+		if bssid, ok := parseWiFiBSSID(line); ok {
+			radio = bssid
+			continue
+		}
 		name := ""
 		if strings.HasPrefix(line, "SSID:") {
 			name = decodeWiFiSSID(strings.TrimSpace(strings.TrimPrefix(line, "SSID:")))
@@ -373,12 +434,209 @@ func parseWiFiScanOutput(text string) []string {
 				name = decodeWiFiSSID(value[:end])
 			}
 		}
-		if name != "" && !seen[name] {
-			seen[name] = true
-			result = append(result, name)
+		if name != "" && !seenSSID[name] {
+			seenSSID[name] = true
+			result.SSIDs = append(result.SSIDs, name)
+		}
+		if country, ok := parseWiFiCountryIE(line); ok && radio != "" {
+			if _, voted := radioCountry[radio]; !voted {
+				radioCountry[radio] = country
+			}
 		}
 	}
+	for _, country := range radioCountry {
+		result.Countries[country]++
+	}
 	return result
+}
+
+// parseWiFiBSSID recognizes the "BSS aa:bb:cc:dd:ee:ff(on wlan0)" header that
+// starts each entry in iw scan output, and returns the radio identity: the
+// address without its last octet.
+func parseWiFiBSSID(line string) (string, bool) {
+	if !strings.HasPrefix(line, "BSS ") {
+		return "", false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(line, "BSS "))
+	if index := strings.IndexAny(value, "( \t"); index >= 0 {
+		value = value[:index]
+	}
+	octets := strings.Split(value, ":")
+	if len(octets) != 6 {
+		return "", false
+	}
+	for _, octet := range octets {
+		if len(octet) != 2 {
+			return "", false
+		}
+		if _, err := hex.DecodeString(octet); err != nil {
+			return "", false
+		}
+	}
+	return strings.ToLower(strings.Join(octets[:5], ":")), true
+}
+
+// parseWiFiCountryIE reads the "Country: DE\tEnvironment: Indoor/Outdoor" line.
+// Codes the driver does not recognize, and the permissive world domain, are
+// dropped rather than counted.
+func parseWiFiCountryIE(line string) (string, bool) {
+	if !strings.HasPrefix(line, "Country:") {
+		return "", false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(line, "Country:"))
+	if index := strings.IndexAny(value, " \t"); index >= 0 {
+		value = value[:index]
+	}
+	country, ok := wifiregion.Normalize(value)
+	if !ok || country == wifiregion.WorldCountry {
+		return "", false
+	}
+	return country, true
+}
+
+// wifiScanNetwork is one visible network as the settings page lists it: its
+// name, whether it asks for a password, and its strongest observed signal.
+type wifiScanNetwork struct {
+	SSID          string   `json:"ssid"`
+	Secured       bool     `json:"secured"`
+	SignalDBM     *float64 `json:"signal_dbm,omitempty"`
+	SignalPercent *int     `json:"signal_percent,omitempty"`
+}
+
+func parseWiFiScanDetails(text string) []wifiScanNetwork {
+	result := []wifiScanNetwork{}
+	bySSID := make(map[string]int)
+	current := wifiScanNetwork{}
+	haveRecord := false
+	flush := func() {
+		if current.SSID == "" {
+			current = wifiScanNetwork{}
+			haveRecord = false
+			return
+		}
+		if index, ok := bySSID[current.SSID]; ok {
+			// A scan can return several BSS records for one SSID. Keep the
+			// strongest observation while retaining security metadata.
+			old := result[index]
+			if current.SignalDBM != nil && (old.SignalDBM == nil || *current.SignalDBM > *old.SignalDBM) {
+				old.SignalDBM = current.SignalDBM
+				old.SignalPercent = current.SignalPercent
+			} else if old.SignalPercent == nil && current.SignalPercent != nil {
+				old.SignalPercent = current.SignalPercent
+			}
+			old.Secured = old.Secured || current.Secured
+			result[index] = old
+		} else {
+			bySSID[current.SSID] = len(result)
+			result = append(result, current)
+		}
+		current = wifiScanNetwork{}
+		haveRecord = false
+	}
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "BSS ") || strings.HasPrefix(line, "Cell ") {
+			if haveRecord {
+				flush()
+			}
+			haveRecord = true
+			continue
+		}
+		if strings.HasPrefix(line, "capability:") {
+			haveRecord = true
+			current.Secured = current.Secured || strings.Contains(line, "Privacy")
+			continue
+		}
+		if strings.HasPrefix(line, "Encryption key:") {
+			haveRecord = true
+			// Compare the value only: "Encryption" itself contains "on".
+			current.Secured = current.Secured || strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "Encryption key:")), "on")
+			continue
+		}
+		if signal, ok := parseWiFiSignalDBM(line); ok {
+			haveRecord = true
+			current.SignalDBM = &signal
+			percent := signalPercent(signal)
+			current.SignalPercent = &percent
+			continue
+		}
+		if strings.HasPrefix(line, "Quality=") {
+			haveRecord = true
+			if percent, ok := parseWiFiQualityPercent(line); ok {
+				current.SignalPercent = &percent
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "SSID:") {
+			haveRecord = true
+			current.SSID = decodeWiFiSSID(strings.TrimSpace(strings.TrimPrefix(line, "SSID:")))
+			continue
+		}
+		if position := strings.Index(line, `ESSID:"`); position >= 0 {
+			haveRecord = true
+			value := line[position+len(`ESSID:"`):]
+			if end := strings.IndexByte(value, '"'); end >= 0 {
+				current.SSID = decodeWiFiSSID(value[:end])
+			}
+		}
+	}
+	if haveRecord {
+		flush()
+	}
+	return result
+}
+
+func parseWiFiSignalDBM(line string) (float64, bool) {
+	position := strings.Index(line, "signal:")
+	if position < 0 {
+		position = strings.Index(line, "Signal level=")
+		if position < 0 {
+			return 0, false
+		}
+		line = strings.TrimSpace(line[position+len("Signal level="):])
+	} else {
+		line = strings.TrimSpace(line[position+len("signal:"):])
+	}
+	value := line
+	if end := strings.IndexAny(value, " \t"); end >= 0 {
+		value = value[:end]
+	}
+	signal, err := strconv.ParseFloat(strings.TrimSuffix(value, "dBm"), 64)
+	return signal, err == nil && signal <= 0 && signal >= -120
+}
+
+func parseWiFiQualityPercent(line string) (int, bool) {
+	value := strings.TrimPrefix(line, "Quality=")
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return 0, false
+	}
+	value = fields[0]
+	parts := strings.SplitN(value, "/", 2)
+	if len(parts) != 2 {
+		return 0, false
+	}
+	current, errCurrent := strconv.Atoi(parts[0])
+	maximum, errMaximum := strconv.Atoi(parts[1])
+	if errCurrent != nil || errMaximum != nil || maximum <= 0 || current < 0 {
+		return 0, false
+	}
+	if current > maximum {
+		current = maximum
+	}
+	return current * 100 / maximum, true
+}
+
+func signalPercent(signal float64) int {
+	// -30 dBm is excellent and -90 dBm is effectively unusable.
+	percent := int((signal + 90) * 100 / 60)
+	if percent < 0 {
+		return 0
+	}
+	if percent > 100 {
+		return 100
+	}
+	return percent
 }
 
 // decodeWiFiSSID converts the \\xHH form emitted by some wireless-tools
@@ -457,7 +715,15 @@ func (s *Server) handleWiFiScan(w http.ResponseWriter, _ *http.Request) {
 		output.WriteString("No supported scan command found (need iw or iwlist).\n")
 	}
 	text := strings.TrimRight(output.String(), "\r\n")
-	writeJSON(w, 200, map[string]any{"ok": result.ExitCode == 0, "exit_code": result.ExitCode, "output": text, "networks": parseWiFiScanOutput(text)})
+	// Parse the scan body, not the transcript: the transcript also carries the
+	// echoed commands, which must not be mistaken for scan records.
+	scan := parseWiFiScanOutput(string(result.Output))
+	s.recordWiFiCountryVotes(scan.Countries)
+	writeJSON(w, 200, map[string]any{
+		"ok": result.ExitCode == 0, "exit_code": result.ExitCode, "output": text,
+		"networks": scan.SSIDs, "country_votes": scan.Countries,
+		"network_details": parseWiFiScanDetails(string(result.Output)),
+	})
 }
 
 type wifiConnectionRequest struct {
@@ -489,6 +755,17 @@ func (s *Server) handleWiFiConnect(w http.ResponseWriter, r *http.Request) {
 	if err := validateWiFiProxyRequest(request); err != nil {
 		writeJSONError(w, 400, err.Error())
 		return
+	}
+	// The country has to be checked here rather than in the background task:
+	// once the task is created this handler has already answered 202, and a
+	// later 400 would never reach the client.
+	if strings.TrimSpace(request.Country) != "" {
+		country, ok := wifiregion.Normalize(request.Country)
+		if !ok || country == wifiregion.WorldCountry {
+			writeJSONError(w, 400, fmt.Sprintf("unsupported Wi-Fi country %q", request.Country))
+			return
+		}
+		request.Country = country
 	}
 	if !s.wifiOpMu.TryLock() {
 		response := map[string]any{
@@ -564,29 +841,38 @@ func (s *Server) handleWiFiConnectStatus(w http.ResponseWriter, r *http.Request)
 func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRequest) map[string]any {
 	wifiSnapshot, err := captureFileSnapshot(s.options.WiFiConfigPath)
 	if err != nil {
-		return map[string]any{"ok": false, "error": err.Error()}
+		return map[string]any{"ok": false, "failure_reason": wifiFailureConfiguration, "error": err.Error()}
 	}
 	original, loadErr := loadWiFiConfig(s.options.WiFiConfigPath)
 	if loadErr != nil && !os.IsNotExist(loadErr) {
-		return map[string]any{"ok": false, "error": loadErr.Error()}
+		return map[string]any{"ok": false, "failure_reason": wifiFailureConfiguration, "error": loadErr.Error()}
 	}
 	proxySnapshot, err := captureFileSnapshot(s.options.WiFiProxyConfigPath)
 	if err != nil {
-		return map[string]any{"ok": false, "error": err.Error()}
+		return map[string]any{"ok": false, "failure_reason": wifiFailureConfiguration, "error": err.Error()}
 	}
 	proxyConfig, err := wifiproxy.Load(s.options.WiFiProxyConfigPath)
 	if err != nil {
-		return map[string]any{"ok": false, "error": err.Error()}
+		return map[string]any{"ok": false, "failure_reason": wifiFailureConfiguration, "error": err.Error()}
 	}
 	if err := applyWiFiProxyRequest(&proxyConfig, request); err != nil {
-		return map[string]any{"ok": false, "error": err.Error()}
+		return map[string]any{"ok": false, "failure_reason": wifiFailureConfiguration, "error": err.Error()}
 	}
 	attempt := original
-	if strings.TrimSpace(request.Country) != "" {
-		attempt.Country = normalizeWiFiCountry(request.Country)
-	} else {
-		attempt.Country = normalizeWiFiCountry(attempt.Country)
+	originalStatus := s.queryWiFiStatusContext(ctx)
+	originalConnected := originalStatus["connected"] == true && originalStatus["ip_address"] != ""
+	// The request country was validated by the handler. Without one, run the
+	// provenance chain; it falls back to whatever is already in effect, so a
+	// device that cannot place itself keeps its current regulatory domain.
+	//
+	// A country arriving on this path may confirm the server's decision, but it
+	// cannot override an existing or user-confirmed country. Changing it requires
+	// the explicit region endpoint.
+	regionDecision := s.resolveWiFiRegion(original.Country, "")
+	if request.Country != "" && request.Country != regionDecision.Country {
+		return map[string]any{"ok": false, "failure_reason": wifiFailureConfiguration, "error": "set a different Wi-Fi country through the region endpoint before connecting"}
 	}
+	attempt.Country = regionDecision.Country
 	index := findWiFiNetwork(attempt, request.SSID)
 	network := wiFiNetwork{SSID: request.SSID, ScanSSID: true}
 	if index >= 0 {
@@ -602,7 +888,7 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 	promoteWiFiNetwork(&attempt, request.SSID)
 	candidate := s.options.WiFiConfigPath + ".candidate"
 	if err := saveWiFiConfig(candidate, attempt); err != nil {
-		return map[string]any{"ok": false, "error": err.Error()}
+		return map[string]any{"ok": false, "failure_reason": wifiFailureConfiguration, "error": err.Error()}
 	}
 	removeCandidate := true
 	defer func() {
@@ -611,10 +897,22 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 		}
 	}()
 	candidateCtx, cancelCandidate := context.WithTimeout(ctx, wifiCandidateApplyTimeout)
-	apply := s.applyWiFi(candidateCtx, candidate, true)
+	radioErr := s.setWiFiRadioCountry(candidateCtx, attempt.Country)
+	apply := commandResult{ExitCode: 1, FailureReason: wifiFailureApply}
+	monitor := newWiFiAuthMonitor(request.SSID)
+	if radioErr == nil {
+		apply = s.applyWiFi(candidateCtx, candidate, true, monitor)
+	} else {
+		apply.Output = []byte(radioErr.Error())
+	}
 	cancelCandidate()
+	wrongPassword := monitor.stop()
 	status := s.queryWiFiStatusContext(ctx)
 	connected := apply.ExitCode == 0 && status["connected"] == true && status["ssid"] == request.SSID && status["ip_address"] != ""
+	failureReason := ""
+	if !connected {
+		failureReason = wifiConnectionFailureReason(apply, status, request.SSID, wrongPassword, ctx.Err())
+	}
 	responseConfig := original
 	persistError := ""
 	diskRestoreNeeded := false
@@ -623,11 +921,13 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 		if err := saveWiFiConfig(s.options.WiFiConfigPath, attempt); err != nil {
 			persistError = "save Wi-Fi config: " + err.Error()
 			connected = false
+			failureReason = wifiFailurePersistence
 		} else {
 			diskRestoreNeeded = true
 			if err := wifiproxy.Save(s.options.WiFiProxyConfigPath, proxyConfig); err != nil {
 				persistError = "save Wi-Fi proxy config: " + err.Error()
 				connected = false
+				failureReason = wifiFailurePersistence
 			} else {
 				diskRestoreNeeded = false
 				// The running wpa_supplicant retains the path supplied with -c for
@@ -635,23 +935,41 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 				// until the next connection attempt or service restart.
 				removeCandidate = false
 				responseConfig = attempt
+				// Provenance is written only after the authoritative file is
+				// persisted, and a failure here is logged rather than rolled
+				// back: the radio is already correct, only the label is lost.
+				s.persistWiFiRegion(regionDecision)
 			}
 		}
 	}
 	rollback := commandResult{ExitCode: 0}
+	var radioRollbackErr error
 	if !connected {
+		rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), 40*time.Second)
+		defer cancelRollback()
+		rollbackCountry := original.Country
+		if rollbackCountry == "" {
+			rollbackCountry = wifiregion.FactoryCountry
+		}
+		radioRollbackErr = s.setWiFiRadioCountry(rollbackCtx, rollbackCountry)
 		if diskRestoreNeeded {
 			diskRestoreErr = restoreWiFiPersistence(wifiSnapshot, proxySnapshot)
 		}
-		if len(original.Networks) > 0 {
-			rollback = s.applyWiFi(ctx, s.options.WiFiConfigPath, true)
-		} else if commandExists("wpa_cli") {
-			rollback = runCommandContext(ctx, 5*time.Second, nil, nil, "wpa_cli", "-i", s.options.WiFiInterface, "disconnect")
+		// Always reload the original configuration, including when it holds no
+		// networks. The candidate file is about to be removed while the running
+		// wpa_supplicant still carries its country, so disconnecting alone would
+		// leave the radio on a regulatory domain that exists nowhere on disk.
+		// With no original file to reload, stop the supplicant for the same
+		// reason.
+		if _, statErr := os.Stat(s.options.WiFiConfigPath); statErr == nil {
+			rollback = s.applyWiFiWithConnectivity(rollbackCtx, s.options.WiFiConfigPath, true, originalConnected)
+		} else {
+			rollback = s.stopWiFiSupplicant(rollbackCtx)
 		}
 		if apply.ExitCode == 0 {
 			apply.ExitCode = 1
 		}
-		status = s.queryWiFiStatusContext(ctx)
+		status = s.queryWiFiStatusContext(rollbackCtx)
 	}
 	message := "wifi connected and saved"
 	if !connected {
@@ -672,19 +990,29 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 	}
 	response := map[string]any{"ok": connected, "wifi": responseConfig.publicValue(responseProxyConfig), "wifi_status": status, "message": message, "wifi_apply": applyValue}
 	if !connected {
+		response["failure_reason"] = failureReason
 		rollbackValue := map[string]any{
-			"ok": rollback.ExitCode == 0 && diskRestoreErr == nil, "exit_code": rollback.ExitCode,
+			"ok": rollback.ExitCode == 0 && diskRestoreErr == nil && radioRollbackErr == nil, "exit_code": rollback.ExitCode,
 			"disk_restored": diskRestoreErr == nil,
 			"timed_out":     rollback.TimedOut, "output": strings.TrimRight(string(rollback.Output), "\r\n"),
 		}
 		if diskRestoreErr != nil {
 			rollbackValue["disk_error"] = diskRestoreErr.Error()
 		}
+		if radioRollbackErr != nil {
+			rollbackValue["radio_error"] = radioRollbackErr.Error()
+		}
 		response["wifi_rollback"] = rollbackValue
 	}
 	responseErrors := []string{}
 	if persistError != "" {
 		responseErrors = append(responseErrors, "persist configuration: "+persistError)
+	}
+	if radioErr != nil {
+		responseErrors = append(responseErrors, "apply Wi-Fi phy country: "+radioErr.Error())
+	}
+	if radioRollbackErr != nil {
+		responseErrors = append(responseErrors, "restore Wi-Fi phy country: "+radioRollbackErr.Error())
 	}
 	if diskRestoreErr != nil {
 		responseErrors = append(responseErrors, "restore persisted config: "+diskRestoreErr.Error())
@@ -696,6 +1024,25 @@ func (s *Server) runWiFiConnection(ctx context.Context, request wifiConnectionRe
 		response["error"] = strings.Join(responseErrors, "; ")
 	}
 	return response
+}
+
+func wifiConnectionFailureReason(apply commandResult, status map[string]any, ssid string, wrongPassword bool, contextError error) string {
+	if wrongPassword {
+		return wifiFailureWrongPassword
+	}
+	if contextError != nil || apply.TimedOut {
+		return wifiFailureTimeout
+	}
+	if apply.FailureReason != "" {
+		return apply.FailureReason
+	}
+	if status["connected"] == true && status["ssid"] == ssid && status["ip_address"] == "" {
+		return wifiFailureIP
+	}
+	if apply.ExitCode != 0 {
+		return wifiFailureApply
+	}
+	return wifiFailureUnconfirmed
 }
 
 func validateWiFiProxyRequest(request wifiConnectionRequest) error {
@@ -888,8 +1235,30 @@ func (s *Server) clearSystemdWiFiConfig() error {
 	return err
 }
 
-func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) commandResult {
+// stopWiFiSupplicant halts the supplicant when there is no configuration to
+// fall back to. Leaving it running would keep a regulatory domain in effect
+// that no file on disk describes.
+func (s *Server) stopWiFiSupplicant(ctx context.Context) commandResult {
+	if s.options.WiFiBackend == "systemd-networkd" {
+		unit := "wpa_supplicant@" + s.options.WiFiInterface + ".service"
+		return runCommandContext(ctx, 10*time.Second, nil, nil, "systemctl", "stop", unit)
+	}
+	if commandExists("killall") {
+		return runCommandContext(ctx, 5*time.Second, nil, nil, "killall", "wpa_supplicant")
+	}
+	return commandResult{ExitCode: 0}
+}
+
+func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool, monitors ...*wifiAuthMonitor) commandResult {
+	return s.applyWiFiWithConnectivity(ctx, configPath, force, true, monitors...)
+}
+
+func (s *Server) applyWiFiWithConnectivity(ctx context.Context, configPath string, force, requireConnectivity bool, monitors ...*wifiAuthMonitor) commandResult {
 	var output strings.Builder
+	var monitor *wifiAuthMonitor
+	if len(monitors) > 0 {
+		monitor = monitors[0]
+	}
 	associated := false
 	selectorCleanupFailed := false
 	result := commandResult{ExitCode: 0}
@@ -933,10 +1302,14 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 				result.ExitCode = 1
 				fmt.Fprintf(&output, "$ remove runtime wpa_supplicant config selector\n%v\n", err)
 			}
-			if restart.ExitCode == 0 {
+			if restart.ExitCode == 0 && requireConnectivity {
+				if monitor != nil {
+					monitor.start(ctx, s.options.WiFiInterface)
+				}
 				associated = s.waitForWiFiState(ctx, &output, 10)
-			} else {
+			} else if restart.ExitCode != 0 {
 				result.ExitCode = restart.ExitCode
+				result.FailureReason = wifiFailureApply
 			}
 		}
 	} else if !associated && commandExists("wpa_supplicant") {
@@ -948,7 +1321,23 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		}
 		start := runCommandContext(ctx, 10*time.Second, nil, nil, "wpa_supplicant", "-B", "-i", s.options.WiFiInterface, "-c", configPath)
 		fmt.Fprintf(&output, "$ wpa_supplicant -B -i %s -c %s\n%s", s.options.WiFiInterface, configPath, start.Output)
-		associated = s.waitForWiFiState(ctx, &output, 10)
+		if start.ExitCode != 0 {
+			result.ExitCode = start.ExitCode
+			result.FailureReason = wifiFailureApply
+		} else if requireConnectivity {
+			if monitor != nil {
+				monitor.start(ctx, s.options.WiFiInterface)
+			}
+			associated = s.waitForWiFiState(ctx, &output, 10)
+		}
+	}
+	if !requireConnectivity {
+		if ctx.Err() != nil {
+			result.ExitCode = -1
+			result.TimedOut = true
+		}
+		result.Output = []byte(output.String())
+		return result
 	}
 	dhcpOK := false
 	if associated && s.options.WiFiBackend == "systemd-networkd" {
@@ -956,6 +1345,7 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		fmt.Fprintf(&output, "$ networkctl reconfigure %s\n%s", s.options.WiFiInterface, reconfigure.Output)
 		dhcpOK = reconfigure.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 20)
 		if !dhcpOK {
+			result.FailureReason = wifiFailureIP
 			result.ExitCode = reconfigure.ExitCode
 			if result.ExitCode == 0 {
 				result.ExitCode = 1
@@ -966,18 +1356,27 @@ func (s *Server) applyWiFi(ctx context.Context, configPath string, force bool) c
 		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 15)
 		if !dhcpOK {
 			result.ExitCode = 1
+			result.FailureReason = wifiFailureIP
 		}
 	} else if associated && commandExists("dhclient") {
 		dhcp := runCommandContext(ctx, 30*time.Second, nil, nil, "dhclient", s.options.WiFiInterface)
 		dhcpOK = dhcp.ExitCode == 0 && s.waitForWiFiIP(ctx, &output, 15)
 		if !dhcpOK {
 			result.ExitCode = 1
+			result.FailureReason = wifiFailureIP
 		}
 	} else if associated {
 		result.ExitCode = 127
+		result.FailureReason = wifiFailureIP
 		output.WriteString("No supported DHCP client found (need dhcpcd or dhclient).\n")
+	} else if result.FailureReason != "" {
+		// The supplicant never started; that failure, not association, is
+		// what the client should report.
+		result.ExitCode = 1
+		output.WriteString("wpa_supplicant did not start; skipping DHCP.\n")
 	} else {
 		result.ExitCode = 1
+		result.FailureReason = wifiFailureAssociation
 		output.WriteString("wpa_supplicant never reached COMPLETED; skipping DHCP.\n")
 	}
 	if associated && dhcpOK && !selectorCleanupFailed {

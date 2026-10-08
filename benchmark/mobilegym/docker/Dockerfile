@@ -1,12 +1,14 @@
 # Aiden MobileGym Docker Setup
 
 # ============ MobileGym Simulator ============
-FROM node:22-bookworm AS mobilegym-base
+ARG MOBILEGYM_NODE_IMAGE=node:22-bookworm
+FROM ${MOBILEGYM_NODE_IMAGE} AS mobilegym-base
 
 # 支持构建时代理
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
+ARG MOBILEGYM_DEBIAN_MIRROR
 ARG PLAYWRIGHT_DOWNLOAD_HOST
 ARG PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST
 ENV HTTP_PROXY=${HTTP_PROXY} \
@@ -19,7 +21,15 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
 WORKDIR /mobilegym
 
 # Install system dependencies for Playwright + git + CJK fonts
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    if [ -n "${MOBILEGYM_DEBIAN_MIRROR}" ]; then \
+        sed -i "s#http://deb.debian.org#https://${MOBILEGYM_DEBIAN_MIRROR}#g" \
+            /etc/apt/sources.list.d/debian.sources; \
+    fi && \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::https::Timeout=60 install -y \
     git \
     python3 \
     python3-pip \
@@ -42,8 +52,7 @@ RUN apt-get update && apt-get install -y \
     fonts-noto-color-emoji \
     fonts-noto-core \
     libcairo2 \
-    libasound2 \
-    && rm -rf /var/lib/apt/lists/*
+    libasound2
 
 # Clone the exact MobileGym commit pinned by the firmware submodule.
 ARG MOBILEGYM_REPO=https://github.com/AidenAI-IO/mobilegym.git
@@ -68,8 +77,8 @@ RUN cd /mobilegym && \
     . /opt/venv/bin/activate && \
     pip install -r bench_env/requirements.txt requests
 
-# Install Node.js dependencies and build
-RUN npm install && npm run build
+# Install the locked dependency graph, including Rollup's platform package.
+RUN npm ci --include=optional && npm run build
 
 # Install Playwright browsers
 RUN . /opt/venv/bin/activate && playwright install chromium

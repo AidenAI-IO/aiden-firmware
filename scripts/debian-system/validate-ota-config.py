@@ -40,7 +40,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, type=pathlib.Path)
     parser.add_argument("--boot-a", required=True, type=pathlib.Path)
     parser.add_argument("--boot-b", required=True, type=pathlib.Path)
-    parser.add_argument("--oem", required=True, type=pathlib.Path)
     parser.add_argument("--rootfs", required=True, type=pathlib.Path)
     return parser.parse_args()
 
@@ -75,20 +74,18 @@ def main() -> int:
     expected = {
         "a": {
             "boot": sha256(args.boot_a),
-            "oem": sha256(args.oem),
             "rootfs": sha256(args.rootfs),
         },
         "b": {
             "boot": sha256(args.boot_b),
-            "oem": sha256(args.oem),
             "rootfs": sha256(args.rootfs),
         },
     }
     for slot in ("a", "b"):
         actual = hashes.get(slot)
-        if not isinstance(actual, dict) or set(actual) != {"boot", "oem", "rootfs"}:
-            raise ValueError(f"factory_partition_hashes.{slot} must contain exactly boot, oem, and rootfs")
-        for part in ("boot", "oem", "rootfs"):
+        if not isinstance(actual, dict) or set(actual) != {"boot", "rootfs"}:
+            raise ValueError(f"factory_partition_hashes.{slot} must contain exactly boot and rootfs")
+        for part in ("boot", "rootfs"):
             if actual.get(part) != expected[slot][part]:
                 raise ValueError(
                     f"factory_partition_hashes.{slot}.{part} does not match the factory image"
@@ -97,7 +94,7 @@ def main() -> int:
     print(f"factory_version={version}")
     print(f"factory_build_time={build_time}")
     for slot in ("a", "b"):
-        for part in ("boot", "oem", "rootfs"):
+        for part in ("boot", "rootfs"):
             print(f"factory_partition_hashes.{slot}.{part}={expected[slot][part]}")
     return 0
 

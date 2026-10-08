@@ -10,6 +10,9 @@
 # Create a project in the Langfuse UI, then copy the public/secret keys into the device env:
 #   LANGFUSE_PUBLIC_KEY=pk-lf-...
 #   LANGFUSE_SECRET_KEY=sk-lf-...
+# Set LANGFUSE_INIT_ORG_ID/LANGFUSE_INIT_PROJECT_ID in .env to provision the project on boot instead.
+#
+# The agent reports episodes over Langfuse's OTLP endpoint, which needs Langfuse >= 3.22.0.
 #
 # Device agent.toml:
 #   [telemetry]
@@ -72,6 +75,10 @@ services:
     environment:
       <<: *langfuse-worker-env
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-aiden-langfuse-nextauth-secret}
+      # First-boot bootstrap. Langfuse only runs the init script when both IDs are set;
+      # leave them empty to create the organization/project by hand in the UI instead.
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-}
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Aiden}
       LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-aiden-firmware}
       LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-}

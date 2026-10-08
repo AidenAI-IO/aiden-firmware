@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"aiden-agent/internal/agent/langfuse"
 	"aiden-agent/internal/agent/messages"
 	"bytes"
 	"context"
@@ -9,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -29,6 +29,7 @@ import (
 	speechtext "aiden-agent/internal/agent/speech"
 	"aiden-agent/internal/agent/tokencounter"
 
+	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
@@ -45,6 +46,18 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 	if got := effectiveMaxIterations(10); got != 10 {
 		t.Fatalf("effectiveMaxIterations(10) = %d, want 10", got)
+	}
+}
+
+func TestRuntimeRejectsBackendRunWhenBackendAgentDisabled(t *testing.T) {
+	runtime := &Runtime{config: Config{
+		InputMode:  "realtime",
+		VoiceModel: VoiceModelConfig{},
+	}}
+
+	_, err := runtime.Run(context.Background(), RunRequest{Input: "handled by realtime session"})
+	if err == nil || !strings.Contains(err.Error(), "backend agent is disabled for this realtime session") {
+		t.Fatalf("Run() error = %v, want backend-disabled realtime guard", err)
 	}
 }
 
@@ -160,6 +173,34 @@ func TestRuntimeRun(t *testing.T) {
 
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}
+
+func TestRuntimeParseFallbackDoesNotPersistInterruptNotice(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: failingGenerateModel{err: fmt.Errorf("%w: raw model response", agents.ErrUnableToParseOutput)}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "parse fallback"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "raw model response" {
+		t.Fatalf("Run() output = %q, want raw model response", result.Output)
+	}
+	for _, message := range runtime.contextManager.CloneMessageList() {
+		if message.Role == messages.MessageRoleNotice && strings.HasPrefix(message.Content, "Interrupt [") {
+			t.Fatalf("recoverable parse fallback persisted interruption notice: %q", message.Content)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runtime.contextManager.GetSessionFolder(), pendingBackendRunFile)); !os.IsNotExist(err) {
+		t.Fatalf("pending run journal remains after parse fallback: %v", err)
 	}
 }
 
@@ -414,23 +455,28 @@ func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
 }
 
 func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
-	ingestCh := make(chan langfuse.IngestionRequest, 1)
+	exportedCh := make(chan struct{}, 1)
+	var otlpBody []byte
+	var scoreBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/public/ingestion" {
-			http.NotFound(w, r)
-			return
-		}
-		var req langfuse.IngestionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		select {
-		case ingestCh <- req:
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/otel/v1/traces":
+			otlpBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/scores":
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &scoreBody); err != nil {
+				t.Errorf("decode score body: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+			select {
+			case exportedCh <- struct{}{}:
+			default:
+			}
 		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"successes":[]}`))
 	}))
 	defer server.Close()
 
@@ -458,35 +504,23 @@ func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 		t.Fatalf("Run() error = %v, want %v", err, buildErr)
 	}
 
-	var ingest langfuse.IngestionRequest
 	select {
-	case ingest = <-ingestCh:
+	case <-exportedCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("expected Langfuse ingestion for failed chat")
+		t.Fatal("expected Langfuse export for failed chat")
 	}
 
-	var traceBody map[string]any
-	for _, event := range ingest.Batch {
-		if event.Type != "trace-create" {
-			continue
-		}
-		if err := json.Unmarshal(event.Body, &traceBody); err != nil {
-			t.Fatalf("decode trace body: %v", err)
-		}
-		break
+	spans := decodeOTLPSpans(t, otlpBody)
+	root := otlpSpanByName(t, spans, langfuseRunSpanName)
+	wantInput, _ := json.Marshal("turn that should be traced")
+	if got := root.attributeString(t, "langfuse.observation.input"); got != string(wantInput) {
+		t.Fatalf("trace input = %s, want original user input", got)
 	}
-	if traceBody == nil {
-		t.Fatalf("ingestion batch missing trace-create: %#v", ingest.Batch)
+	if got := root.attributeString(t, "langfuse.trace.metadata.failure_reason"); got != buildErr.Error() {
+		t.Fatalf("failure_reason = %q, want %q", got, buildErr.Error())
 	}
-	if got := traceBody["input"]; got != "turn that should be traced" {
-		t.Fatalf("trace input = %#v, want original user input", got)
-	}
-	metadata, ok := traceBody["metadata"].(map[string]any)
-	if !ok {
-		t.Fatalf("trace metadata missing or invalid: %#v", traceBody["metadata"])
-	}
-	if got := metadata["failure_reason"]; got != buildErr.Error() {
-		t.Fatalf("failure_reason = %#v, want %q", got, buildErr.Error())
+	if scoreBody["value"] != float64(0) {
+		t.Fatalf("score value = %v, want 0", scoreBody["value"])
 	}
 }
 
@@ -1801,10 +1835,12 @@ func TestRuntimeRunCanceledToolDoesNotPoisonNextRunToolHistory(t *testing.T) {
 		t.Fatalf("first Run() error = %v, want context canceled", err)
 	}
 
+	requireInterruptNotices(t, runtime.contextManager, "canceled")
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "continue"})
 	if err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
+	requireInterruptNotices(t, runtime.contextManager, "canceled")
 	if result.Output != "continued" {
 		t.Fatalf("second Run() output = %q, want continued", result.Output)
 	}
@@ -2739,6 +2775,44 @@ func TestRuntimeRunStopsLocallyWhenHardInputBudgetCannotFit(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRejectsHardInputBudgetFromMeasuredUsage(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	manager, err := contextmanager.NewContextManagerFromMessageList(
+		agentpath.ContextManagerSessionFolder(configDir), []messages.Message{
+			{Role: messages.MessageRoleSystem, Content: "system"},
+			{Role: messages.MessageRoleUser, Content: "hello"},
+			{
+				Role: messages.MessageRoleAssistant, Content: "ok",
+				Usage: &messages.Usage{InputTokens: 9_000, OutputTokens: 100, TotalTokens: 9_100},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	llmModel := &scriptedModel{responses: []*llms.ContentResponse{contentResponse("must not be called")}}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir: configDir, ContextPruneThreshold: 0.8, MaxIterations: 1,
+			Model: ModelConfig{
+				Provider: "openai", APIMode: "responses", ResponsesContextManagement: "compaction", MaxResponseTokens: 256,
+			},
+		},
+		&testModelResolver{model: llmModel, spec: model.ModelSpec{ContextWindow: 5_000, MaxOutput: 256}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+	_, err = runtime.Run(context.Background(), RunRequest{Input: "continue"})
+	if err == nil || !strings.Contains(err.Error(), "context remains over usable input budget") {
+		t.Fatalf("Run() error = %v, want measured-usage budget rejection", err)
+	}
+	if llmModel.callCount != 0 {
+		t.Fatalf("model call count = %d, want 0", llmModel.callCount)
+	}
+}
+
 func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -2765,8 +2839,9 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := contextmanager.SwitchSession(sessionFolder, manager.GetSessionID()); err != nil {
-				t.Fatal(err)
+			originalSessionID := manager.GetSessionID()
+			if err := manager.SwitchSession(manager.GetSessionID()); err != nil {
+				t.Fatalf("SwitchSession() error = %v", err)
 			}
 			if tc.chunkWriteFails {
 				// A file where the chunk directory belongs makes persistence fail
@@ -2835,8 +2910,8 @@ func TestRuntimeRunSummarizesBeforeRejectingHardInputBudget(t *testing.T) {
 			if len(llmModel.tools[0]) != 0 || len(llmModel.tools[1]) == 0 {
 				t.Fatal("expected summary before the tool-enabled model request")
 			}
-			if runtime.contextManager == manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() {
-				t.Fatal("successful recovery did not activate the prepared revision")
+			if runtime.contextManager != manager || loaded.GetSessionID() != runtime.contextManager.GetSessionID() || loaded.GetSessionID() == originalSessionID {
+				t.Fatal("successful recovery did not activate the prepared revision on the existing manager")
 			}
 			if !tc.chunkWriteFails {
 				if len(index.Chunks) != 1 || index.Chunks[0].Summary != tc.summary || index.Chunks[0].EventCount != 1 {
@@ -4477,6 +4552,29 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeInitialRotateCreatesOneContextSession(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Instruction: "system"},
+		nil,
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	defer runtime.Close()
+
+	if err := runtime.rotateContext(); err != nil {
+		t.Fatalf("rotateContext() error = %v", err)
+	}
+	files, err := filepath.Glob(filepath.Join(agentpath.ContextManagerSessionFolder(configDir), "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob context sessions: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("initial rotate created %d transcript sessions, want 1: %#v", len(files), files)
+	}
+}
+
 func TestRuntimeClearMemoryReplacesAndRemovesUserContextSession(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	runtime, err := NewRuntime(Config{
@@ -4633,6 +4731,8 @@ func TestRuntimePreemptCancelsActiveRun(t *testing.T) {
 	if secondResult.Output != "second" {
 		t.Fatalf("second run output = %q, want 'second'", secondResult.Output)
 	}
+
+	requireInterruptNotices(t, runtime.contextManager, "preempted")
 
 	// WasPreempted should report true.
 	if !runtime.WasPreempted(5 * time.Second) {

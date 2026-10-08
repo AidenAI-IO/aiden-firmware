@@ -1,24 +1,26 @@
-# 自定义测试套件
+# Custom Test Suites
 
-Aiden benchmark suite 使用 `benchmark/suites/<name>.json`。MobileGym 作为
-environment bridge 运行时，benchmark WebUI 会列出这些 Aiden JSON suite，并通过
-`benchmark-task-id` 把并发 task worker 路由到同一个 MobileGym instance 内的不同 env。
-本目录下的 YAML 暂不被 benchmark runner 加载。
+Aiden benchmark suites use `benchmark/suites/<name>.json`. When MobileGym runs as an
+environment bridge, the benchmark WebUI lists these Aiden JSON suites and uses
+`benchmark-task-id` to route concurrent task workers to different environments within
+the same MobileGym instance. The benchmark runner does not currently load YAML files
+from this directory.
 
-## 当前可工作的方式
+## Currently supported workflows
 
-### 方式 1：Benchmark WebUI 并发
+### Option 1: Concurrency through the Benchmark WebUI
 
 ```bash
 cd benchmark
 uv run python -m runner webui
 ```
 
-创建 MobileGym environment 时把 `Envs` 设为大于 1，随后选择该 environment 运行 Aiden JSON suite。
-WebUI 会为并发 task worker 启动独立 daemon，并通过 `benchmark-task-id` 路由到同一
-MobileGym instance 内的不同 env。
+When creating a MobileGym environment, set `Envs` to a value greater than 1, then select
+that environment to run an Aiden JSON suite. The WebUI starts a separate daemon for each
+concurrent task worker and uses `benchmark-task-id` to route workers to different
+environments within the same MobileGym instance.
 
-### 方式 2：Benchmark CLI services
+### Option 2: Benchmark CLI services
 
 ```bash
 cd benchmark
@@ -30,20 +32,20 @@ uv run python -m runner run \
   --environment-url http://127.0.0.1:<bridge-port>
 ```
 
-## YAML 格式（保留供未来加载逻辑使用）
+## YAML format (retained for a future loader)
 
 ```yaml
 name: suite_name
-description: 套件描述
+description: Suite description
 tasks:
   - task.id.1
   - task.id.2
 ```
 
-## 内置 suite 列表
+## Built-in suites
 
-参考 MobileGym registry：`account, alipay, bilibili, calendar, clock, crossapp_*, ebay, file_manager, launcher, map, notes, payment, railway12306, redbook, reddit, sms, spotify, tencent_meeting, weather, wechat, wechat_reading, x`
+See the MobileGym registry: `account, alipay, bilibili, calendar, clock, crossapp_*, ebay, file_manager, launcher, map, notes, payment, railway12306, redbook, reddit, sms, spotify, tencent_meeting, weather, wechat, wechat_reading, x`
 
-## 示例文件
+## Example files
 
-- `aiden_smoke.yaml` — 历史示例，**当前不能直接用 `--suite aiden_smoke` 跑**，仅作为任务清单参考
+- `aiden_smoke.yaml` — a historical example; **it cannot currently be run directly with `--suite aiden_smoke`** and is provided only as a task-list reference.

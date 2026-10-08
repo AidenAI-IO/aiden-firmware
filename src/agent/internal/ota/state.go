@@ -53,7 +53,7 @@ type PartitionVersion struct {
 }
 
 var factorySlotNames = []string{"a", "b"}
-var factoryPartitionNames = []string{"boot", "oem", "rootfs"}
+var factoryPartitionNames = []string{"boot", "rootfs"}
 
 func NewFactoryState(version string, buildTime string, hashes map[string]map[string]string) State {
 	state := State{
@@ -88,10 +88,16 @@ func uniformFactoryPartitionHashes(hash string) map[string]map[string]string {
 }
 
 func validateFactoryPartitionHashes(hashes map[string]map[string]string) error {
+	if len(hashes) != len(factorySlotNames) {
+		return errors.New("factory_partition_hashes must contain exactly slots a and b")
+	}
 	for _, slot := range factorySlotNames {
 		parts, ok := hashes[slot]
 		if !ok {
 			return fmt.Errorf("factory_partition_hashes missing slot %s", slot)
+		}
+		if len(parts) != len(factoryPartitionNames) {
+			return fmt.Errorf("factory_partition_hashes.%s must contain exactly boot and rootfs", slot)
 		}
 		for _, part := range factoryPartitionNames {
 			hash := strings.TrimSpace(parts[part])
@@ -190,14 +196,14 @@ func (s State) ValidateSelectiveUpdate(manifest Manifest, targetSlot Slot) error
 			requirements[name] = req
 		}
 	}
-	if included["boot"] && included["oem"] && included["rootfs"] {
+	if included["boot"] && included["rootfs"] {
 		return nil
 	}
 	slotState, ok := s.Slots[targetSlotName]
 	if !ok {
 		return fmt.Errorf("target slot %s has no partition state", targetSlotName)
 	}
-	for _, part := range []string{"boot", "oem", "rootfs"} {
+	for _, part := range []string{"boot", "rootfs"} {
 		if included[part] {
 			continue
 		}
@@ -246,7 +252,7 @@ func parsePartitionRequirement(raw string) (string, PartitionVersion, error) {
 	if !ok || name == "" || version == "" || hash == "" {
 		return "", PartitionVersion{}, fmt.Errorf("invalid requires_partitions entry %q", raw)
 	}
-	if name != "boot" && name != "oem" && name != "rootfs" {
+	if name != "boot" && name != "rootfs" {
 		return "", PartitionVersion{}, fmt.Errorf("unknown required partition %q", name)
 	}
 	return name, PartitionVersion{Version: version, Hash: hash}, nil

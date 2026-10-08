@@ -67,6 +67,12 @@ type Message struct {
 	// ResponsesAssistantPhase preserves the Responses assistant phase when a
 	// raw output item is unavailable or a gateway omits it from persisted data.
 	ResponsesAssistantPhase string `json:"responses_assistant_phase,omitempty"`
+	// InteractionsSteps preserves native Gemini Interactions output steps,
+	// including thought signatures and typed function-call arguments, for local
+	// StepList replay when api_mode=interactions. Gemini requires every thought
+	// step to be replayed exactly as received, so compaction and session revisions
+	// keep these steps alongside the function calls they belong to.
+	InteractionsSteps []json.RawMessage `json:"interactions_steps,omitempty"`
 	// AnthropicThinkingBlocks preserves signed thinking blocks returned by the
 	// native Messages API. Claude requires the signature to be replayed on the
 	// next assistant turn when a tool result follows, so storing only the
@@ -118,6 +124,12 @@ func (msg Message) Clone() Message {
 		cloned.ResponsesOutputItems = make([]json.RawMessage, len(msg.ResponsesOutputItems))
 		for i := range msg.ResponsesOutputItems {
 			cloned.ResponsesOutputItems[i] = append(json.RawMessage(nil), msg.ResponsesOutputItems[i]...)
+		}
+	}
+	if len(msg.InteractionsSteps) > 0 {
+		cloned.InteractionsSteps = make([]json.RawMessage, len(msg.InteractionsSteps))
+		for i := range msg.InteractionsSteps {
+			cloned.InteractionsSteps[i] = append(json.RawMessage(nil), msg.InteractionsSteps[i]...)
 		}
 	}
 	if len(msg.AnthropicThinkingBlocks) > 0 {

@@ -1,0 +1,168 @@
+/*
+ * Base layer: reset plus the WebView fidelity rules that make a browser-rendered
+ * surface behave and measure like a native screen.
+ *
+ * Every rule here exists because the WebView defaults differ from React Native
+ * in a way that is visible to a user. Keep it that way; do not add component
+ * styling. Components live in ds.css and only consume tokens.css.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* iOS raises the font size of body text unless autosizing is disabled. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-family);
+  font-size: var(--font-body);
+  font-weight: var(--font-weight-regular);
+  line-height: 1.3;
+  /* A native screen has no text selection, no tap flash and no rubber band. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: none;
+}
+
+/* Interactive elements must not wait for a double-tap-to-zoom decision. */
+a,
+button,
+input,
+select,
+textarea,
+label,
+[role='button'] {
+  touch-action: manipulation;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input,
+textarea,
+select {
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  -webkit-appearance: none;
+  appearance: none;
+  /* Below 16px iOS zooms the whole page when a field takes focus. */
+  font-size: max(var(--font-body), 16px);
+  /* Text entry is the one place selection and the caret must keep working. */
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-ink-placeholder);
+  opacity: 1;
+}
+
+/* iOS paints its own inner shadow and clear button on search/text inputs. */
+input::-webkit-search-decoration,
+input::-webkit-search-cancel-button,
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+  /* Dragging a glyph out of the page is a browser affordance, not an app one. */
+  -webkit-user-drag: none;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:focus {
+  outline: none;
+}
+
+/* Keyboard users still need a visible ring; touch and mouse users do not. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/*
+ * Form fields are excluded from the shared ring: a text field already signals
+ * focus with its own 2px border (see ds.css), and drawing both at once produced
+ * a double ring that the design does not have.
+ */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Utility used by the page scripts for screen-reader-only labels. */
+.ds-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

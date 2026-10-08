@@ -1,9 +1,13 @@
 package configweb
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +22,7 @@ import (
 
 	"aiden-agent/internal/agent"
 	"aiden-agent/internal/wifiproxy"
+	"aiden-agent/internal/wifiregion"
 )
 
 type fakeStorageController struct {
@@ -26,6 +31,16 @@ type fakeStorageController struct {
 	reconfigureCalls int
 	reconfigureError error
 }
+
+type fakeStorageSnapshotLease struct {
+	snapshot agent.StorageSnapshot
+	err      error
+	released atomic.Bool
+}
+
+func (l *fakeStorageSnapshotLease) Snapshot() agent.StorageSnapshot { return l.snapshot }
+func (l *fakeStorageSnapshotLease) Validate(context.Context) error  { return l.err }
+func (l *fakeStorageSnapshotLease) Release()                        { l.released.Store(true) }
 
 func (f *fakeStorageController) Status() agent.StorageStatus { return f.status }
 func (f *fakeStorageController) Reconfigure(cfg agent.StorageConfig) error {
@@ -43,6 +58,15 @@ func (f *fakeStorageController) StartFormat(fs, confirm string) error {
 	}
 	f.status.FormatJob = agent.StorageFormatJob{Status: agent.StorageFormatRunning, FS: fs}
 	return nil
+}
+func (f *fakeStorageController) AcquireSnapshotLease(context.Context) (agent.StorageSnapshotLease, error) {
+	if !f.status.Card.Mounted {
+		return nil, errors.New("no readable and writable SD card is mounted")
+	}
+	return &fakeStorageSnapshotLease{snapshot: agent.StorageSnapshot{
+		DevicePath: f.status.Card.Device, MountPoint: f.status.MountPoint,
+		FilesystemUUID: "test-sd-uuid", MountID: "test-mount-id",
+	}}, nil
 }
 func (f *fakeStorageController) Stop() {}
 
@@ -74,6 +98,7 @@ func testOptions(t *testing.T) Options {
 		WiFiConfigEnvironmentPath: filepath.Join(root, "wpa_supplicant-config.env"),
 		WiFiInterface:             "wlan0",
 		WiFiBackend:               "legacy",
+		WiFiRegionStatePath:       filepath.Join(root, "wifi-region.json"),
 		OTAStatePath:              filepath.Join(root, "ota-state.json"),
 		CmdlinePath:               filepath.Join(root, "cmdline"),
 		SystemEnvPath:             filepath.Join(root, "system.env"),
@@ -82,6 +107,18 @@ func testOptions(t *testing.T) Options {
 		LocalProxyEnvironmentPath: filepath.Join(root, "proxy-env"),
 		StorageStatePath:          filepath.Join(root, "storage.state"),
 		WebRoot:                   webRoot,
+		BackupUserdataRoot:        filepath.Join(root, "userdata"),
+		BackupSDRoot:              filepath.Join(root, "sdcard"),
+		MaintenanceLockPath:       filepath.Join(root, "run", "backup.lock"),
+		BackupJobStateDir:         filepath.Join(root, "run", "jobs"),
+		USBAddress:                "127.0.0.1",
+		USBSubnet:                 "127.0.0.0/8",
+		HardwareIDPath:            filepath.Join(root, "hardware-id"),
+		SystemctlBinary:           "/bin/true",
+		HybridUpdateService:       "aiden-hybrid-update.service",
+		HybridUpdateMarkerPath:    filepath.Join(root, "hybrid-update.pending"),
+		OTAUpdateLockPath:         filepath.Join(root, "ota.lock"),
+		OTAUpdateLogPath:          filepath.Join(root, "ota-update.log"),
 		AgentBinary:               "/bin/true",
 		AgentHTTPBaseURL:          "http://127.0.0.1:1",
 		AgentInitScript:           filepath.Join(root, "missing-init"),
@@ -112,6 +149,45 @@ func TestOptionsAcceptsValidLocalProxyAddress(t *testing.T) {
 	options.LocalProxyAddress = "localhost:18080"
 	if err := options.Validate(); err != nil {
 		t.Fatalf("valid LocalProxyAddress rejected: %v", err)
+	}
+}
+
+func TestWiFiWrongKeyEventOnlyMatchesTheAttemptedSSID(t *testing.T) {
+	wrongKey := `<3>CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="Office" auth_failures=1 duration=10 reason=WRONG_KEY`
+	if !wifiWrongKeyEvent(wrongKey, "Office") {
+		t.Fatal("WRONG_KEY event was not classified as a password failure")
+	}
+	if wifiWrongKeyEvent(wrongKey, "Guest") {
+		t.Fatal("WRONG_KEY event for another SSID was classified as this attempt")
+	}
+	if wifiWrongKeyEvent(`<3>CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="Office" reason=AUTH_FAILED`, "Office") {
+		t.Fatal("a non-WRONG_KEY event was classified as a password failure")
+	}
+	if !wifiWrongKeyEvent(`<3>CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="Alice's WiFi" reason=WRONG_KEY`, "Alice's WiFi") {
+		t.Fatal("apostrophe in SSID was not matched")
+	}
+}
+
+func TestWiFiConnectionFailureReasons(t *testing.T) {
+	status := map[string]any{"connected": false, "ssid": "", "ip_address": ""}
+	tests := []struct {
+		name          string
+		apply         commandResult
+		wrongPassword bool
+		contextError  error
+		want          string
+	}{
+		{name: "wrong password", apply: commandResult{ExitCode: 1}, wrongPassword: true, want: wifiFailureWrongPassword},
+		{name: "association", apply: commandResult{ExitCode: 1, FailureReason: wifiFailureAssociation}, want: wifiFailureAssociation},
+		{name: "timeout", apply: commandResult{ExitCode: -1, TimedOut: true}, want: wifiFailureTimeout},
+		{name: "unconfirmed", apply: commandResult{ExitCode: 0}, want: wifiFailureUnconfirmed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := wifiConnectionFailureReason(test.apply, status, "Office", test.wrongPassword, test.contextError); got != test.want {
+				t.Fatalf("reason=%q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -157,6 +233,55 @@ func TestServerServesStaticAssetsAndRejectsTraversal(t *testing.T) {
 	server.ServeHTTP(resp, req)
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("symlink asset returned status %d", resp.Code)
+	}
+}
+
+func TestServerServesSettingsRoutesOnlyForKnownSections(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]int{
+		"/wifi":                 http.StatusOK,
+		"/wifi/Home_2.4G":       http.StatusOK,
+		"/model/providers/edit": http.StatusOK,
+		"/firmware/log":         http.StatusOK,
+		"/wifii":                http.StatusNotFound,
+		"/favicon":              http.StatusNotFound,
+		"/assets/css/tokens":    http.StatusNotFound,
+		"/legacy":               http.StatusNotFound,
+		"/api":                  http.StatusNotFound,
+	} {
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
+		if resp.Code != want {
+			t.Errorf("GET %s: status=%d, want %d", path, resp.Code, want)
+		}
+		if want == http.StatusOK && resp.Body.String() != "index" {
+			t.Errorf("GET %s: body=%q, want the settings shell", path, resp.Body.String())
+		}
+	}
+	// POST /api reaches the API handler's 404, not the static 405.
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api", nil))
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("POST /api: status=%d, want the API handler's 404", resp.Code)
+	}
+}
+
+func TestRestartAndPlanRejectCrossSiteRequests(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/agent/restart", "/api/device/reboot", "/api/config/plan"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"config":{}}`))
+		req.Header.Set("Origin", "https://evil.example")
+		resp := httptest.NewRecorder()
+		server.APIHandler().ServeHTTP(resp, req)
+		if resp.Code != http.StatusForbidden {
+			t.Errorf("cross-site POST %s: status=%d, want 403", path, resp.Code)
+		}
 	}
 }
 
@@ -703,6 +828,28 @@ func TestModelsEndpointReturnsLocalizedCatalog(t *testing.T) {
 	}
 }
 
+func TestModelsEndpointReturnsGeminiCatalog(t *testing.T) {
+	server, err := NewServer(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet,
+		"/api/models?provider=gemini&locale=en-US", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		Models []agent.LocalizedModelInfo `json:"models"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 3 || payload.Models[0].ID != "gemini-3.8-flash" || !payload.Models[0].Recommended {
+		t.Fatalf("Gemini catalog = %+v", payload.Models)
+	}
+}
+
 func TestModelsEndpointReturnsRequestedModelSpec(t *testing.T) {
 	options := testOptions(t)
 	server, err := NewServer(options)
@@ -753,6 +900,7 @@ func TestWiFiConnectionRunsAsBoundedBackgroundTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	server.wifiRegionDriver = &fakeWiFiRegionDriver{country: "CN"}
 	startedAt := time.Now()
 	resp := httptest.NewRecorder()
 	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPut, "/api/network/wifi/connection", strings.NewReader(`{"ssid":"test-network","psk":"secret"}`)))
@@ -824,6 +972,7 @@ set -eu
 	if err != nil {
 		t.Fatal(err)
 	}
+	server.wifiRegionDriver = &fakeWiFiRegionDriver{country: "CN"}
 	psk := "secret"
 	result := server.runWiFiConnection(context.Background(), wifiConnectionRequest{SSID: "qtum", PSK: &psk})
 	if result["ok"] != true {
@@ -929,47 +1078,6 @@ func TestConfigPatchReconfiguresStorageOwner(t *testing.T) {
 	}
 	if storage.reconfigureCalls != 1 || storage.reconfigured.MountPointOrDefault() != "/mnt/new-card" || storage.reconfigured.DeviceOrDefault() != "mmcblk9" || storage.reconfigured.MinCardFreeMBOrDefault() != 128 {
 		t.Fatalf("storage reconfigure calls=%d config=%+v", storage.reconfigureCalls, storage.reconfigured)
-	}
-}
-
-func TestOTAUpdateChildKeepsLockAcrossParentDescriptorClose(t *testing.T) {
-	options := testOptions(t)
-	root := t.TempDir()
-	ota := filepath.Join(root, "fake-ota")
-	if err := os.WriteFile(ota, []byte("#!/bin/sh\n/bin/sleep 0.4\nexit 7\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	options.OTABinary = ota
-	options.EnvRunBinary = filepath.Join(root, "missing-env-run")
-	options.OTAUpdateLockPath = filepath.Join(root, "ota.lock")
-	options.OTAUpdateLogPath = filepath.Join(root, "ota.log")
-	options.OTAHealthLogPath = filepath.Join(root, "health.log")
-	server, err := NewServer(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := httptest.NewRecorder()
-	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/ota/updates", nil))
-	if resp.Code != http.StatusAccepted {
-		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	if !server.otaUpdateRunning() {
-		t.Fatal("OTA lock was released after the parent closed its descriptor")
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for server.otaUpdateRunning() && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if server.otaUpdateRunning() {
-		t.Fatal("OTA lock remained held after the supervisor exited")
-	}
-	logData, err := os.ReadFile(options.OTAUpdateLogPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(logData), "update_exited exit_code=7") {
-		t.Fatalf("OTA log missing exit marker: %q", logData)
 	}
 }
 
@@ -1265,6 +1373,77 @@ func TestLLMLogImportRejectsOversizedBody(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(server.llmLogDir(), "llm-http-oversized.log")); !os.IsNotExist(err) {
 		t.Fatalf("oversized target exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestSupportLogsExportIncludesServiceLogsAndDmesg(t *testing.T) {
+	options := testOptions(t)
+	root := filepath.Dir(options.AgentConfigPath)
+	dmesg := filepath.Join(root, "dmesg")
+	if err := os.WriteFile(dmesg, []byte("#!/bin/sh\nprintf 'kernel message\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.DmesgBinary = dmesg
+	options.OTAHealthLogPath = filepath.Join(root, "ota.log")
+	if err := os.MkdirAll(filepath.Dir(options.OTAHealthLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(options.OTAHealthLogPath, []byte("ota health\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/logs/support", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(resp.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gz)
+	files := map[string]string{}
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[header.Name] = string(data)
+	}
+	if files["dmesg.log"] != "kernel message\n" {
+		t.Fatalf("dmesg.log=%q", files["dmesg.log"])
+	}
+	if files["services/frame_service.log"] == "" {
+		t.Fatal("frame service log was not included")
+	}
+	if files["services/ota.log"] != "ota health\n" {
+		t.Fatalf("services/ota.log=%q", files["services/ota.log"])
+	}
+}
+
+func TestRunDmesgCommandTimeoutKillsWrapperAndChild(t *testing.T) {
+	wrapper := filepath.Join(t.TempDir(), "dmesg-wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nsleep 30 &\nwait\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	result := runDmesgCommand(50*time.Millisecond, wrapper)
+	if !result.TimedOut {
+		t.Fatalf("TimedOut=%t ExitCode=%d Output=%q, want timeout", result.TimedOut, result.ExitCode, result.Output)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("dmesg wrapper shutdown took %s after timeout", elapsed)
 	}
 }
 
@@ -1597,8 +1776,34 @@ func TestParseWiFiScanOutputDecodesEscapedUTF8SSID(t *testing.T) {
 		ESSID:"\xe9\xa3\x9e\xe5\x88\xa9\xe7\x8c\xab\xe5\x93\x81\xe7\x89\x8cWiFi"
 	`
 	want := []string{"飞利猫品牌WiFi"}
-	if got := parseWiFiScanOutput(text); len(got) != len(want) || got[0] != want[0] {
+	if got := parseWiFiScanOutput(text).SSIDs; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("parseWiFiScanOutput()=%q, want %q", got, want)
+	}
+}
+
+func TestParseWiFiScanDetailsIncludesSecurityAndSignal(t *testing.T) {
+	text := `BSS aa:bb:cc:dd:ee:ff(on wlan0)
+	capability: ESS Privacy (0x0411)
+	signal: -48.00 dBm
+	SSID: Office
+BSS aa:bb:cc:dd:ee:01(on wlan0)
+	capability: ESS Privacy (0x0411)
+	signal: -78.00 dBm
+	SSID: Office
+Cell 02 - Address: 11:22:33:44:55:66
+		Quality=70/70  Signal level=-39 dBm
+		Encryption key:off
+		ESSID:"Guest"
+`
+	details := parseWiFiScanDetails(text)
+	if len(details) != 2 {
+		t.Fatalf("details=%#v", details)
+	}
+	if details[0].SSID != "Office" || !details[0].Secured || details[0].SignalDBM == nil || *details[0].SignalDBM != -48 {
+		t.Fatalf("Office details=%#v", details[0])
+	}
+	if details[1].SSID != "Guest" || details[1].Secured || details[1].SignalDBM == nil || *details[1].SignalDBM != -39 {
+		t.Fatalf("Guest details=%#v", details[1])
 	}
 }
 
@@ -1610,7 +1815,7 @@ func TestDecodeWiFiSSIDPreservesInvalidEscapes(t *testing.T) {
 	}
 }
 
-func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
+func TestWiFiProxyRequestValidationAndPasswordProtection(t *testing.T) {
 	customURL := "http://alice:secret@proxy.example:7890"
 	noProxy := "localhost,.example.com"
 	request := wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &customURL, NoProxy: &noProxy}
@@ -1623,7 +1828,7 @@ func TestWiFiProxyRequestValidationAndPasswordRedaction(t *testing.T) {
 	}
 	public := (wiFiConfig{Networks: []wiFiNetwork{{SSID: "Office"}}}).publicValue(config)
 	network := public["networks"].([]map[string]any)[0]
-	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "http://alice:xxxxx@proxy.example:7890" || network["no_proxy"] != noProxy {
+	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "" || network["no_proxy"] != noProxy {
 		t.Fatalf("public proxy=%#v", network)
 	}
 
@@ -1705,19 +1910,31 @@ func TestWiFiForgetRemovesProxyMapping(t *testing.T) {
 }
 
 func TestWiFiCountryValidation(t *testing.T) {
+	// An unusable code must be reported as such. Substituting a default here is
+	// how a device ends up transmitting under rules nobody chose, so the parser
+	// reports no country and callers resolve one explicitly.
 	for input, want := range map[string]string{
 		"us":            "US",
 		" CN ":          "CN",
-		"USA":           "CN",
-		"U1":            "CN",
-		"US\nnetwork={": "CN",
+		"USA":           "",
+		"U1":            "",
+		"ZZ":            "",
+		"US\nnetwork={": "",
 	} {
-		if got := normalizeWiFiCountry(input); got != want {
-			t.Errorf("normalizeWiFiCountry(%q)=%q, want %q", input, got, want)
+		got, ok := wifiregion.Normalize(input)
+		if got != want || ok != (want != "") {
+			t.Errorf("wifiregion.Normalize(%q)=(%q,%v), want (%q,%v)", input, got, ok, want, want != "")
 		}
 	}
-	if rendered := renderWiFiConfig(wiFiConfig{Country: "US\nnetwork={"}); !strings.Contains(rendered, "country=CN\n") {
-		t.Fatalf("rendered invalid country: %q", rendered)
+	if _, err := renderWiFiConfig(wiFiConfig{Country: "US\nnetwork={"}); err == nil {
+		t.Fatal("renderWiFiConfig accepted an invalid country")
+	}
+	rendered, err := renderWiFiConfig(wiFiConfig{Country: "us"})
+	if err != nil {
+		t.Fatalf("renderWiFiConfig: %v", err)
+	}
+	if !strings.Contains(rendered, "country=US\n") {
+		t.Fatalf("rendered country not normalized: %q", rendered)
 	}
 }
 
@@ -1729,7 +1946,7 @@ func TestEmptyFirmwareInfoMatchesSuccessShape(t *testing.T) {
 		}
 	}
 	components, ok := info["components"].(map[string]string)
-	if !ok || components["boot"] != "" || components["oem"] != "" || components["rootfs"] != "" {
+	if !ok || components["boot"] != "" || components["rootfs"] != "" {
 		t.Fatalf("components=%#v", info["components"])
 	}
 }
@@ -1740,14 +1957,13 @@ func TestFirmwareComponentVersionsUsesSelectedSlot(t *testing.T) {
 			"b": map[string]any{
 				"partitions": map[string]any{
 					"boot":   map[string]any{"version": "boot-v2"},
-					"oem":    map[string]any{"version": "oem-v2"},
 					"rootfs": map[string]any{"version": "rootfs-v2"},
 				},
 			},
 		},
 	}
 	got := firmwareComponentVersions(state, "b")
-	if got["boot"] != "boot-v2" || got["oem"] != "oem-v2" || got["rootfs"] != "rootfs-v2" {
+	if got["boot"] != "boot-v2" || got["rootfs"] != "rootfs-v2" {
 		t.Fatalf("components=%#v", got)
 	}
 }
@@ -1937,5 +2153,50 @@ func TestConfigApplicationDropsReloadErrorAfterAgentRestart(t *testing.T) {
 	// The error stays cleared for subsequent polls.
 	if resp := status(); resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"state":"applied"`) {
 		t.Fatalf("cleared status: %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestConfigPlanRunsDryRunAndReportsApplyLevel(t *testing.T) {
+	options := testOptions(t)
+	fakeAgent := filepath.Join(t.TempDir(), "fake-agent")
+	argsPath := filepath.Join(t.TempDir(), "args")
+	t.Setenv("AIDEN_TEST_CONFIG_ARGS", argsPath)
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' "$@" > "$AIDEN_TEST_CONFIG_ARGS"
+printf '%s\n' '{"ok":true,"config":{},"changed_paths":["basic_settings.device.hid.keyboard_layout"],"reboot_required":true,"persisted":false,"apply":"reboot","apply_reasons":["keyboard_layout"]}'
+`
+	if err := os.WriteFile(fakeAgent, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	options.AgentBinary = fakeAgent
+	server, err := NewServer(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/config/plan", strings.NewReader(`{"config":{"hid":{"keyboard_layout":"azerty"}}}`)))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["apply"] != "reboot" || body["reboot_required"] != true {
+		t.Fatalf("plan body = %v", body)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "--dry-run") {
+		t.Fatalf("plan must not persist; config-update args were:\n%s", args)
+	}
+
+	bad := httptest.NewRecorder()
+	server.APIHandler().ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/api/config/plan", strings.NewReader(`{"patch":{}}`)))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("a malformed plan request must be rejected, status=%d", bad.Code)
 	}
 }

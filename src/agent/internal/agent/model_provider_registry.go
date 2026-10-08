@@ -23,12 +23,20 @@ type ModelBuildContext struct {
 type ModelProviderBuilder func(ModelBuildContext, ModelConfig) (llms.Model, error)
 
 type modelProviderDefinition struct {
-	providerType              string
-	allowsCustomBaseURL       bool
-	supportsResponses         bool
-	supportsResponsesStateful bool
-	hiddenFromConfigUI        bool
-	build                     ModelProviderBuilder
+	providerType                   string
+	allowsCustomBaseURL            bool
+	usesProviderTemperatureDefault bool
+	supportsResponses              bool
+	supportsResponsesStateful      bool
+	supportsInteractions           bool
+	supportsInteractionsStateful   bool
+	// chatCompletionsUnsupported marks a provider that has no usable
+	// OpenAI-compatible /chat/completions transport, so an explicit
+	// api_mode=chat_completions must be rejected instead of silently building a
+	// client that fails at request time.
+	chatCompletionsUnsupported bool
+	hiddenFromConfigUI         bool
+	build                      ModelProviderBuilder
 }
 
 var modelProviderDefinitions = []modelProviderDefinition{
@@ -80,6 +88,15 @@ var modelProviderDefinitions = []modelProviderDefinition{
 		providerType:        "ollama",
 		allowsCustomBaseURL: true,
 		build:               buildOllamaModel,
+	},
+	{
+		providerType:                   "gemini",
+		allowsCustomBaseURL:            true,
+		usesProviderTemperatureDefault: true,
+		supportsInteractions:           true,
+		supportsInteractionsStateful:   true,
+		chatCompletionsUnsupported:     true,
+		build:                          buildGeminiModel,
 	},
 	{
 		providerType:              "fake",
@@ -243,6 +260,46 @@ func buildOllamaModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error
 	return ollama.New(options...)
 }
 
+// buildGeminiModel always uses Gemini's native Interactions API. The
+// OpenAI-compatible /chat/completions endpoint cannot round-trip the
+// thought_signature that Gemini 3 models require on replayed function calls, so
+// multi-turn tool use fails there with HTTP 400. Google also documents
+// generateContent as legacy and recommends calling the native API directly.
+func buildGeminiModel(ctx ModelBuildContext, cfg ModelConfig) (llms.Model, error) {
+	apiMode := resolveGeminiAPIMode(cfg.APIMode)
+	if apiMode == "" {
+		return nil, fmt.Errorf("model.api_mode=%s is not supported by Google Gemini; use interactions or interactions_stateful", strings.TrimSpace(cfg.APIMode))
+	}
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = geminiInteractionsBaseURL
+	}
+	return newInteractionsModel(baseURL, cfg.Model, resolveToken(cfg), ctx.HTTPClient, interactionsModelOptions{
+		rawLogger:              ctx.RawHTTPLogger,
+		reasoningEffort:        cfg.ReasoningEffort,
+		temperature:            cfg.Temperature,
+		providerManagedContext: apiMode == modelAPIModeInteractionsStateful,
+	}), nil
+}
+
+// resolveGeminiAPIMode maps configuration onto the two supported native modes.
+// An unset api_mode selects stateless interactions so a minimal Gemini provider
+// record works without extra configuration. Any other mode returns "" because
+// Gemini has no compatible transport behind this provider type.
+func resolveGeminiAPIMode(configured string) string {
+	if strings.TrimSpace(configured) == "" {
+		return modelAPIModeInteractions
+	}
+	switch normalizeModelAPIMode(configured) {
+	case modelAPIModeInteractions:
+		return modelAPIModeInteractions
+	case modelAPIModeInteractionsStateful:
+		return modelAPIModeInteractionsStateful
+	default:
+		return ""
+	}
+}
+
 func lookupModelProviderDefinition(providerType string) (modelProviderDefinition, bool) {
 	providerType = strings.ToLower(strings.TrimSpace(providerType))
 	for _, definition := range modelProviderDefinitions {
@@ -257,6 +314,21 @@ func modelProviderTypes() []string {
 	types := make([]string, 0, len(modelProviderDefinitions))
 	for _, definition := range modelProviderDefinitions {
 		types = append(types, definition.providerType)
+	}
+	return types
+}
+
+func modelProviderUsesProviderTemperatureDefault(providerType string) bool {
+	definition, ok := lookupModelProviderDefinition(providerType)
+	return ok && definition.usesProviderTemperatureDefault
+}
+
+func modelProviderTypesUsingProviderTemperatureDefault() []string {
+	types := make([]string, 0, len(modelProviderDefinitions))
+	for _, definition := range modelProviderDefinitions {
+		if definition.usesProviderTemperatureDefault {
+			types = append(types, definition.providerType)
+		}
 	}
 	return types
 }

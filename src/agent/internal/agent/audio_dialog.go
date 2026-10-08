@@ -29,6 +29,7 @@ var (
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
 	config              Config
+	runtime             *Runtime
 	audioClient         *AudioServiceClient
 	recordBackend       audioRecordingBackend
 	sttClient           STTClient
@@ -193,18 +194,14 @@ func NewAudioDialogWithConfig(runtime *Runtime, cfg Config) (*AudioDialog, error
 		return nil, err
 	}
 
-	// Collect endpoints for connection warming
-	endpoints := collectWarmupEndpoints(cfg)
-	var connWarmer *ConnectionWarmer
-	if len(endpoints) > 0 {
-		// Use the optimized HTTP client with proxy support
-		proxyConfig := ProxyConfigFromEnvironment()
-		client := newProxyHTTPClient(proxyConfig)
-		connWarmer = NewConnectionWarmer(client, endpoints)
-	}
+	// Keep a warmer even when endpoints are initially empty: a model reload
+	// can enable an endpoint without rebuilding the dialog.
+	client := newProxyHTTPClient(ProxyConfigFromEnvironment())
+	connWarmer := NewConnectionWarmer(client, collectWarmupEndpoints(cfg))
 
 	return &AudioDialog{
 		config:             cfg,
+		runtime:            runtime,
 		audioClient:        audioClient,
 		recordBackend:      recordBackend,
 		sttClient:          sttClient,
@@ -240,6 +237,52 @@ func (d *AudioDialog) PrepareInput() error {
 		return fmt.Errorf("prepare VAD: %w", err)
 	}
 	return d.vad.Reset()
+}
+
+// PrepareInputReplacement stages input after the previous voice loop has
+// drained. Unchanged VAD belongs to the previous dialog until commit, so a
+// provider switch neither opens the NPU again nor destroys rollback state.
+// The caller must serialize commit with preemption and close the old dialog
+// only after calling the returned function. On rollback, close only d.
+func (d *AudioDialog) PrepareInputReplacement(previous *AudioDialog) (func(), error) {
+	if d != nil && previous != nil && d != previous && d.vad != nil && previous.vad != nil &&
+		d.vadConfig() == previous.vadConfig() {
+		return func() {
+			_ = d.vad.Close() // The staged helper has not been started.
+			d.vad, previous.vad = previous.vad, nil
+		}, nil
+	}
+	return nil, d.PrepareInput()
+}
+
+func (d *AudioDialog) vadConfig() AudioVADConfig {
+	backend := d.config.VADBackendOrDefault()
+	modelPath := strings.TrimSpace(d.config.VADModelPath)
+	if modelPath == "" {
+		modelPath = defaultVADModelPath
+	}
+	helperPath := ResolveVADHelperPath(backend, d.config.VADHelperPath)
+	silenceMs := d.config.SilenceMs
+	if silenceMs <= 0 {
+		silenceMs = defaultSilenceMs
+	}
+	minSpeechMs := d.config.MinSpeechMs
+	if minSpeechMs <= 0 {
+		minSpeechMs = defaultMinSpeechMs
+	}
+	threshold := d.config.VADSpeechThreshold
+	if threshold <= 0 {
+		threshold = defaultVADSpeechThreshold
+	}
+	return AudioVADConfig{
+		SampleRate:      d.config.Audio.SampleRateOrDefault(),
+		SilenceMs:       silenceMs,
+		MinSpeechMs:     minSpeechMs,
+		Backend:         backend,
+		ModelPath:       modelPath,
+		HelperPath:      helperPath,
+		SpeechThreshold: threshold,
+	}
 }
 
 // Close releases resources owned by the dialog. The TTS provider manager is
@@ -306,6 +349,12 @@ func (d *AudioDialog) StartRecording() error {
 	// Warmup connections in the background during the recording gap
 	// This saves TLS handshake time for the upcoming LLM/STT/TTS requests
 	if d.connWarmer != nil {
+		cfg := d.config
+		if d.runtime != nil {
+			// Model settings reload independently; STT still belongs to this dialog.
+			cfg.Model = d.runtime.ConfigSnapshot().Model
+		}
+		d.connWarmer.SetEndpoints(collectWarmupEndpoints(cfg))
 		d.connWarmer.WarmupAsync(context.Background())
 	}
 
@@ -880,9 +929,6 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	))
 	var finalAssistantEvent *RunEvent
 
-	// Send to LLM
-	logging.Infof("agent", "llm", "Sending request to provider '%s' (model=%s)...", d.config.Model.Provider, d.config.Model.Model)
-
 	var speechWriter *speech.StreamWriter
 	req := RunRequest{
 		Input:          input.InputText,
@@ -1271,8 +1317,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		logging.Field{Key: "message", Value: text})
 	d.playPromptSoundAsyncWithWait(promptSoundAgentSend, "agent send", false)
 
-	// Send to LLM
-	logging.Infof("agent", "llm", "Sending request to provider '%s' (model=%s)...", d.config.Model.Provider, d.config.Model.Model)
 	var speechWriter *speech.StreamWriter
 
 	req := RunRequest{

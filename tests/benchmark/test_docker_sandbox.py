@@ -60,7 +60,7 @@ class DockerSandboxContractTest(unittest.TestCase):
         self.assertIn("go build", dockerfile)
         self.assertIn("./cmd/daemon", dockerfile)
         self.assertNotIn("src/config_web.cpp", dockerfile)
-        self.assertIn("src/config_web/web/ /oem/usr/share/aiden/config-web/", dockerfile)
+        self.assertIn("src/config_web/web/ /usr/share/aiden/config-web/", dockerfile)
         self.assertIn("config-web", read_repo_file("docker/dev/entrypoint.sh"))
         self.assertIn("ttyd-builder", dockerfile)
         self.assertIn('ttyd_version="1.7.3"', dockerfile)

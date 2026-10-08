@@ -1,33 +1,47 @@
-.PHONY: all configure build clean test test-agent-webui test-clean sandbox-start sandbox-logs sandbox-stop
+.PHONY: all configure build clean test check check-fast check-full check-docker check-production \
+	test-configure test-build test-agent-webui test-clean test-production \
+	sandbox-start sandbox-logs sandbox-stop
 
-BUILD_DIR := build
-TEST_BUILD_DIR := build-host
-
+# The host is only a Docker client. Every compiler, test runner, and production
+# build command runs in docker/test/Dockerfile.
 all: build
 
 configure:
-	cmake -S . -B $(BUILD_DIR)
+	bash scripts/run_tests_in_docker.sh --production --suite production-cross-smoke
 
 build: configure
-	cmake --build $(BUILD_DIR)
+
+# Local feedback should be short; CI runs check-full without omitting suites.
+check:
+	bash scripts/run_tests_in_docker.sh --profile quick
+
+check-fast: check
+
+check-full:
+	bash scripts/run_tests_in_docker.sh --profile full
+
+test: check-full
+
+check-docker:
+	bash scripts/run_tests_in_docker.sh --docker-socket --suite docker-package-contract
 
 test-configure:
-	cmake -S . -B $(TEST_BUILD_DIR) -DAIDEN_TESTS=ON
+	bash scripts/run_tests_in_docker.sh --suite cpp-host
 
-test-build: test-configure
-	cmake --build $(TEST_BUILD_DIR) --parallel $$(getconf _NPROCESSORS_ONLN)
-
-test: test-build
-	cd $(TEST_BUILD_DIR) && ctest --output-on-failure
+test-build:
+	bash scripts/run_tests_in_docker.sh --suite cpp-host
 
 test-agent-webui:
-	node src/agent/internal/agent/web_ui_test/history_reconciliation.test.js
+	bash scripts/run_tests_in_docker.sh --suite web
+
+check-production test-production:
+	bash scripts/run_tests_in_docker.sh --production --suite production-cross-smoke
 
 test-clean:
-	rm -rf $(TEST_BUILD_DIR)
+	rm -rf build-host build-docker-host
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf build output/production-smoke
 
 sandbox-start:
 	./scripts/start_docker_sandbox.sh
