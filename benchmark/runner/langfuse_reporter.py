@@ -65,10 +65,6 @@ RELIABILITY_DISTRIBUTION_METRICS = (
     "retry_count",
 )
 RUN_DISTRIBUTION_STATISTICS = ("count", "sum", "mean", "p50", "p90", "p95")
-PUBLICATION_VERIFY_TIMEOUT_ENV = "LANGFUSE_PUBLISH_VERIFY_TIMEOUT_SECONDS"
-PUBLICATION_VERIFY_TIMEOUT_SECONDS = 11 * 60.0
-PUBLICATION_VERIFY_INITIAL_DELAY_SECONDS = 1.0
-PUBLICATION_VERIFY_MAX_DELAY_SECONDS = 30.0
 
 
 class LangfusePublishError(RuntimeError):
@@ -441,40 +437,6 @@ def _emit_progress(
 ) -> None:
     if progress is not None:
         progress(message)
-
-
-def _publication_verify_timeout_seconds() -> float:
-    raw_value = os.environ.get(PUBLICATION_VERIFY_TIMEOUT_ENV, "").strip()
-    if not raw_value:
-        return PUBLICATION_VERIFY_TIMEOUT_SECONDS
-    try:
-        timeout_seconds = float(raw_value)
-    except ValueError as exc:
-        raise LangfusePublishError(
-            f"{PUBLICATION_VERIFY_TIMEOUT_ENV} must be a positive number"
-        ) from exc
-    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-        raise LangfusePublishError(
-            f"{PUBLICATION_VERIFY_TIMEOUT_ENV} must be a positive number"
-        )
-    return timeout_seconds
-
-
-def _traces_are_readable(client: Any, trace_ids: Any) -> bool:
-    trace_api = getattr(getattr(client, "api", None), "trace", None)
-    get_trace = getattr(trace_api, "get", None)
-    if not callable(get_trace):
-        raise LangfusePublishError(
-            "Langfuse client does not provide the synchronous trace API"
-        )
-    for trace_id in trace_ids:
-        try:
-            get_trace(trace_id, fields="core")
-        except Exception as exc:
-            if getattr(exc, "status_code", None) == 404:
-                return False
-            raise
-    return True
 
 
 def _publish_scores(
