@@ -50,12 +50,12 @@ func TestDefaultTurnFailureVoiceNotificationText_SessionIdle(t *testing.T) {
 		{
 			name:   "zh-cn",
 			locale: "zh-cn",
-			want:   "长时间没有对话，本次会话已自动结束，你可以随时开始新的对话。",
+			want:   "长时间无对话，会话已结束。",
 		},
 		{
 			name:   "en",
 			locale: "en-US",
-			want:   "The conversation has ended due to inactivity. Feel free to start a new one anytime.",
+			want:   "Session ended due to inactivity.",
 		},
 	}
 

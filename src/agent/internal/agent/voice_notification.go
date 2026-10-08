@@ -667,7 +667,7 @@ func defaultTurnFailureVoiceNotificationText(locale, code string) string {
 		case TurnFailureTokenInsufficient:
 			return "The service quota is exhausted, so I cannot complete this request right now."
 		case TurnFailureSessionIdle:
-			return "The conversation has ended due to inactivity. Feel free to start a new one anytime."
+			return "Session ended due to inactivity."
 		default:
 			return "The assistant service is temporarily unavailable. Please try again later."
 		}
@@ -678,7 +678,7 @@ func defaultTurnFailureVoiceNotificationText(locale, code string) string {
 	case TurnFailureTokenInsufficient:
 		return "当前服务额度不足，暂时无法完成这个请求。"
 	case TurnFailureSessionIdle:
-		return "长时间没有对话，本次会话已自动结束，你可以随时开始新的对话。"
+		return "长时间无对话，会话已结束。"
 	default:
 		return "当前智能服务暂时不可用，请稍后再试。"
 	}
