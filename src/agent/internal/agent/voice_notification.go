@@ -46,6 +46,15 @@ func TurnFailureFromError(err error) *TurnFailure {
 	}
 
 	message := strings.ToLower(err.Error())
+	// Check for session idle timeout (180 seconds)
+	for _, marker := range []string{
+		"no response was generated for 180 seconds",
+		"session was closed because no response",
+	} {
+		if strings.Contains(message, marker) {
+			return &TurnFailure{Code: TurnFailureSessionIdle}
+		}
+	}
 	for _, marker := range []string{
 		"insufficient balance",
 		"insufficient quota",
@@ -140,6 +149,7 @@ const (
 	TurnFailureNetworkUnavailable = "network_unavailable"
 	TurnFailureTokenInsufficient  = "token_insufficient"
 	TurnFailureLLMUnavailable     = "llm_unavailable"
+	TurnFailureSessionIdle        = "session_idle"
 )
 
 type SpokenTextInput struct {
@@ -656,6 +666,8 @@ func defaultTurnFailureVoiceNotificationText(locale, code string) string {
 			return "The network is unavailable, so I cannot complete this request right now."
 		case TurnFailureTokenInsufficient:
 			return "The service quota is exhausted, so I cannot complete this request right now."
+		case TurnFailureSessionIdle:
+			return "The conversation has ended due to inactivity. Feel free to start a new one anytime."
 		default:
 			return "The assistant service is temporarily unavailable. Please try again later."
 		}
@@ -665,6 +677,8 @@ func defaultTurnFailureVoiceNotificationText(locale, code string) string {
 		return "当前网络不可用，暂时无法完成这个请求。"
 	case TurnFailureTokenInsufficient:
 		return "当前服务额度不足，暂时无法完成这个请求。"
+	case TurnFailureSessionIdle:
+		return "长时间没有对话，本次会话已自动结束，你可以随时开始新的对话。"
 	default:
 		return "当前智能服务暂时不可用，请稍后再试。"
 	}
