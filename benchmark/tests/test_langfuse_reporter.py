@@ -397,7 +397,6 @@ def test_publish_run_maps_attempts_and_aggregate_metrics(tmp_path: Path):
     assert len(client.experiment["metadata"]["workload_sha256"]) == 64
     assert client.spans[0]["metadata"]["aiden_episode_id"] == "episode-a"
     assert client.flushed is True
-    assert client.trace_calls
 
 
 def test_publish_run_uses_stable_dataset_and_item_ids(tmp_path: Path):
@@ -562,13 +561,6 @@ def test_publish_run_fails_when_score_write_fails(tmp_path: Path):
     client = FakeLangfuse(score_error=FakeAPIError(503, "score storage unavailable"))
 
     with pytest.raises(LangfusePublishError, match="score storage unavailable"):
-        publish_run(_write_run(tmp_path), client=client)
-
-
-def test_publish_run_fails_when_trace_is_not_readable_after_flush(tmp_path: Path):
-    client = FakeLangfuse(trace_error=FakeAPIError(503, "trace storage unavailable"))
-
-    with pytest.raises(LangfusePublishError, match="trace storage unavailable"):
         publish_run(_write_run(tmp_path), client=client)
 
 

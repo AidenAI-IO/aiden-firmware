@@ -405,10 +405,8 @@ def _verify_published_run(
     expected_item_ids: set[str],
     progress: Callable[[str], None] | None = None,
 ) -> tuple[Any, dict[str, str]]:
-    """Read back the run with minimal verification - brief wait for consistency."""
-    # Give Langfuse a moment to sync before checking
-    time.sleep(2)
-    _emit_progress(progress, "verifying publication (brief consistency check)")
+    """Read back the run with minimal verification - wait only if needed."""
+    _emit_progress(progress, "verifying publication (checking consistency)")
     dataset_run = _get_existing_run(client, dataset_name, run_name)
     if dataset_run is None:
         raise LangfusePublishError(
@@ -423,6 +421,23 @@ def _verify_published_run(
             f"Langfuse run {run_name} contains unexpected dataset items; "
             "use a unique benchmark run_id"
         )
+    # If items are missing, wait briefly for eventual consistency
+    missing_item_ids = expected_item_ids - actual_item_ids
+    if missing_item_ids:
+        time.sleep(2)
+        dataset_run = _get_existing_run(client, dataset_name, run_name)
+        if dataset_run is None:
+            raise LangfusePublishError(
+                f"Langfuse run {run_name} disappeared after initial check"
+            )
+        item_traces = _dataset_run_item_traces(dataset_run)
+        actual_item_ids = set(item_traces)
+        still_missing = expected_item_ids - actual_item_ids
+        if still_missing:
+            raise LangfusePublishError(
+                f"Langfuse run {run_name} is missing {len(still_missing)} expected items "
+                f"after consistency wait"
+            )
     _emit_progress(
         progress,
         f"publication verified: dataset_run_id={_string_attr(dataset_run, 'id') or 'missing'} "
