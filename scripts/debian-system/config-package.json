@@ -37,6 +37,7 @@
     "usr/lib/aiden/aiden-user-home",
     "usr/lib/aiden/aiden-userdata-migrate",
     "usr/lib/aiden/aiden-wifi-driver",
+    "usr/lib/aiden/aiden-wifi-prepare",
     "etc/systemd/system/aiden-environment.service",
     "etc/systemd/system/aiden-machine-id.service",
     "etc/systemd/system/aiden-media-modules.service",

@@ -147,6 +147,7 @@ suites:
       bash scripts/test_github_actions_self_hosted_safety.sh
       bash scripts/test_debian_only_policy.sh
       bash scripts/test_debian_audio_mixer.sh
+      python3 scripts/test_debian_wifi_prepare.py
       GOPROXY=https://inherited.example RK_JOBS=2 bash scripts/test_debian_apps.sh
       bash scripts/test_release_ci_scripts.sh
       bash scripts/test_rootfs_cli_tool_catalog.sh

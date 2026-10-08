@@ -43,6 +43,8 @@ insert_if_present() {
 
 log "stage=begin he_on=${he_on} ko_dir=${ko_dir}"
 mark "begin he_on=${he_on}"
+stage=hardware-prepare
+/usr/lib/aiden/aiden-wifi-prepare
 stage=crypto
 insert_if_present libarc4.ko
 insert_if_present ctr.ko

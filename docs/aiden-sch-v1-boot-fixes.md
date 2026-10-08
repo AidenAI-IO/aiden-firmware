@@ -24,7 +24,37 @@ table 2-1 and the SDK pinctrl definitions.
 The charger and BQ27220 are on the companion MCU's I2C bus. Remove
 the fictitious RV1106 I2C1 fuel-gauge node; I2C1 M1 steals Bluetooth UART0
 RX/TX. BT_WAKE_MCU is routed to the MCU and is not a Linux host IRQ.
-The MCU must assert WIFI_VCC_PWREN (GD32 PA4); Linux cannot switch that rail directly. The image enables the Wi-Fi driver by default (ENABLE_WIFIDRV=1). On 2026-10-08, the new board passed two full-power-cycle checks: AIC8800D80 SDIO enumeration, automatic driver loading, and 2.4/5 GHz scanning all succeeded. Two software reboots lost SDIO enumeration and failed driver loading; a full power cycle restored operation. The warm-reboot reset/power sequencing issue remains unresolved, and the logs alone do not establish that the MCU removed power. The WLAN guard, Bluetooth and BLE feature gates remain disabled.
+The MCU must assert WIFI_VCC_PWREN (GD32 PA4); Linux cannot switch that
+supply directly. Linux can reset the module through WL_EN_1V8:
+RV1106 GPIO3_C5 (GPIO 117) -> R169 (1 kohm) -> module pin 12. Sheet 15
+places R168 (10K_NC) on WF_WAKE_MCU_1V8, not WL_EN; the legacy DTS comment
+claiming an external WL_EN pull-up is incorrect.
+
+The image enables the driver by default (ENABLE_WIFIDRV=1). Before loading
+any AIC module, aiden-wifi-driver calls aiden-wifi-prepare on Aiden SCH v1.
+It detaches only the Wi-Fi host ff9a0000.mmc, holds WL_EN low for 1 second,
+drives it high, waits 2 seconds, rebinds the host and waits up to 5 seconds
+for both AIC8800D80 SDIO functions. The MCU-controlled supply must already
+be on. Enumeration failures stop driver startup. GPIO 117 stays exported
+and high. A service restart with wlan0 present skips the reset; if the
+interface is absent but an AIC module is already loaded, the helper refuses
+to reset underneath a live driver.
+
+On 2026-10-08, two software reboots reproduced missing SDIO devices. Host
+reprobing alone and driving WL_EN high without a low pulse both failed.
+A low-to-high WL_EN pulse followed by host reprobing restored both SDIO
+functions and wlan0, with 32 and 30 scanned BSS entries across 2.4/5 GHz.
+The non-removable host only scans once, so a GPIO pulse alone did not
+trigger enumeration. This recovery does not prove that an absent MCU
+supply can be restored by WL_EN. The WLAN guard, Bluetooth and BLE feature
+gates remain disabled.
+
+After installing the boot helper, two further software reboots recovered
+Wi-Fi automatically, with 29 and 33 scanned BSS entries across both bands
+and zero failed systemd units. Restarting the service with wlan0 present
+logged a reset skip. These checks deployed the shell helpers directly to
+the running rootfs; no new factory image was flashed for this change.
+Association/DHCP and a subsequent physical cold boot were not tested.
 
 ## Media initialization
 
