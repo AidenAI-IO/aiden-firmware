@@ -24,7 +24,7 @@ table 2-1 and the SDK pinctrl definitions.
 The charger and BQ27220 are on the companion MCU's I2C bus. Remove
 the fictitious RV1106 I2C1 fuel-gauge node; I2C1 M1 steals Bluetooth UART0
 RX/TX. BT_WAKE_MCU is routed to the MCU and is not a Linux host IRQ.
-The MCU must assert WIFI_VCC_PWREN; Linux cannot switch that rail directly. The current image therefore disables the Wi-Fi, Bluetooth and BLE feature gates until MCU firmware that asserts GD32 PA4 is available. This avoids a failed boot unit while preserving the AIC8800 driver for a hardware-enabled board.
+The MCU must assert WIFI_VCC_PWREN (GD32 PA4); Linux cannot switch that rail directly. The image enables the Wi-Fi driver by default (ENABLE_WIFIDRV=1). On 2026-10-08, the new board passed two full-power-cycle checks: AIC8800D80 SDIO enumeration, automatic driver loading, and 2.4/5 GHz scanning all succeeded. Two software reboots lost SDIO enumeration and failed driver loading; a full power cycle restored operation. The warm-reboot reset/power sequencing issue remains unresolved, and the logs alone do not establish that the MCU removed power. The WLAN guard, Bluetooth and BLE feature gates remain disabled.
 
 ## Media initialization
 

@@ -18,7 +18,7 @@ When flashing the full firmware, you typically use `update.img`.
 
 This project's firmware is built on `pico-sdk` and includes the following customizations:
 
-- The AIC8800D80 SDIO/UART combo driver is included, but Wi-Fi, Bluetooth and BLE feature gates are disabled on SCH v1 until the GD32 MCU firmware asserts the schematic's `WIFI_VCC_PWREN` rail;
+- The AIC8800D80 Wi-Fi driver is enabled by default (`ENABLE_WIFIDRV=1`). The GD32 MCU must assert `WIFI_VCC_PWREN`; cold boot and dual-band scanning have been verified on the new SCH v1 board. Software reboot can still leave SDIO unavailable until a full power cycle. Bluetooth and BLE remain disabled by default;
 - Kernel builds the Rockchip RK628 HDMI-to-CSI V4L2 driver and disables the
   unpopulated Toshiba TC358743 path;
 - The Aiden SCH v1 DTS declares RK628F on 100 kHz I2C4 at `0x50`, with
