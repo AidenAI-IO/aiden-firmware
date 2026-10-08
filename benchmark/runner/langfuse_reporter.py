@@ -903,7 +903,7 @@ def _attempt_scores(*, output: Any, **_: Any) -> list[dict[str, Any]]:
         _add_score(
             evaluations,
             f"benchmark.{metric_name}",
-            metrics.get(metric_name"),
+            metrics.get(metric_name),
             "BOOLEAN",
         )
     for observation in metrics.get("trace_observations") or []:
