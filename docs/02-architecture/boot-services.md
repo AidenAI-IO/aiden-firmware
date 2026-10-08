@@ -20,6 +20,7 @@ relationships rather than filename order.
 | `aiden-platform-ldconfig.service` | Register platform libraries from the active rootfs slot |
 | `aiden-environment.service` | Generate the strict runtime environment |
 | `aiden-media-modules.service` | Load media modules and prepare video device access |
+| `aiden-audio-mixer.service` | Initialize RV1106 microphone controls before audio capture |
 | `aiden-wifi-driver.service` | Load AIC8800 Wi-Fi and Bluetooth firmware |
 | `aiden-bluetooth-attach.service` | Attach the AIC8800 UART transport |
 | `aiden-usb-gadget.service` | Create keyboard, pointer, Consumer Control, and ECM functions |
