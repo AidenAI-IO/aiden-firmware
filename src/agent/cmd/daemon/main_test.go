@@ -2823,3 +2823,25 @@ func alternatingSamples(samples int, center, amplitude int16) []int16 {
 	}
 	return out
 }
+
+func TestRealtimeUserHistoryPreservesAdjacentTranscripts(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcripts := []string{"Out of.", "北京。", "我会保存的温暖背景。", "the weather in beijing"}
+	for _, text := range transcripts {
+		if err := appendRealtimeUserMessage(manager, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := manager.MessageListDump().Messages
+	if len(got) != len(transcripts)+1 {
+		t.Fatalf("history length = %d", len(got))
+	}
+	for i, text := range transcripts {
+		if got[i+1].Role != messages.MessageRoleUser || got[i+1].Content != text {
+			t.Fatalf("history item %d changed: %+v", i, got[i+1])
+		}
+	}
+}
