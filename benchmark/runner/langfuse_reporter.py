@@ -3,9 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import hashlib
 import json
-import math
 import os
-import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -145,6 +143,7 @@ def publish_run(
         phase = "lookup-existing-run"
         existing = _get_existing_run(client, dataset_name, run_name)
         existing_run_id: str | None = None
+        existing_item_traces: dict[str, str] = {}
         if existing is not None:
             _validate_existing_run_metadata(existing, experiment_metadata, run_name)
             existing_run_id = _string_attr(existing, "id")
@@ -152,7 +151,8 @@ def publish_run(
                 raise LangfusePublishError(
                     f"Langfuse run {run_name} is missing its dataset run ID"
                 )
-            existing_item_ids = set(_dataset_run_item_traces(existing))
+            existing_item_traces = _dataset_run_item_traces(existing)
+            existing_item_ids = set(existing_item_traces)
             _emit_progress(
                 progress,
                 f"existing run found: dataset_run_id={existing_run_id} "
@@ -166,15 +166,6 @@ def publish_run(
                 )
             missing_item_ids = set(item_ids.values()) - existing_item_ids
             if not missing_item_ids:
-                phase = "verify-existing-run"
-                verified_run, verified_item_traces = _verify_published_run(
-                    client,
-                    dataset_name=dataset_name,
-                    run_name=run_name,
-                    expected_metadata=experiment_metadata,
-                    expected_item_ids=set(item_ids.values()),
-                    progress=progress,
-                )
                 phase = "publish-scores"
                 _emit_progress(progress, "publishing benchmark scores")
                 _publish_scores(
@@ -183,8 +174,8 @@ def publish_run(
                     run_name=run_name,
                     artifacts=artifacts,
                     item_ids=item_ids,
-                    item_traces=verified_item_traces,
-                    dataset_run_id=_string_attr(verified_run, "id"),
+                    item_traces=existing_item_traces,
+                    dataset_run_id=existing_run_id,
                     aggregate=aggregate,
                 )
                 _emit_progress(progress, "benchmark scores published")
@@ -283,20 +274,15 @@ def publish_run(
             raise LangfusePublishError(
                 "Langfuse repaired items were linked to a different dataset run"
             )
-        phase = "verify-run"
-        verified_run, item_traces = _verify_published_run(
-            client,
-            dataset_name=dataset_name,
-            run_name=run_name,
-            expected_metadata=experiment_metadata,
-            expected_item_ids=set(item_ids.values()),
-            progress=progress,
-        )
-        verified_run_id = _string_attr(verified_run, "id")
-        if experiment_run_id != verified_run_id:
-            raise LangfusePublishError(
-                "Langfuse experiment result references a different dataset run"
-            )
+        phase = "collect-item-traces"
+        # The write response already carries the item/trace mapping that scores
+        # need, so there is nothing to read back and no eventual consistency to
+        # wait out. A repaired run merges the traces it already had with the ones
+        # this experiment just created.
+        item_traces = {
+            **existing_item_traces,
+            **_experiment_item_traces(experiment),
+        }
         phase = "publish-scores"
         _emit_progress(progress, "publishing benchmark scores")
         _publish_scores(
@@ -306,7 +292,7 @@ def publish_run(
             artifacts=artifacts,
             item_ids=item_ids,
             item_traces=item_traces,
-            dataset_run_id=verified_run_id,
+            dataset_run_id=experiment_run_id,
             aggregate=aggregate,
         )
         _emit_progress(progress, "benchmark scores published")
@@ -396,54 +382,18 @@ def _validate_existing_run_metadata(
         )
 
 
-def _verify_published_run(
-    client: Any,
-    *,
-    dataset_name: str,
-    run_name: str,
-    expected_metadata: Mapping[str, str],
-    expected_item_ids: set[str],
-    progress: Callable[[str], None] | None = None,
-) -> tuple[Any, dict[str, str]]:
-    """Read back the run with minimal verification - wait only if needed."""
-    _emit_progress(progress, "verifying publication (checking consistency)")
-    dataset_run = _get_existing_run(client, dataset_name, run_name)
-    if dataset_run is None:
-        raise LangfusePublishError(
-            f"Langfuse run {run_name} was not found after publishing"
-        )
-    _validate_existing_run_metadata(dataset_run, expected_metadata, run_name)
-    item_traces = _dataset_run_item_traces(dataset_run)
-    actual_item_ids = set(item_traces)
-    unexpected_item_ids = actual_item_ids - expected_item_ids
-    if unexpected_item_ids:
-        raise LangfusePublishError(
-            f"Langfuse run {run_name} contains unexpected dataset items; "
-            "use a unique benchmark run_id"
-        )
-    # If items are missing, wait briefly for eventual consistency
-    missing_item_ids = expected_item_ids - actual_item_ids
-    if missing_item_ids:
-        time.sleep(2)
-        dataset_run = _get_existing_run(client, dataset_name, run_name)
-        if dataset_run is None:
+def _experiment_item_traces(experiment: Any) -> dict[str, str]:
+    """Map dataset item IDs to trace IDs using the experiment write response."""
+    traces: dict[str, str] = {}
+    for item_result in getattr(experiment, "item_results", None) or []:
+        item_id = _string_attr(getattr(item_result, "item", None), "id")
+        trace_id = _string_attr(item_result, "trace_id")
+        if not item_id or not trace_id:
             raise LangfusePublishError(
-                f"Langfuse run {run_name} disappeared after initial check"
+                "Langfuse experiment item result is missing its dataset item or trace ID"
             )
-        item_traces = _dataset_run_item_traces(dataset_run)
-        actual_item_ids = set(item_traces)
-        still_missing = expected_item_ids - actual_item_ids
-        if still_missing:
-            raise LangfusePublishError(
-                f"Langfuse run {run_name} is missing {len(still_missing)} expected items "
-                f"after consistency wait"
-            )
-    _emit_progress(
-        progress,
-        f"publication verified: dataset_run_id={_string_attr(dataset_run, 'id') or 'missing'} "
-        f"items={len(item_traces)}",
-    )
-    return dataset_run, item_traces
+        traces[item_id] = trace_id
+    return traces
 
 
 def _emit_progress(
