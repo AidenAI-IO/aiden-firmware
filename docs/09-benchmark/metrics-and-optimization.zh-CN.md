@@ -56,16 +56,19 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 | `trace_artifact.status` | `available` 表示已读取有效记录，`missing` 表示缺失，`invalid` 表示格式不符，`unreadable` 表示无法读取 |
 | `trace_artifact.path` | 相对于本轮 run 目录的证据文件路径；缺失时可为 `null` |
 | `aiden_episode_id` | Agent 的 episode 标识；无法唯一确定时为空 |
-| `aiden_trace_id` | 对应执行 Trace 的 32 位十六进制 OTLP ID，与实验回放 Trace ID 不同 |
+| `aiden_trace_id` | 对应执行 Trace 的 32 位十六进制 OTLP ID。新 item 成功关联执行记录时，侧滑栏使用同一个 ID；旧记录和回退回放可能使用不同 ID |
 | `aiden_trace_url` | 执行 Trace 的查看链接。项目查询不可用或没有 episode ID 时为空；有链接不代表已成功上传 |
+| `execution_trace_status` | 发布时的关联状态：`available` 表示已找到 benchmark 执行根节点并关联，但不保证所有子节点已上传；`pending_or_missing` 表示有 episode ID，但未找到执行根节点；`no_episode` 表示没有可唯一确定的 episode ID。旧 item 可能没有此字段 |
 
-当前 CI 接入代码通过 `AIDEN_BENCHMARK_TELEMETRY=1` 为临时 Agent 启用遥测，默认不上传截图。执行记录在 `benchmark` 环境下：`agent-run` 看目标和最终回复，`agent-response` 看模型输入输出，工具节点看参数、返回值和耗时。`sdk-experiment` 中的 `experiment-item-run` 与 `benchmark/<task>#attempt-<n>` 是同一条回放 Trace 的父子节点，不代表重复执行。显式 Agent telemetry 配置优先于 CI 默认值。
+当前 CI 接入代码通过 `AIDEN_BENCHMARK_TELEMETRY=1` 为临时 Agent 启用遥测，默认不上传截图。执行记录在 `benchmark` 环境下：`agent-run` 看目标和最终回复，`agent-response` 看模型输入输出，工具节点看参数、返回值和耗时。发布器在同一条执行 Trace 中添加 `benchmark/<task>#attempt-<n>` 评测结果节点，并将 Experiment item 绑定到它。显式 Agent telemetry 配置优先于 CI 默认值。
 
-具体查看路径：打开 Experiment → 选择 item → 查看 Output → 打开 `aiden_trace_url` → 在执行树中展开 phase 和 iteration → 点击 `agent-response` 或具体工具节点。点击 Experiment item 本身仍会打开回放 Trace，不会把完整执行树嵌入其中。关联 ID 优先来自当前请求的事件；上下文历史可能没有 episode ID，不能仅依赖历史记录建立关联。
+具体查看路径：打开 Experiment → 选择 item → 在侧滑栏执行树中展开 phase 和 iteration → 点击 `agent-response` 或具体工具节点。点击评测结果节点可查看 Output 中的最终回复摘要和判定依据，无需跳转到 Tracing。关联 ID 优先来自当前请求的事件；上下文历史可能没有 episode ID，不能仅依赖历史记录建立关联。
+
+发布器只关联已确认属于 `benchmark` 环境的执行根节点，遇到其他环境会报错，不会修改普通 Agent 的执行记录。未找到执行根节点或没有 episode ID 时，仍保留独立回放以展示评测结果。历史记录和这类回退记录中的 `experiment-item-run` 与 `benchmark/<task>#attempt-<n>` 是父子节点，不代表执行了两次；若执行记录随后上传，可通过 `aiden_trace_url` 查看。
 
 新行为需要运行修改后的版本；重试发布已有 Experiment 不会回填旧 item 的 Output，也无法恢复当时未采集的模型遥测。上传失败或容器被强制终止时，使用 GitHub artifacts 中保存的执行记录与 worker 日志定位原因。执行 Trace 的 `success` 是 Agent 自身结果，评测是否通过仍看 `benchmark.success`。
 
-**注意：当前 Langfuse 默认的 Latency、Cost 列描述的是上报时的产物回放，不是原始 Agent 的任务耗时和费用。** 分析执行性能时，应使用下面介绍的自定义评测分数。上报成功也不代表 benchmark 通过。
+**注意：评测结果节点的耗时是发布耗时，不能把 Experiment 默认的 Latency、Cost 直接当成任务耗时和费用。** 执行节点保留实际采集的调用耗时；跨版本比较应使用下面介绍的自定义评测分数。上报成功也不代表 benchmark 通过。已有 item 保留原来的 Trace 绑定，重试发布不会迁移旧关联。
 
 ## 2. 如何理解现有指标
 

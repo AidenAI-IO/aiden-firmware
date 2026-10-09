@@ -7,6 +7,7 @@ import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 from runner.suite import Suite, TaskSpec, load_suite
@@ -230,7 +231,7 @@ def publish_run(
                     # A missing project lookup must not discard benchmark scores.
                     pass
             update_span = getattr(client, "update_current_span", None)
-            if callable(update_span):
+            if callable(update_span) and _.get("record_replay_span", True):
                 episode_id = _episode_id(row)
                 span_metadata: dict[str, Any] = {
                     "benchmark_task_id": row["task_id"],
@@ -251,9 +252,9 @@ def publish_run(
         phase = "run-experiment"
         _emit_progress(
             progress,
-            f"experiment replay start: items={len(dataset_items)} concurrency=1",
+            f"experiment publication start: items={len(dataset_items)} concurrency=1",
         )
-        experiment = client.run_experiment(
+        experiment_args = dict(
             name=f"Aiden benchmark: {artifacts.suite.name}",
             run_name=run_name,
             description="Published from completed Aiden benchmark artifacts.",
@@ -268,6 +269,10 @@ def publish_run(
             max_concurrency=1,
             metadata=experiment_metadata,
         )
+        if callable(getattr(client, "start_observation", None)):
+            experiment = _publish_execution_items(client, **experiment_args)
+        else:
+            experiment = client.run_experiment(**experiment_args)
         _validate_experiment_result(experiment, len(dataset_items))
         flush = getattr(client, "flush", None)
         if callable(flush):
@@ -275,7 +280,7 @@ def publish_run(
         experiment_run_id = _string_attr(experiment, "dataset_run_id")
         _emit_progress(
             progress,
-            f"experiment replay complete: dataset_run_id={experiment_run_id or 'missing'} "
+            f"experiment publication complete: dataset_run_id={experiment_run_id or 'missing'} "
             f"linked_items={len(getattr(experiment, 'item_results', []) or [])}",
         )
         if existing_run_id and experiment_run_id != existing_run_id:
@@ -344,6 +349,103 @@ def _new_client(manifest: Mapping[str, Any]) -> Any:
         base_url=base_url,
         environment="benchmark",
         release=str(manifest.get("git_sha") or "") or None,
+    )
+
+
+def _publish_execution_items(client: Any, **experiment_args: Any) -> Any:
+    """Attach experiment result observations to the original execution traces."""
+    results = []
+    fallback_items = []
+    for item in experiment_args["data"]:
+        output = experiment_args["task"](item=item, record_replay_span=False)
+        trace_id = output.get("aiden_trace_id")
+        if not trace_id:
+            fallback_items.append(item)
+            continue
+        roots = client.api.observations.get_many(
+            trace_id=trace_id, name="agent-run", fields="core,basic", limit=2,
+        ).data
+        if len(roots) > 1:
+            raise LangfusePublishError(f"ambiguous Agent roots in trace {trace_id}")
+        if roots and _string_attr(roots[0], "environment") != "benchmark":
+            raise LangfusePublishError(
+                f"refusing to attach benchmark results to non-benchmark trace {trace_id}"
+            )
+        parent_id = _string_attr(roots[0], "id") if roots else None
+        if not parent_id:
+            # Never write into an execution trace whose environment we cannot
+            # verify. Preserve the result in a separate replay if export is late
+            # or disabled; its output still links to the expected execution ID.
+            fallback_items.append(item)
+            continue
+        output["execution_trace_status"] = "available"
+        observation = client.start_observation(
+            name=f"benchmark/{item.input['task_id']}#attempt-{item.input['attempt']}",
+            trace_context={"trace_id": trace_id, "parent_span_id": parent_id},
+            input=item.input,
+            output=output,
+            metadata={
+                **experiment_args["metadata"], "benchmark_execution_trace": True,
+                "aiden_episode_id": output["aiden_episode_id"],
+                "aiden_trace_url": output["aiden_trace_url"],
+            },
+        )
+        try:
+            linked = client.api.dataset_run_items.create(
+                run_name=experiment_args["run_name"],
+                run_description=experiment_args["description"],
+                metadata=experiment_args["metadata"],
+                dataset_item_id=item.id,
+                trace_id=trace_id,
+                observation_id=observation.id,
+            )
+            # Native v4 experiment association uses OTLP attributes, in addition
+            # to the dataset-run link retained for API compatibility.
+            observation._otel_span.set_attributes({
+                # Distributed tracing defaults to an application root in the
+                # pinned SDK. Keep this evaluation under the existing Agent root.
+                "langfuse.internal.as_root": False,
+                "langfuse.experiment.id": linked.dataset_run_id,
+                "langfuse.experiment.name": experiment_args["run_name"],
+                "langfuse.experiment.description": experiment_args["description"],
+                **{
+                    f"langfuse.experiment.metadata.{key}": value
+                    for key, value in experiment_args["metadata"].items()
+                },
+                "langfuse.experiment.dataset.id": item.dataset_id,
+                "langfuse.experiment.item.id": item.id,
+                "langfuse.experiment.item.root_observation_id": observation.id,
+                "langfuse.experiment.item.expected_output": json.dumps(item.expected_output),
+                **{
+                    f"langfuse.experiment.item.metadata.{key}": (
+                        value if isinstance(value, str) else json.dumps(value)
+                    )
+                    for key, value in item.metadata.items()
+                },
+            })
+            results.append(SimpleNamespace(
+                item=item, output=output, trace_id=trace_id,
+                dataset_run_id=linked.dataset_run_id,
+            ))
+        finally:
+            observation.end()
+    if fallback_items:
+        def replay_without_execution(*, item: Any, **kwargs: Any) -> dict[str, Any]:
+            output = experiment_args["task"](item=item, **kwargs)
+            output["execution_trace_status"] = (
+                "pending_or_missing" if output.get("aiden_trace_id") else "no_episode"
+            )
+            return output
+
+        fallback = client.run_experiment(**{
+            **experiment_args, "data": fallback_items, "task": replay_without_execution,
+        })
+        _validate_experiment_result(fallback, len(fallback_items))
+        results.extend(fallback.item_results)
+    return SimpleNamespace(
+        item_results=results,
+        dataset_run_id=results[0].dataset_run_id if results else None,
+        dataset_run_url=None,
     )
 
 

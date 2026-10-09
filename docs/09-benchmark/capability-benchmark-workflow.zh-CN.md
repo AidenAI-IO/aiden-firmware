@@ -110,10 +110,10 @@ Aiden：已经更新好了。
 实际演示时，按这条路径打开证据：
 
 1. 在 Dataset 的 Experiment 中选择某个任务的某次尝试，先看 Output 的 `final_response` 和 `tool_calls` 摘要。
-2. 打开 `aiden_trace_url`，查看这次任务的 Agent 执行过程。`agent-run` 显示用户目标和最终回复，`agent-response` 显示每次模型调用，工具节点显示参数和实际返回结果。
+2. 在同一个侧滑栏的执行树中展开 phase 和 iteration。`agent-run` 显示用户目标和最终回复，`agent-response` 显示每次模型调用，工具节点显示参数和实际返回结果；评测结果保存在 `benchmark/<task>#attempt-<n>` 节点。
 3. 对照判定依据，找到第一处偏离预期的位置，再检查后续是否恢复。
 
-`sdk-experiment` 中的 `experiment-item-run` 和 `benchmark/<task>#attempt-<n>` 是同一条回放 Trace 的父子节点。实际执行 Trace 在 CI 默认配置的 `benchmark` 环境下。回放的耗时不代表任务执行耗时，Agent 自己的 `success` 也不等于 benchmark 判定通过。
+新 item 会关联到 `benchmark` 环境的执行 Trace，普通 Agent 执行不受此关联流程影响。旧 item 或执行遥测缺失时，可能仍显示 `sdk-experiment` 下的独立回放；这时通过 Output 的 `aiden_trace_url` 查找执行记录。评测节点的发布耗时不代表任务执行耗时，Agent 自己的 `success` 也不等于 benchmark 判定通过。
 
 这条链路需要使用包含遥测接入修改的新版本重新运行，旧 Experiment 不会自动补齐。截图默认不上传；链接不可用时，用 `aiden_trace_id` 搜索，并检查 GitHub artifacts 中该尝试的 `history.json`、`episode.json` 和 worker 日志。生成了链接不代表上传已经成功。
 
