@@ -198,6 +198,9 @@ def test_publish_run_binds_item_and_scores_to_execution_trace(tmp_path: Path):
     published = publish_run(run_dir, client=client)
     trace_id = _agent_trace_id("episode-a")
     assert published.dataset_run_id == "dataset-run-1"
+    assert published.dataset_run_url == (
+        "http://langfuse.local/project/project-1/experiments/results?baseline=dataset-run-1"
+    )
     assert client.experiment is None
     assert client.spans == []
     record = client.execution_observations[0]
@@ -227,7 +230,8 @@ def test_publish_run_refuses_to_modify_normal_agent_trace(tmp_path: Path, enviro
 
 def test_publish_run_does_not_attach_to_unverified_execution_trace(tmp_path: Path):
     client = ExecutionLangfuse(roots_available=False)
-    publish_run(_write_run(tmp_path), client=client)
+    published = publish_run(_write_run(tmp_path), client=client)
+    assert published.dataset_run_url == "http://langfuse.local/dataset-run-1"
     assert client.execution_observations == []
     assert client.link_calls == []
     output = client.experiment["item_results"][0].output
@@ -243,7 +247,8 @@ def test_publish_run_without_episode_keeps_failure_replay(tmp_path: Path):
         row["metrics"].pop("episode_id", None)
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     client = ExecutionLangfuse()
-    publish_run(run_dir, client=client)
+    published = publish_run(run_dir, client=client)
+    assert published.dataset_run_url == "http://langfuse.local/dataset-run-1"
     assert client.execution_observations == []
     assert client.experiment is not None
     assert client.experiment["item_results"][0].output["aiden_trace_id"] is None
@@ -261,6 +266,9 @@ def test_publish_run_preserves_mixed_execution_and_replay_items(tmp_path: Path):
     published = publish_run(run_dir, client=client)
 
     assert published.item_count == 2
+    assert published.dataset_run_url == (
+        "http://langfuse.local/project/project-1/experiments/results?baseline=dataset-run-1"
+    )
     assert len(client.execution_observations) == 1
     assert len(client.experiment["data"]) == 1
     assert len(client.existing_run.dataset_run_items) == 2
@@ -531,15 +539,20 @@ def test_publish_run_maps_attempts_and_aggregate_metrics(tmp_path: Path):
     assert client.flushed is True
 
 
-def test_publish_run_keeps_scores_when_trace_url_lookup_fails(tmp_path: Path):
-    client = FakeLangfuse()
+@pytest.mark.parametrize("client_type", [FakeLangfuse, ExecutionLangfuse])
+def test_publish_run_keeps_scores_when_trace_url_lookup_fails(tmp_path: Path, client_type):
+    client = client_type()
 
     def unavailable(**kwargs):
         raise RuntimeError("project lookup unavailable")
 
     client.get_trace_url = unavailable
-    publish_run(_write_run(tmp_path), client=client)
-    assert client.experiment["item_results"][0].output["aiden_trace_url"] is None
+    published = publish_run(_write_run(tmp_path), client=client)
+    if isinstance(client, ExecutionLangfuse):
+        assert client.execution_observations[0]["output"]["aiden_trace_url"] is None
+        assert published.dataset_run_url is None
+    else:
+        assert client.experiment["item_results"][0].output["aiden_trace_url"] is None
     assert client.score_calls
 
 

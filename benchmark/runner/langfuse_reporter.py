@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
 from runner.suite import Suite, TaskSpec, load_suite
 
@@ -356,6 +357,7 @@ def _publish_execution_items(client: Any, **experiment_args: Any) -> Any:
     """Attach experiment result observations to the original execution traces."""
     results = []
     fallback_items = []
+    dataset_run_url = None
     for item in experiment_args["data"]:
         output = experiment_args["task"](item=item, record_replay_span=False)
         trace_id = output.get("aiden_trace_id")
@@ -429,6 +431,13 @@ def _publish_execution_items(client: Any, **experiment_args: Any) -> Any:
             ))
         finally:
             observation.end()
+        if dataset_run_url is None and output.get("aiden_trace_url"):
+            project_url, separator, _ = output["aiden_trace_url"].rpartition("/traces/")
+            if separator:
+                dataset_run_url = (
+                    f"{project_url}/experiments/results?"
+                    + urlencode({"baseline": linked.dataset_run_id})
+                )
     if fallback_items:
         def replay_without_execution(*, item: Any, **kwargs: Any) -> dict[str, Any]:
             output = experiment_args["task"](item=item, **kwargs)
@@ -442,10 +451,12 @@ def _publish_execution_items(client: Any, **experiment_args: Any) -> Any:
         })
         _validate_experiment_result(fallback, len(fallback_items))
         results.extend(fallback.item_results)
+        if dataset_run_url is None:
+            dataset_run_url = _string_attr(fallback, "dataset_run_url")
     return SimpleNamespace(
         item_results=results,
         dataset_run_id=results[0].dataset_run_id if results else None,
-        dataset_run_url=None,
+        dataset_run_url=dataset_run_url,
     )
 
 

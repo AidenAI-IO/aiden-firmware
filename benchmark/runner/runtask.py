@@ -583,7 +583,9 @@ def run_one_task(
         chat = client.chat(prompt, **chat_kwargs)
         base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         history = chat.history
-        episode_id = getattr(chat, "episode_id", _unique_episode_id(history))
+        # The client resolves request-scoped evidence. Context history may refer
+        # to an earlier task, so never replace a missing request ID with it.
+        episode_id = chat.episode_id
     except AgentTimeoutError as exc:
         base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         timed_out = True
@@ -752,18 +754,6 @@ def _request_episode_id(client: AgentClient, error: Exception) -> str | None:
             # Correlation must not replace the original execution failure.
             pass
     return None
-
-
-def _unique_episode_id(history: list[dict[str, Any]]) -> str | None:
-    episode_ids: list[str] = []
-    for message in history:
-        episode_id = message.get("episode_id")
-        if not isinstance(episode_id, str):
-            continue
-        episode_id = episode_id.strip()
-        if episode_id and episode_id not in episode_ids:
-            episode_ids.append(episode_id)
-    return episode_ids[0] if len(episode_ids) == 1 else None
 
 
 def _normalise_active_skills(skills: list[str] | None) -> list[str]:
