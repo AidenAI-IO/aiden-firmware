@@ -335,6 +335,27 @@ def _per_task_setup_seed_session_chunk(client: AgentClient, setup: dict[str, Any
         except (AgentTimeoutError, AgentRequestError) as e:
             raise ResetError(f"seed_session_chunk clear_history failed: {e}") from e
 
+    # Check availability independently of the Agent's query selection. A setup
+    # failure must not count as an Agent recall failure.
+    try:
+        recalled = client.invoke_tool("recall_session_chunks", {"limit": 100}, timeout=timeout)
+    except (AgentTimeoutError, AgentRequestError) as e:
+        raise ResetError(f"seed_session_chunk verification failed: {e}") from e
+    if recalled.is_error:
+        raise ResetError("seed_session_chunk verification returned a tool error")
+    try:
+        payload = json.loads(recalled.output)
+    except (TypeError, json.JSONDecodeError) as e:
+        raise ResetError(f"seed_session_chunk verification returned invalid JSON: {e}") from e
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list) or not any(
+        isinstance(item, dict)
+        and item.get("session_id") == session_id.strip()
+        and item.get("summary") == summary.strip()
+        for item in results
+    ):
+        raise ResetError(f"seed_session_chunk verification could not recall the seeded summary for {session_id!r}")
+
 
 def _per_task_setup_seed_episode(
     client: AgentClient,

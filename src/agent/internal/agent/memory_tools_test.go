@@ -244,6 +244,47 @@ func TestMultiSessionChunkStoreLogsCorruptIndex(t *testing.T) {
 	}
 }
 
+func TestRecallSessionChunksToolSearchesSummaryWithoutConfiguredVocabulary(t *testing.T) {
+	ctx := context.Background()
+	folder := t.TempDir()
+	writer := NewSessionChunkWriter(folder, MemoryExtractionConfig{})
+	const summary = "Project Cedar launch token: K-84."
+	for _, entry := range []struct{ session, summary string }{
+		{"launch", summary}, {"unrelated", "Lunch is at noon."},
+	} {
+		if err := writer.WriteChunk(ctx, entry.session, []messages.Message{
+			{Role: messages.MessageRoleUser, Content: entry.summary},
+		}, entry.summary); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := NewRecallSessionChunksTool(NewMultiSessionChunkStore(folder))
+	for _, query := range []string{
+		`{"tags":[" cedar "],"limit":5}`,
+		`{"entities":["CEDAR"],"limit":5}`,
+		`{"tags":["absent"]}`,
+		`{"chunk_ids":["missing"],"tags":["Cedar"]}`,
+	} {
+		out, err := tool.Call(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Results []ChunkRecallResult `json:"results"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		if query == `{"tags":["absent"]}` || query == `{"chunk_ids":["missing"],"tags":["Cedar"]}` {
+			if len(got.Results) != 0 {
+				t.Fatalf("query %s returned unrelated chunks: %#v", query, got.Results)
+			}
+		} else if len(got.Results) != 1 || got.Results[0].SessionID != "launch" || got.Results[0].Summary != summary {
+			t.Fatalf("query %s did not retrieve persisted summary: %#v", query, got.Results)
+		}
+	}
+}
+
 func TestRecallSessionChunksToolReturnsMatchingChunk(t *testing.T) {
 	ctx := context.Background()
 	sessionFolder := t.TempDir()

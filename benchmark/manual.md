@@ -407,6 +407,12 @@ metrics. Use a query limit covering the known isolated fixture set; absence and
 count checks describe the returned result set. The judge also receives the
 Agent's memory-tool results, so failed writes cannot pass on intent alone.
 
+Session-chunk setup verifies that `recall_session_chunks` can return the seeded
+session and its summary without topic filters, after any requested history
+clear. Missing or unreadable evidence is a setup error, excluded from Agent
+success metrics. This check does not supply the answer to the Agent or choose
+its retrieval query.
+
 The corrected fixtures and rubrics change the suite hash. Establish a new
 baseline before evaluating Agent changes; scores from the previous suite are
 not directly comparable. City names and equivalent natural-language facts are
