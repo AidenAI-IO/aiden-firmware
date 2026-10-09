@@ -372,7 +372,27 @@ func (b *blueZBackend) beginPairingWindow(now time.Time) error {
 func (b *blueZBackend) closePairingWindow() error {
 	b.pairingModeMu.Lock()
 	defer b.pairingModeMu.Unlock()
+	return b.closePairingWindowLocked()
+}
 
+// closePairingWindowOpenedAt closes the window only if it is still the one
+// opened at openedAt. The check and the close share one pairingModeMu
+// acquisition so a concurrent explicit Connect cannot open a newer window in
+// between and have it closed by a completion that belonged to the old one.
+func (b *blueZBackend) closePairingWindowOpenedAt(openedAt time.Time) (bool, error) {
+	b.pairingModeMu.Lock()
+	defer b.pairingModeMu.Unlock()
+	b.stateMu.Lock()
+	sameWindow := b.pairingOpen && b.pairingOpenedAt.Equal(openedAt)
+	b.stateMu.Unlock()
+	if !sameWindow {
+		return false, nil
+	}
+	return true, b.closePairingWindowLocked()
+}
+
+// closePairingWindowLocked requires pairingModeMu.
+func (b *blueZBackend) closePairingWindowLocked() error {
 	b.stateMu.Lock()
 	wasOpen := b.pairingOpen
 	wasDirty := b.pairingModeDirty

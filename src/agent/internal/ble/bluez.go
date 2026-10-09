@@ -87,6 +87,7 @@ type blueZBackend struct {
 	advertising         bool
 	wakeMu              sync.Mutex
 	lastWakeNotifyStart time.Time
+	wakeSubscribedAt    time.Time
 	wakeAuthenticatedAt time.Time
 	closed              bool
 	pairingModeMu       sync.Mutex
@@ -972,12 +973,15 @@ func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte,
 	// the link is encrypted with a valid bond. This is the authentication
 	// signal; a plain notify subscription is not.
 	c.backend.wakeMu.Lock()
-	c.backend.wakeAuthenticatedAt = time.Now()
 	value, _ := c.properties.GetMust(blueZGattCharInterface, "Value").([]byte)
 	c.backend.wakeMu.Unlock()
+	result, err := readValueAtOffset(value, options)
+	if err != nil {
+		return nil, err
+	}
 	logging.Infof("ble_service", "bluez", "BLE Wake authenticated read device=%s", variantDevicePath(options))
-	c.backend.maybeFinishConnectionWindow("authenticated_read")
-	return readValueAtOffset(value, options)
+	c.backend.recordWakeAuthenticatedRead(time.Now())
+	return result, nil
 }
 
 func (c *wakeCharacteristic) StartNotify() *dbus.Error {
@@ -992,9 +996,26 @@ func (c *wakeCharacteristic) StartNotify() *dbus.Error {
 	c.backend.wakeMu.Unlock()
 	logging.Infof("ble_service", "bluez", "BLE Wake StartNotify")
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
-	c.backend.maybeFinishConnectionWindow("start_notify")
+	c.backend.recordWakeSubscribed(now)
 	c.backend.requestRescan()
 	return nil
+}
+
+// recordWakeSubscribed and recordWakeAuthenticatedRead are the window-relevant
+// parts of StartNotify and a successful ReadValue. They are kept free of D-Bus
+// property access so the window rule can be exercised without a bus.
+func (b *blueZBackend) recordWakeSubscribed(now time.Time) {
+	b.wakeMu.Lock()
+	b.wakeSubscribedAt = now
+	b.wakeMu.Unlock()
+	b.maybeFinishConnectionWindow("start_notify")
+}
+
+func (b *blueZBackend) recordWakeAuthenticatedRead(now time.Time) {
+	b.wakeMu.Lock()
+	b.wakeAuthenticatedAt = now
+	b.wakeMu.Unlock()
+	b.maybeFinishConnectionWindow("authenticated_read")
 }
 
 // connectionWindowComplete reports whether the phone finished the App
@@ -1003,9 +1024,16 @@ func (c *wakeCharacteristic) StartNotify() *dbus.Error {
 // before it can decrypt the link, for example when it has forgotten the board
 // but BlueZ still holds the old key. Closing the window then makes the kernel
 // refuse the phone's following SMP Pairing Request with "Pairing not
-// supported". Require an encrypted Wake read in the same window as well.
-func connectionWindowComplete(windowOpenedAt, authenticatedAt time.Time, subscribed bool) bool {
-	return subscribed && !authenticatedAt.IsZero() && !authenticatedAt.Before(windowOpenedAt)
+// supported". Require both the subscription and an encrypted Wake read inside
+// the same window, in either order; a subscription left over from an earlier
+// window does not count.
+func connectionWindowComplete(windowOpenedAt, authenticatedAt, subscribedAt time.Time) bool {
+	return happenedInWindow(windowOpenedAt, authenticatedAt) &&
+		happenedInWindow(windowOpenedAt, subscribedAt)
+}
+
+func happenedInWindow(windowOpenedAt, at time.Time) bool {
+	return !at.IsZero() && !at.Before(windowOpenedAt)
 }
 
 func (b *blueZBackend) maybeFinishConnectionWindow(trigger string) {
@@ -1018,29 +1046,22 @@ func (b *blueZBackend) maybeFinishConnectionWindow(trigger string) {
 	}
 	b.wakeMu.Lock()
 	authenticatedAt := b.wakeAuthenticatedAt
-	subscribed := false
-	if b.wakeProps != nil {
-		subscribed, _ = b.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool)
-	}
+	subscribedAt := b.wakeSubscribedAt
 	b.wakeMu.Unlock()
-	if !connectionWindowComplete(openedAt, authenticatedAt, subscribed) {
+	if !connectionWindowComplete(openedAt, authenticatedAt, subscribedAt) {
 		logging.Infof(
 			"ble_service", "pairing",
 			"BLE pairing window kept open trigger=%s subscribed=%t authenticated=%t",
-			trigger, subscribed, !authenticatedAt.IsZero() && !authenticatedAt.Before(openedAt),
+			trigger, happenedInWindow(openedAt, subscribedAt), happenedInWindow(openedAt, authenticatedAt),
 		)
 		return
 	}
 	go func() {
-		// A concurrent explicit Connect may already have opened a newer window.
-		b.stateMu.Lock()
-		sameWindow := b.pairingOpen && b.pairingOpenedAt.Equal(openedAt)
-		b.stateMu.Unlock()
-		if !sameWindow {
-			return
+		closed, err := b.closePairingWindowOpenedAt(openedAt)
+		if closed {
+			logging.Infof("ble_service", "pairing", "BLE pairing window closed reason=app_connected trigger=%s", trigger)
 		}
-		logging.Infof("ble_service", "pairing", "BLE pairing window closed reason=app_connected trigger=%s", trigger)
-		if err := b.closePairingWindow(); err != nil {
+		if err != nil {
 			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
 		}
 	}()
@@ -1058,6 +1079,7 @@ func (c *wakeCharacteristic) StopNotify() *dbus.Error {
 	}
 	c.properties.SetMust(blueZGattCharInterface, "Notifying", false)
 	c.backend.lastWakeNotifyStart = time.Time{}
+	c.backend.wakeSubscribedAt = time.Time{}
 	c.backend.wakeMu.Unlock()
 	logging.Infof("ble_service", "bluez", "BLE Wake StopNotify")
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = false })

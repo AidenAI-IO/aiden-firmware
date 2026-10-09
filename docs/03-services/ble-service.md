@@ -67,9 +67,9 @@ control path.
 The iOS app explicitly calls the Agent pairing API over USB ECM; only then does
 the service open a five-minute pairing window. The app reads the board's stable
 `device_name` and collision-resistant `board_identity` first and only connects
-a Wake-service advertiser carrying both values. The window closes only when the
-Wake characteristic is subscribed and an encrypted Wake read has succeeded in
-the same window, in either order. A notification subscription by itself does
+a Wake-service advertiser carrying both values. The window closes only when a
+Wake subscription and a successful encrypted Wake read both happen inside the
+current window, in either order. A notification subscription by itself does
 not close it: the Wake CCCD has no encryption requirement, so iOS can subscribe,
 or restore a cached CCCD, on a link it cannot decrypt yet. That happens when
 iOS has forgotten the board while BlueZ still holds the old key. Closing the
