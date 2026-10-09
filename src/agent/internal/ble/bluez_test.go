@@ -41,6 +41,31 @@ func TestWakeStopGracePeriodRejectsPreviousConnectionCleanup(t *testing.T) {
 	}
 }
 
+func TestConnectionWindowRequiresAuthenticatedReadInSameWindow(t *testing.T) {
+	opened := time.Unix(200, 0)
+	cases := []struct {
+		name          string
+		authenticated time.Time
+		subscribed    bool
+		want          bool
+	}{
+		// iOS forgot the board but BlueZ kept the old key: the CCCD write
+		// arrives without an encrypted read and must keep pairing possible.
+		{name: "subscription without authenticated read", subscribed: true},
+		{name: "read from a previous window", authenticated: opened.Add(-time.Second), subscribed: true},
+		{name: "authenticated read before subscription", authenticated: opened.Add(time.Second)},
+		{name: "authenticated and subscribed", authenticated: opened.Add(time.Second), subscribed: true, want: true},
+		{name: "read at window start", authenticated: opened, subscribed: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := connectionWindowComplete(opened, tc.authenticated, tc.subscribed); got != tc.want {
+				t.Fatalf("connectionWindowComplete() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestANCSControlPointUsesWriteRequest(t *testing.T) {
 	options := ancsControlPointWriteOptions()
 	writeType, ok := options["type"]

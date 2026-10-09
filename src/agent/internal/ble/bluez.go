@@ -87,12 +87,14 @@ type blueZBackend struct {
 	advertising         bool
 	wakeMu              sync.Mutex
 	lastWakeNotifyStart time.Time
+	wakeAuthenticatedAt time.Time
 	closed              bool
 	pairingModeMu       sync.Mutex
 	stateMu             sync.Mutex
 	trustedDevice       dbus.ObjectPath
 	connectionEnabled   bool
 	pairingOpen         bool
+	pairingOpenedAt     time.Time
 	pairingDeadline     time.Time
 	pairingModeDirty    bool
 }
@@ -966,7 +968,15 @@ func (c *wakeCharacteristic) setGattProperties(properties *prop.Properties) {
 }
 
 func (c *wakeCharacteristic) ReadValue(options map[string]dbus.Variant) ([]byte, *dbus.Error) {
+	// The characteristic is encrypt-read, so BlueZ forwards a read only after
+	// the link is encrypted with a valid bond. This is the authentication
+	// signal; a plain notify subscription is not.
+	c.backend.wakeMu.Lock()
+	c.backend.wakeAuthenticatedAt = time.Now()
 	value, _ := c.properties.GetMust(blueZGattCharInterface, "Value").([]byte)
+	c.backend.wakeMu.Unlock()
+	logging.Infof("ble_service", "bluez", "BLE Wake authenticated read device=%s", variantDevicePath(options))
+	c.backend.maybeFinishConnectionWindow("authenticated_read")
 	return readValueAtOffset(value, options)
 }
 
@@ -982,13 +992,54 @@ func (c *wakeCharacteristic) StartNotify() *dbus.Error {
 	c.backend.wakeMu.Unlock()
 	logging.Infof("ble_service", "bluez", "BLE Wake StartNotify")
 	c.backend.service.status.update(func(status *RuntimeStatus) { status.WakeSubscriber = true })
-	c.backend.finishConnectionWindow()
+	c.backend.maybeFinishConnectionWindow("start_notify")
 	c.backend.requestRescan()
 	return nil
 }
 
-func (b *blueZBackend) finishConnectionWindow() {
+// connectionWindowComplete reports whether the phone finished the App
+// connection inside the window opened at windowOpenedAt. The Wake CCCD has no
+// encryption requirement, so iOS can subscribe (or restore a cached CCCD)
+// before it can decrypt the link, for example when it has forgotten the board
+// but BlueZ still holds the old key. Closing the window then makes the kernel
+// refuse the phone's following SMP Pairing Request with "Pairing not
+// supported". Require an encrypted Wake read in the same window as well.
+func connectionWindowComplete(windowOpenedAt, authenticatedAt time.Time, subscribed bool) bool {
+	return subscribed && !authenticatedAt.IsZero() && !authenticatedAt.Before(windowOpenedAt)
+}
+
+func (b *blueZBackend) maybeFinishConnectionWindow(trigger string) {
+	b.stateMu.Lock()
+	open := b.pairingOpen
+	openedAt := b.pairingOpenedAt
+	b.stateMu.Unlock()
+	if !open {
+		return
+	}
+	b.wakeMu.Lock()
+	authenticatedAt := b.wakeAuthenticatedAt
+	subscribed := false
+	if b.wakeProps != nil {
+		subscribed, _ = b.wakeProps.GetMust(blueZGattCharInterface, "Notifying").(bool)
+	}
+	b.wakeMu.Unlock()
+	if !connectionWindowComplete(openedAt, authenticatedAt, subscribed) {
+		logging.Infof(
+			"ble_service", "pairing",
+			"BLE pairing window kept open trigger=%s subscribed=%t authenticated=%t",
+			trigger, subscribed, !authenticatedAt.IsZero() && !authenticatedAt.Before(openedAt),
+		)
+		return
+	}
 	go func() {
+		// A concurrent explicit Connect may already have opened a newer window.
+		b.stateMu.Lock()
+		sameWindow := b.pairingOpen && b.pairingOpenedAt.Equal(openedAt)
+		b.stateMu.Unlock()
+		if !sameWindow {
+			return
+		}
+		logging.Infof("ble_service", "pairing", "BLE pairing window closed reason=app_connected trigger=%s", trigger)
 		if err := b.closePairingWindow(); err != nil {
 			b.service.status.update(func(status *RuntimeStatus) { status.LastError = err.Error() })
 		}
@@ -1039,21 +1090,33 @@ func (a *pairingAgent) DisplayPasskey(dbus.ObjectPath, uint32, uint16) *dbus.Err
 	return nil
 }
 func (a *pairingAgent) RequestConfirmation(device dbus.ObjectPath, _ uint32) *dbus.Error {
-	return a.authorize(device)
+	return a.authorize("RequestConfirmation", device)
 }
 func (a *pairingAgent) RequestAuthorization(device dbus.ObjectPath) *dbus.Error {
-	return a.authorize(device)
+	return a.authorize("RequestAuthorization", device)
 }
 func (a *pairingAgent) AuthorizeService(device dbus.ObjectPath, _ string) *dbus.Error {
-	return a.authorize(device)
+	return a.authorize("AuthorizeService", device)
 }
-func (a *pairingAgent) Cancel() *dbus.Error { return nil }
+func (a *pairingAgent) Cancel() *dbus.Error {
+	logging.Infof("ble_service", "agent", "BLE pairing agent request cancelled")
+	return nil
+}
 
-func (a *pairingAgent) authorize(device dbus.ObjectPath) *dbus.Error {
+func (a *pairingAgent) authorize(method string, device dbus.ObjectPath) *dbus.Error {
 	if a.backend != nil && a.backend.deviceAllowed(device) {
+		logging.Infof("ble_service", "agent", "BLE pairing agent allowed method=%s device=%s", method, device)
 		return nil
 	}
+	logging.Warnf("ble_service", "agent", "BLE pairing agent rejected method=%s device=%s", method, device)
 	return dbus.NewError("org.bluez.Error.Rejected", []any{"only the trusted iPhone may use Aiden BLE"})
+}
+
+func variantDevicePath(options map[string]dbus.Variant) dbus.ObjectPath {
+	if path, ok := variantObjectPath(options, "device"); ok {
+		return path
+	}
+	return ""
 }
 
 func variantString(properties map[string]dbus.Variant, name string) string {
