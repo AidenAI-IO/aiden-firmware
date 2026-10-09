@@ -61,6 +61,8 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 
 当前 CI 接入代码通过 `AIDEN_BENCHMARK_TELEMETRY=1` 为临时 Agent 启用遥测，默认不上传截图。执行记录在 `benchmark` 环境下：`agent-run` 看目标和最终回复，`agent-response` 看模型输入输出，工具节点看参数、返回值和耗时。`sdk-experiment` 中的 `experiment-item-run` 与 `benchmark/<task>#attempt-<n>` 是同一条回放 Trace 的父子节点，不代表重复执行。显式 Agent telemetry 配置优先于 CI 默认值。
 
+具体查看路径：打开 Experiment → 选择 item → 查看 Output → 打开 `aiden_trace_url` → 在执行树中展开 phase 和 iteration → 点击 `agent-response` 或具体工具节点。点击 Experiment item 本身仍会打开回放 Trace，不会把完整执行树嵌入其中。关联 ID 优先来自当前请求的事件；上下文历史可能没有 episode ID，不能仅依赖历史记录建立关联。
+
 新行为需要运行修改后的版本；重试发布已有 Experiment 不会回填旧 item 的 Output，也无法恢复当时未采集的模型遥测。上传失败或容器被强制终止时，使用 GitHub artifacts 中保存的执行记录与 worker 日志定位原因。执行 Trace 的 `success` 是 Agent 自身结果，评测是否通过仍看 `benchmark.success`。
 
 **注意：当前 Langfuse 默认的 Latency、Cost 列描述的是上报时的产物回放，不是原始 Agent 的任务耗时和费用。** 分析执行性能时，应使用下面介绍的自定义评测分数。上报成功也不代表 benchmark 通过。

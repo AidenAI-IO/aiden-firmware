@@ -1040,6 +1040,7 @@ class EpisodeClient(FakeClient):
         self.messages.append(message)
         return ChatResponse(
             response="done",
+            episode_id="ep/one",
             history=[
                 {
                     "type": "tool_call",
@@ -1091,6 +1092,76 @@ def test_run_one_task_fetches_unique_episode_and_saves_it(tmp_path: Path):
     assert json.loads((tmp_path / "artifacts" / "episode.json").read_text()) == episode
     assert result.metrics["episode_id"] == "ep/one"
     assert result.metrics["memory_recall_evidence_source"] == "episode"
+
+
+def test_run_one_task_uses_response_episode_with_context_backed_history(tmp_path: Path):
+    suite, task = _memory_suite_and_task(tmp_path)
+
+    class ContextClient(EpisodeClient):
+        def chat(self, *args, **kwargs):
+            response = super().chat(*args, **kwargs)
+            for message in response.history:
+                message.pop("episode_id", None)
+            response.episode_id = "ep-current"
+            return response
+
+    client = ContextClient(
+        inline_content="[Large tool result omitted from public history (8406 chars)]",
+        episode={"id": "ep-current", "retrieved_memory_refs": ["personamem_music_expression"]},
+    )
+    result = run_one_task(
+        client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+    assert result.status == "passed"
+    assert client.episode_requests == ["ep-current"]
+    assert result.metrics["episode_id"] == "ep-current"
+
+
+def test_run_one_task_does_not_replace_missing_request_id_with_old_episode(tmp_path: Path):
+    suite, task = _memory_suite_and_task(tmp_path)
+
+    class UncorrelatedClient(EpisodeClient):
+        def chat(self, *args, **kwargs):
+            response = super().chat(*args, **kwargs)
+            response.episode_id = None
+            return response
+
+    client = UncorrelatedClient(inline_content="{}")
+    result = run_one_task(
+        client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+    assert client.episode_requests == []
+    assert not result.metrics.get("episode_id")
+
+
+def test_run_one_task_correlates_timeout_before_recovery(tmp_path: Path):
+    suite, task = _memory_suite_and_task(tmp_path)
+    events = []
+
+    class TimeoutClient(EpisodeClient):
+        def chat(self, *args, **kwargs):
+            raise AgentTimeoutError("timed out", request_id="req-running")
+
+        def get_history(self):
+            return []
+
+        def chat_episode_id(self, request_id):
+            assert request_id == "req-running"
+            events.append("correlate")
+            return "ep-running"
+
+        def recover_after_timeout(self, **kwargs):
+            events.append("recover")
+            return True
+
+    client = TimeoutClient(inline_content="", episode={"id": "ep-running"})
+    result = run_one_task(
+        client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
+    )
+    assert events == ["correlate", "recover"]
+    assert client.episode_requests == ["ep-running"]
+    assert result.metrics["episode_id"] == "ep-running"
+    assert result.metrics["recovery_succeeded"] is True
 
 
 def test_run_one_task_complete_inline_result_still_fetches_episode_metrics(tmp_path: Path):
