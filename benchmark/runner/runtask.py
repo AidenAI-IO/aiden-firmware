@@ -23,7 +23,7 @@ from runner.judge import judge_task, JudgeConfig
 from runner.metrics import derive_episode_metrics, derive_history_metrics
 from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
-from runner.reset import ResetError, SetupAssertionError
+from runner.reset import ResetError, SetupAssertionError, assert_memory_results, read_memory_results
 from runner.suite import Suite, TaskSpec, effective_mock_environment
 from runner.trace import extract_trace
 from runner.report import now_iso
@@ -146,6 +146,8 @@ def evaluate_task_history(
     started_mono: float | None = None,
     active_skills: list[str] | None = None,
     episode: dict[str, Any] | None = None,
+    memory_state: list[dict[str, Any]] | None = None,
+    memory_state_error: str = "",
 ) -> TaskResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     started = started_at or now_iso()
@@ -200,9 +202,19 @@ def evaluate_task_history(
         ]
     trace_dict = {
         "tool_calls": [dc.asdict(tc) for tc in trace.tool_calls],
+        "tool_results": [
+            msg for msg in history
+            if msg.get("type") == "tool_result" and msg.get("tool_name") in {
+                "save_memory", "recall_memory", "forget_memory", "recall_session_chunks",
+            }
+        ],
         "final_response": trace.final_response,
         "total_tool_calls": trace.total_tool_calls,
     }
+    if task.memory_assertions is not None:
+        # Harness observations are evidence, not Agent tool calls.
+        trace_dict["memory_state"] = memory_state
+        trace_dict["memory_assertions"] = task.memory_assertions
     last_shot_path = post_screenshot if post_screenshot is not None and post_screenshot.exists() else None
     base.metrics.update(derive_history_metrics(history))
     base.metrics.update(derive_episode_metrics(episode))
@@ -241,6 +253,23 @@ def evaluate_task_history(
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
     base.hard_assertions = outcome.results
     base.hard_assertion_failures = list(outcome.failures)
+    if task.memory_assertions is not None and not timed_out and not base.metrics.get("agent_error"):
+        if memory_state_error or memory_state is None:
+            base.status = "judge_error"
+            base.metrics["judge_error"] = memory_state_error or "Memory state unavailable"
+            _set_outcome_metrics(base, success=None, eligible=False, failure_class="evaluation", stage="evaluation")
+            base.finished_at = now_iso()
+            return base
+        try:
+            assert_memory_results(memory_state, task.memory_assertions)
+            base.hard_assertions.memory_state = True
+        except SetupAssertionError as e:
+            base.hard_assertions.memory_state = False
+            outcome.all_passed = False
+            base.hard_assertion_failures.append(HardAssertionFailure(
+                id="memory_state", label="Memory State",
+                requirement=json.dumps(task.memory_assertions, ensure_ascii=False), actual=str(e),
+            ))
     if recall_outcome is not None:
         base.hard_assertions.expected_recalled_memory = recall_outcome.passed
     execution_error = bool(base.metrics.get("agent_error"))
@@ -560,10 +589,6 @@ def run_one_task(
                 base.metrics["screenshot_capture_source"] = "environment_bridge"
             except Exception as e:
                 base.metrics["pre_screenshot_error"] = str(e)[:300]
-        else:
-            base.metrics["pre_screenshot_error"] = (
-                "environment_url is required for live screenshot capture"
-            )
     timed_out = False
     episode = None
     base.metrics.setdefault("recovery_attempted", False)
@@ -622,9 +647,6 @@ def run_one_task(
             base.metrics["post_screenshot_error"] = str(e)[:300]
             post_path = None
     else:
-        base.metrics["post_screenshot_error"] = (
-            "environment_url is required for live screenshot capture"
-        )
         post_path = None
     environment_state: dict[str, Any] | None = None
     environment_state_error = ""
@@ -644,6 +666,14 @@ def run_one_task(
             except Exception as exc:
                 environment_state_error = str(exc)[:300]
 
+    memory_state = None
+    memory_state_error = ""
+    if effective_task.memory_assertions is not None and not timed_out and not base.metrics.get("agent_error"):
+        try:
+            memory_state = read_memory_results(client, effective_task.memory_assertions)
+        except (ResetError, AgentTimeoutError, AgentRequestError) as e:
+            memory_state_error = str(e)
+
     result = evaluate_task_history(
         suite=suite,
         task=effective_task,
@@ -661,6 +691,8 @@ def run_one_task(
         started_mono=None,
         active_skills=active_skills,
         episode=episode,
+        memory_state=memory_state,
+        memory_state_error=memory_state_error,
     )
     return _apply_environment_assertions(
         result,

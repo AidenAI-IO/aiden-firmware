@@ -2,8 +2,9 @@ import json
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
-from runner.agent_client import AgentTimeoutError, ChatResponse
+from runner.agent_client import AgentRequestError, AgentTimeoutError, ChatResponse, ToolInvokeResult
 from runner.judge import JudgeConfig, JudgeOutput
 from runner.metrics import aggregate
 from runner.models import RubricVerdict
@@ -47,6 +48,89 @@ class FakeClient:
             response=self.response,
             history=[{"type": "assistant", "content": self.response}],
         )
+
+
+@pytest.mark.parametrize("behavior", ["replace", "append", "read_error", "missing_fixture", "timeout"])
+def test_memory_update_is_verified_from_storage(tmp_path: Path, monkeypatch, behavior):
+    old = {"id": "old", "type": "preference", "content": "dark mode"}
+    new = {"id": "new", "type": "preference", "content": "light mode"}
+    observation = {"query": {"limit": 100}, "expected_count": 1}
+    suite = Suite(name="memory", global_reset={}, tasks=[], sha256="sha", source_path=tmp_path / "suite.json")
+    task = TaskSpec(
+        id="update", category="memory", description_for_judge="Update theme", prompt="Use light mode",
+        rubric=[RubricItem(id="current", check="Only light mode is current")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=1),
+        setup=[
+            {"type": "seed_memory", "memories": [old]},
+            {"type": "assert_memory", **observation, "expected": [{"id": "old"}]},
+        ],
+        memory_assertions={**observation, "expected": [{"content_contains": "light mode"}]},
+    )
+
+    class MemoryClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.memories = []
+            self.reads = 0
+
+        def seed_memory(self, memory, timeout=30):
+            if behavior != "missing_fixture":
+                self.memories.append(dict(memory))
+
+        def invoke_tool(self, name, args, timeout=30):
+            assert name == "recall_memory"
+            self.reads += 1
+            if behavior == "read_error" and self.messages:
+                raise AgentRequestError("storage unavailable")
+            return ToolInvokeResult(json.dumps({"results": self.memories}), False, 1)
+
+        def chat(self, *args, **kwargs):
+            super().chat(*args, **kwargs)
+            if behavior == "timeout":
+                raise AgentTimeoutError("task timed out")
+            self.memories = [*self.memories, new] if behavior == "append" else [new]
+            return ChatResponse(response="Updated", history=[
+                {"type": "tool_call", "tool_name": "save_memory", "tool_input": json.dumps(new)},
+                {"type": "tool_result", "tool_name": "save_memory", "content": json.dumps({"id": "new"})},
+                {"type": "assistant", "content": "Updated"},
+            ])
+
+    judged = []
+
+    def judge(**kwargs):
+        judged.append(kwargs)
+        return JudgeOutput([RubricVerdict("current", "yes", "Stored light mode")], "", "key", "")
+
+    monkeypatch.setattr(runtask_mod, "judge_task", judge)
+    client = MemoryClient()
+    result = run_one_task(client, suite, task, 1, tmp_path / "artifacts", JudgeConfig(), None, "run")
+
+    if behavior == "missing_fixture":
+        assert client.messages == []
+        assert result.metrics["first_failure_stage"] == "setup"
+        assert result.metrics["agent_eligible"] is False
+    elif behavior == "timeout":
+        assert result.status == "timeout"
+        assert client.reads == 1
+    elif behavior == "read_error":
+        assert result.status == "judge_error"
+        assert result.metrics["success"] is None
+        assert result.metrics["agent_eligible"] is False
+        assert result.metrics["failure_class"] == "evaluation"
+    else:
+        assert result.status == ("passed" if behavior == "replace" else "failed")
+        assert result.hard_assertions.memory_state is (behavior == "replace")
+        assert result.metrics["tool_calls"] == 1
+        assert client.reads == 2
+        trace = json.loads((tmp_path / "artifacts" / "trace.json").read_text())
+        assert trace["memory_state"] == client.memories
+        assert "pre_screenshot_error" not in result.metrics
+        assert "post_screenshot_error" not in result.metrics
+    if behavior == "replace":
+        assert judged[0]["trace"]["memory_state"] == [new]
+        assert json.loads(judged[0]["trace"]["tool_results"][0]["content"]) == {"id": "new"}
+    else:
+        assert judged == []
 
 
 def test_run_one_task_marks_setup_assertion_as_failed(tmp_path: Path, monkeypatch):
