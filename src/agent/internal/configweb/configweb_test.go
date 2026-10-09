@@ -1838,7 +1838,8 @@ func TestWiFiProxyRequestValidationAndPasswordProtection(t *testing.T) {
 	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &edited}); err != nil {
 		t.Fatal(err)
 	}
-	if got := config.Networks["Office"].ProxyURL; got != "http://alice:secret@proxy.example:8080" {
+	editedSaved := "http://alice:secret@proxy.example:8080"
+	if got := config.Networks["Office"].ProxyURL; got != editedSaved {
 		t.Fatalf("saved proxy after redacted edit=%q", got)
 	}
 
@@ -1846,8 +1847,9 @@ func TestWiFiProxyRequestValidationAndPasswordProtection(t *testing.T) {
 	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &blank}); err != nil {
 		t.Fatalf("blank saved proxy should preserve existing value: %v", err)
 	}
-	if got := config.Networks["Office"].ProxyURL; got != customURL {
-		t.Fatalf("preserved proxy=%q, want %q", got, customURL)
+	// A blank URL keeps whatever is stored, which is now the edited proxy.
+	if got := config.Networks["Office"].ProxyURL; got != editedSaved {
+		t.Fatalf("preserved proxy=%q, want %q", got, editedSaved)
 	}
 	emptyNoProxy := ""
 	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &blank, NoProxy: &emptyNoProxy}); err != nil {
