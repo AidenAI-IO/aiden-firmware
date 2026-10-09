@@ -52,7 +52,14 @@ printf '%s\n' "$*" >>"$FIXTURE/loaded"
 # Rockit must be initialized after the CIF/ISP cleanup decision.
 if [ "$name" = rockit ]; then
     for module in video_rkcif video_rkisp; do
-        cat "$FIXTURE/sys/module/$module/parameters/clr_unready_dev" >>"$FIXTURE/rockit-state"
+        parameter="$FIXTURE/sys/module/$module/parameters/clr_unready_dev"
+        # Failure fixtures use missing or non-regular parameters; reading
+        # /dev/full here would never terminate.
+        if [ -f "$parameter" ] && [ ! -L "$parameter" ]; then
+            cat "$parameter" >>"$FIXTURE/rockit-state"
+        else
+            printf 'unavailable\n' >>"$FIXTURE/rockit-state"
+        fi
     done
 fi
 EOF
@@ -122,6 +129,33 @@ for bridge in rk628-csi tc358743; do
     run_case 1
 done
 
+for failure in missing not-writable write-failed; do
+    prepare_case "cif-$failure"
+    write_topology 'm00_b_rk628-csi 4-0050' ENABLED
+    parameter="$fixture/sys/module/video_rkcif/parameters/clr_unready_dev"
+    rm "$parameter"
+    case "$failure" in
+        missing) ;;
+        not-writable)
+            # Docker mounts sysfs read-only, including for root.
+            ln -s /sys/kernel/uevent_seqnum "$parameter"
+            test -e "$parameter" && test ! -w "$parameter"
+            ;;
+        write-failed)
+            ln -s /dev/full "$parameter"
+            test -w "$parameter"
+            ;;
+    esac
+    PATH="$fixture/bin:$PATH" sh "$fixture/loader" 2>"$fixture/stderr"
+    grep -qx not-ready "$fixture/sys/module/video_rkisp/parameters/clr_unready_dev"
+    grep -Fq 'WARN: video_rkcif clr_unready_dev is unavailable or its write failed' "$fixture/stderr"
+    grep -Fq 'skipping remaining notifier cleanup and continuing other media/audio modules' "$fixture/stderr"
+    for module in rga3 mpp_vcodec rknpu snd_soc_rv1106 motor rockit; do
+        test -d "$fixture/sys/module/$module"
+    done
+    test "$(cat "$fixture/rockit-state")" = $'unavailable\nnot-ready'
+done
+
 prepare_case absent
 write_topology '' ''
 run_case not-ready
@@ -150,4 +184,4 @@ if grep -Fq 'neither RK628 nor TC358743 has an enabled link' "$fixture/stderr"; 
     exit 1
 fi
 
-echo 'PASS: either linked bridge completes CIF/ISP; absent or unlinked bridges retain async waiting'
+echo 'PASS: either linked bridge completes CIF/ISP; unavailable bridges or CIF cleanup failures retain async waiting'

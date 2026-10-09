@@ -71,7 +71,11 @@ if hdmi_bridge_linked; then
     # format check with a NULL input format and Oops; keep waiting in that case.
     for module in video_rkcif video_rkisp; do
         parameter=/sys/module/${module}/parameters/clr_unready_dev
-        [ ! -w "${parameter}" ] || echo 1 >"${parameter}"
+        # Only advance to ISP after a successful CIF write.
+        if [ ! -w "${parameter}" ] || ! (echo 1 >"${parameter}"); then
+            media_log "WARN: ${module} clr_unready_dev is unavailable or its write failed; skipping remaining notifier cleanup and continuing other media/audio modules."
+            break
+        fi
     done
 else
     bridge_status=$?

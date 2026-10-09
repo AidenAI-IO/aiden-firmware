@@ -117,6 +117,10 @@ An I2C driver symlink alone does not prove binding has finished: Linux creates
 it before calling the driver's probe function. Do not use that symlink as the
 condition for forcing notifier completion.
 
+ISP cleanup is attempted only after a successful CIF parameter write. If the
+CIF parameter is missing, not writable, or rejects the write, the helper logs
+a warning, leaves ISP pending, and continues loading independent modules.
+
 ## RK628 or I2C times out while Frame Service stays active
 
 Every native service log line includes `monotonic_ms`, `pid`, and the native
