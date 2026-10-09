@@ -222,6 +222,13 @@ def publish_run(
             key = _item_key(item_input["task_id"], item_input["attempt"])
             row = results_by_key[key]
             output = _experiment_output(artifacts.run_dir, row)
+            trace_url = getattr(client, "get_trace_url", None)
+            if output["aiden_trace_id"] and callable(trace_url):
+                try:
+                    output["aiden_trace_url"] = trace_url(trace_id=output["aiden_trace_id"])
+                except Exception:
+                    # A missing project lookup must not discard benchmark scores.
+                    pass
             update_span = getattr(client, "update_current_span", None)
             if callable(update_span):
                 episode_id = _episode_id(row)
@@ -233,6 +240,7 @@ def publish_run(
                     span_metadata.update({
                         "aiden_episode_id": episode_id,
                         "aiden_trace_id": _agent_trace_id(episode_id),
+                        "aiden_trace_url": output.get("aiden_trace_url"),
                     })
                 update_span(
                     name=f"benchmark/{row['task_id']}#attempt-{row['attempt']}",
@@ -765,6 +773,65 @@ def _dataset_item_metadata(
     }
 
 
+def _saved_trace_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Read optional, attempt-specific evidence from this run (including moved runs)."""
+    run_dir = run_dir.resolve()
+    raw = Path(str(row.get("artifact_dir") or ""))
+    attempt = int(row.get("attempt") or 1)
+    task_dir = run_dir / "tasks" / str(row["task_id"])
+    candidates = [task_dir / f"attempt_{attempt}"]
+    if str(row.get("artifact_dir") or "") and (
+        raw.name == f"attempt_{attempt}"
+        or (attempt == 1 and not raw.name.startswith("attempt_"))
+    ):
+        candidates.append(raw if raw.is_absolute() else run_dir / raw)
+    # Never borrow the single-attempt trace for a missing repeated attempt.
+    if attempt == 1 and not raw.name.startswith("attempt_"):
+        candidates.append(task_dir)
+
+    output: dict[str, Any] = {
+        "final_response": None,
+        "tool_calls": None,
+        "trace_artifact": {"status": "missing", "path": None},
+    }
+    for directory in candidates:
+        try:
+            path = (directory / "trace.json").resolve()
+        except (OSError, RuntimeError):
+            output["trace_artifact"]["status"] = "unreadable"
+            continue
+        if not path.is_relative_to(run_dir):
+            continue
+        try:
+            payload = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError):
+            output["trace_artifact"] = {
+                "status": "unreadable", "path": str(path.relative_to(run_dir)),
+            }
+            return output
+        output["trace_artifact"] = {
+            "status": "invalid", "path": str(path.relative_to(run_dir)),
+        }
+        try:
+            trace = json.loads(payload)
+        except json.JSONDecodeError:
+            return output
+        if not isinstance(trace, dict):
+            return output
+        response = trace.get("final_response")
+        calls = trace.get("tool_calls")
+        if not isinstance(response, str) or not isinstance(calls, list) or not all(
+            isinstance(call, dict) for call in calls
+        ):
+            return output
+        output.update(final_response=response, tool_calls=calls)
+        output["trace_artifact"]["status"] = "available"
+        return output
+    return output
+
+
 def _experiment_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
     artifact_dir = str(row.get("artifact_dir") or "")
     artifact_path = Path(artifact_dir)
@@ -775,6 +842,7 @@ def _experiment_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
             pass
     metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
     return {
+        **_saved_trace_output(run_dir, row),
         "status": row.get("status"),
         "rubric": row.get("rubric") or [],
         "rubric_pass_count": row.get("rubric_pass_count", 0),
@@ -787,6 +855,7 @@ def _experiment_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
         "finished_at": row.get("finished_at"),
         "aiden_episode_id": _episode_id(row),
         "aiden_trace_id": _agent_trace_id(_episode_id(row)) if _episode_id(row) else None,
+        "aiden_trace_url": None,
     }
 
 
@@ -1106,9 +1175,9 @@ def _agent_trace_id(episode_id: str | None) -> str | None:
     if not episode_id:
         return None
     try:
-        return str(uuid.UUID(episode_id))
+        return uuid.UUID(episode_id).hex
     except ValueError:
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, episode_id))
+        return uuid.uuid5(uuid.NAMESPACE_URL, episode_id).hex
 
 
 def _string_attr(value: Any, name: str) -> str | None:

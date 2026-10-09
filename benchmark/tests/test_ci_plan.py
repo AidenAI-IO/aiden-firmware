@@ -407,9 +407,15 @@ def test_workflow_artifacts_do_not_include_materialized_worker_configs() -> None
     )
 
     assert "cli-services" not in artifact_paths
-    assert "workers" not in artifact_paths
+    # Only diagnostic logs may leave worker directories: agent.toml and control
+    # tokens contain materialized credentials and must never match an upload glob.
+    worker_paths = [path for path in artifact_paths.splitlines() if "/workers/" in path]
+    assert worker_paths
+    assert all(path.endswith(("/workers/*/daemon.log", "/workers/*/runner.log")) for path in worker_paths)
     assert "auto-agent-setup.log" in artifact_paths
-    assert "tasks/**" not in artifact_paths
+    task_paths = [path for path in artifact_paths.splitlines() if "/tasks/" in path]
+    assert task_paths
+    assert all(path.endswith(("/tasks/**/trace.json", "/tasks/**/history.json", "/tasks/**/episode.json")) for path in task_paths)
     assert "id: upload_benchmark_artifacts" in workflow
     assert "steps.upload_benchmark_artifacts.outcome == 'failure'" in workflow
     assert "overwrite: true" in workflow

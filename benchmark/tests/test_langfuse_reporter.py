@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +11,7 @@ import pytest
 
 from runner.langfuse_reporter import (
     LangfusePublishError,
+    _agent_trace_id,
     _fetch_dataset_item_via_public_api,
     publish_run,
 )
@@ -144,6 +147,9 @@ class FakeLangfuse:
 
     def flush(self):
         self.flushed = True
+
+    def get_trace_url(self, *, trace_id):
+        return f"http://langfuse.local/project/project-1/traces/{trace_id}"
 
 
 def _write_run(
@@ -396,7 +402,30 @@ def test_publish_run_maps_attempts_and_aggregate_metrics(tmp_path: Path):
     assert client.experiment["metadata"]["git_sha"] == "abc123"
     assert len(client.experiment["metadata"]["workload_sha256"]) == 64
     assert client.spans[0]["metadata"]["aiden_episode_id"] == "episode-a"
+    trace_id = uuid.uuid5(uuid.NAMESPACE_URL, "episode-a").hex
+    expected_url = f"http://langfuse.local/project/project-1/traces/{trace_id}"
+    output = client.experiment["item_results"][0].output
+    assert output["aiden_trace_id"] == trace_id
+    assert output["aiden_trace_url"] == expected_url
+    assert client.spans[0]["metadata"]["aiden_trace_url"] == expected_url
     assert client.flushed is True
+
+
+def test_publish_run_keeps_scores_when_trace_url_lookup_fails(tmp_path: Path):
+    client = FakeLangfuse()
+
+    def unavailable(**kwargs):
+        raise RuntimeError("project lookup unavailable")
+
+    client.get_trace_url = unavailable
+    publish_run(_write_run(tmp_path), client=client)
+    assert client.experiment["item_results"][0].output["aiden_trace_url"] is None
+    assert client.score_calls
+
+
+def test_agent_trace_id_matches_otlp_uuid_format():
+    assert _agent_trace_id("8f1c0f4e-6c2f-4a2e-9f1e-2f6b0f0d3a11") == "8f1c0f4e6c2f4a2e9f1e2f6b0f0d3a11"
+    assert _agent_trace_id(None) is None
 
 
 def test_publish_run_uses_stable_dataset_and_item_ids(tmp_path: Path):
@@ -418,6 +447,83 @@ def test_publish_run_uses_stable_dataset_and_item_ids(tmp_path: Path):
         first.experiment["metadata"]["suite_sha256"]
         != second.experiment["metadata"]["suite_sha256"]
     )
+
+
+def test_publish_run_includes_answer_and_tools_from_moved_repeated_run(tmp_path: Path):
+    original = _write_run(tmp_path / "original", attempt_count=2)
+    rows = [json.loads(line) for line in (original / "results.jsonl").read_text().splitlines()]
+    for row in rows:
+        directory = original / "tasks" / "task-a" / f"attempt_{row['attempt']}"
+        directory.mkdir(parents=True)
+        row["artifact_dir"] = str(directory)
+        (directory / "trace.json").write_text(json.dumps({
+            "final_response": f"已更新为浅色模式（第 {row['attempt']} 次）",
+            "tool_calls": [{"step": 1, "tool": "save_memory", "input": {"content": "light mode"}}],
+        }), encoding="utf-8")
+    (original / "results.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    moved = tmp_path / "downloaded" / "run-a"
+    shutil.copytree(original, moved)
+    # The original still exists: publication must use the downloaded evidence.
+    (original / "tasks/task-a/attempt_1/trace.json").write_text('{}')
+    client = FakeLangfuse()
+
+    publish_run(moved, client=client)
+
+    outputs = [result.output for result in client.experiment["item_results"]]
+    assert [output["final_response"] for output in outputs] == [
+        "已更新为浅色模式（第 1 次）", "已更新为浅色模式（第 2 次）",
+    ]
+    assert outputs[0]["tool_calls"][0]["input"] == {"content": "light mode"}
+    assert outputs[1]["trace_artifact"] == {
+        "status": "available", "path": "tasks/task-a/attempt_2/trace.json",
+    }
+
+
+@pytest.mark.parametrize("payload,expected_status,answer", [
+    (None, "missing", None),
+    ('{"final_response": "", "tool_calls": []}', "available", ""),
+    ('{"final_response": "answer", "tool_calls": []}', "available", "answer"),
+    ('{broken', "invalid", None),
+    ('[]', "invalid", None),
+    ('{"final_response": 5, "tool_calls": []}', "invalid", None),
+])
+def test_publish_run_distinguishes_missing_invalid_and_empty_answers(
+    tmp_path: Path, payload, expected_status, answer,
+):
+    run_dir = _write_run(tmp_path)
+    directory = run_dir / "tasks/task-a"
+    directory.mkdir(parents=True)
+    if payload is not None:
+        (directory / "trace.json").write_text(payload)
+    client = FakeLangfuse()
+
+    publish_run(run_dir, client=client)
+
+    output = client.experiment["item_results"][0].output
+    assert output["final_response"] == answer
+    assert output["trace_artifact"]["status"] == expected_status
+    assert output["status"] == "passed"
+
+
+def test_publish_run_does_not_borrow_trace_from_another_attempt_or_outside_run(tmp_path: Path):
+    run_dir = _write_run(tmp_path, attempt_count=2)
+    directory = run_dir / "tasks/task-a"
+    directory.mkdir(parents=True)
+    (directory / "trace.json").write_text(json.dumps({"final_response": "wrong attempt", "tool_calls": []}))
+    outside = tmp_path / "private"
+    outside.mkdir()
+    (outside / "trace.json").write_text(json.dumps({"final_response": "outside", "tool_calls": []}))
+    (directory / "attempt_1").symlink_to(outside, target_is_directory=True)
+    rows = [json.loads(line) for line in (run_dir / "results.jsonl").read_text().splitlines()]
+    for row in rows:
+        row["artifact_dir"] = f"tasks/task-a/attempt_{row['attempt']}"
+    (run_dir / "results.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    client = FakeLangfuse()
+
+    publish_run(run_dir, client=client)
+
+    assert all(result.output["final_response"] is None for result in client.experiment["item_results"])
+    assert all(result.output["trace_artifact"]["status"] == "missing" for result in client.experiment["item_results"])
 
 
 def test_publish_run_serializes_dataset_run_item_creation(tmp_path: Path):
