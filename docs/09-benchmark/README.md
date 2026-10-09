@@ -365,8 +365,9 @@ determine `benchmark.success`.
 
 The workflow passes its HTTPS proxy as `AIDEN_LANGFUSE_HTTPS_PROXY`, which affects
 only the Langfuse client and respects `NO_PROXY`. Model/device routing is unchanged.
-Telemetry runs asynchronously with a 30-second upload budget. Runtime shutdown
-drains pending exports for up to 35 seconds, and benchmark containers have a
+Telemetry runs asynchronously with a 30-second upload budget. Runtimes configured
+with telemetry environment `benchmark` drain pending exports for up to 35 seconds
+on shutdown; ordinary runtimes keep their existing shutdown behavior. Benchmark containers have a
 90-second stop grace period. Forced kills or upload failures can still leave a
 missing or incomplete trace; worker logs record the episode ID and export result.
 Log capture stays active during normal shutdown.

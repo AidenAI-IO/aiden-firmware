@@ -41,9 +41,10 @@ Credentials are written directly into the `[advanced_settings.runtime.telemetry]
 
 `AIDEN_LANGFUSE_HTTPS_PROXY` optionally overrides the HTTPS proxy for the Langfuse
 client only, respecting `NO_PROXY`. This lets benchmark workers reach Langfuse
-without changing model or device routing. On normal runtime shutdown, pending
-exports drain for up to 35 seconds before cancellation. Forced termination can
-still interrupt uploads.
+without changing model or device routing. Runtimes explicitly configured with
+telemetry environment `benchmark` drain pending exports for up to 35 seconds on
+shutdown. Other environments retain best-effort asynchronous exports without
+waiting for telemetry on shutdown. Forced termination can still interrupt uploads.
 
 The Langfuse deployment must support OTLP ingestion: self-hosted Langfuse `>= 3.22.0`, or Langfuse Cloud. The agent sends the `x-langfuse-ingestion-version: 4` header so spans land on the observations-first data model in real time.
 

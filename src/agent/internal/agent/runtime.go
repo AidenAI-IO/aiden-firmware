@@ -2244,19 +2244,26 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 	episodesRoot := filepath.Join(r.ConfigSnapshot().ConfigDir, "memory", "episodes")
 	episodeDir := EpisodeDirectory(episodesRoot, episode)
 	timeout := r.ConfigSnapshot().Telemetry.UploadTimeoutOrDefault()
-	parent, started := r.telemetryExports.begin()
-	if !started {
-		return
+	parent := context.Background()
+	drainOnClose := r.ConfigSnapshot().Telemetry.EnvironmentOrDefault() == "benchmark"
+	if drainOnClose {
+		var started bool
+		parent, started = r.telemetryExports.begin()
+		if !started {
+			return
+		}
 	}
 	go func() {
-		defer r.telemetryExports.done()
+		if drainOnClose {
+			defer r.telemetryExports.done()
+		}
 		ctx, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
 		if err := exporter.ExportEpisodeDir(ctx, episodeDir, episode, promptCalls); err != nil {
 			if r.logger != nil {
 				r.logger.Warn("[telemetry] export episode %s failed: %v", episode.ID, err)
 			}
-		} else if r.logger != nil {
+		} else if drainOnClose && r.logger != nil {
 			r.logger.Info("[telemetry] exported episode %s trace %s", episode.ID, telemetryTraceID(episode.ID))
 		}
 	}()
@@ -2912,11 +2919,16 @@ func (r *Runtime) Close() error {
 		r.logger.Error("episode maintenance drain on close: %v", err)
 	}
 	maintenanceCancel()
-	telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), runtimeTelemetryDrainTimeout)
-	if err := r.telemetryExports.closeAndWait(telemetryCtx); err != nil && r.logger != nil {
-		r.logger.Warn("[telemetry] drain on close: %v", err)
+	// Benchmark workers exit immediately after each attempt, so retain their
+	// execution evidence before container teardown. Ordinary runtimes keep the
+	// existing best-effort export and non-blocking telemetry shutdown behavior.
+	if r.ConfigSnapshot().Telemetry.EnvironmentOrDefault() == "benchmark" {
+		telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), runtimeTelemetryDrainTimeout)
+		if err := r.telemetryExports.closeAndWait(telemetryCtx); err != nil && r.logger != nil {
+			r.logger.Warn("[telemetry] drain on close: %v", err)
+		}
+		telemetryCancel()
 	}
-	telemetryCancel()
 	if plane, ok := r.memoryPlane.(*FilesystemMemoryPlane); ok {
 		plane.StopEpisodeMemory()
 		plane.StopNotificationMemory()
