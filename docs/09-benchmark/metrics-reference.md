@@ -7,6 +7,11 @@ sidebar_position: 4
 This reference defines benchmark result fields and exported scores, including
 measurement scope, denominators, units, and missing-value semantics.
 
+Read the field tables for definitions, then use
+[Calculation rules](#3-calculation-rules) to follow a value from its source
+through attempt-level calculation and run-level aggregation. Examples use
+illustrative data, not measured benchmark results.
+
 ## 1. What the pipeline measures
 
 ```text
@@ -272,3 +277,320 @@ requires actual attempt 1. Do not substitute one for the other.
 `oracle_best_score_at_k.count` can be smaller than its `eligible_tasks` when
 quality scores are absent. Read `manifest.metrics_k` for each run; separate runs
 are not automatically combined into k attempts.
+
+## 3. Calculation rules
+
+### 3.1 Sources and precedence
+
+Attempt metrics are assembled before run-level aggregation:
+
+1. The runner records setup, chat-request, and screenshot timings.
+2. Saved history supplies model usage, tool calls, and initial error evidence.
+3. The request's episode supplies device-result durations, explicit replans,
+   first-token timing, and available token totals. Fields emitted by this step
+   overwrite the same history-derived fields; the two sources are not added.
+4. Assertions and the judge determine outcome, eligibility, quality, and final
+   failure labels. A passing result clears failure stage and event reference,
+   even if recovered tool errors remain in the counters.
+5. The aggregator reads attempt rows and calculates task-level capability and
+   attempt-level resource distributions. The Langfuse publisher exports these
+   values; it does not reconstruct them from trace spans.
+
+| Source of truth | Responsibilities |
+| --- | --- |
+| [Task runner](../../benchmark/runner/runtask.py) | Measurement boundaries, evaluation order, outcome fields, source precedence |
+| [Deterministic assertions](../../benchmark/runner/assertions.py) | Expected-answer parsing and memory-recall evidence checks |
+| [Metric derivation and aggregation](../../benchmark/runner/metrics.py) | History/episode calculations, device classification, fixed-k metrics, distributions |
+| [Trace extraction](../../benchmark/runner/trace.py) | Tool-call list and final response from history |
+| [Tool execution](../../src/agent/internal/agent/tool_execution.go) and [episode recording](../../src/agent/internal/agent/task_episode.go) | Agent-side device-call timers and recorded event durations |
+| [Runtime callbacks](../../src/agent/internal/agent/runtime.go) | First-token timing and Agent usage totals |
+| [Run planning](../../benchmark/runner/main.py) | Planned repeats and manifest `metrics_k` |
+| [Langfuse publisher](../../benchmark/runner/langfuse_reporter.py) | Score names, rubric ratios, and omission of unavailable scores |
+
+### 3.2 Task, setup, and screenshot timers
+
+The runner uses a monotonic clock and truncates elapsed milliseconds to integers:
+
+```text
+elapsed_ms = int((end_monotonic - start_monotonic) * 1000)
+```
+
+| Field | Start and end | Missing or partial measurement |
+| --- | --- | --- |
+| `task_wall_ms` / `wall_ms` | Immediately before prompt preparation and `client.chat`, through return or exception. Includes request/response overhead. | Unavailable if execution never reaches this timer. Timeout duration is recorded before recovery. Offline evaluation uses a supplied task timing; its legacy fallback can use a supplied start clock, so check provenance. |
+| `setup_ms` | Around `prepare_task_isolation`, including configured setup work. | Setup failures record elapsed time from the attempt's initial clock. Later readiness checks and runner screenshots are outside the normal setup timer. |
+| `screenshot_capture_ms` | Sum of successful runner pre/post `take_environment_screenshot` calls, including retrieval and local saving. | A failed capture contributes no duration. A successful pre-capture plus failed post-capture leaves a partial sum; inspect screenshot errors. No successful timed capture leaves null. Copying an input image adds no capture duration. |
+| `time_to_first_token_ms` | Copied from `episode.extra.first_token_time_ms`; the runtime measures from its run start to its first streaming callback. | Exported by the runtime only when positive. Without that episode value, unavailable. This is not per-model-request TTFT or time until the final answer becomes visible. |
+
+Runner screenshots generally happen outside `task_wall_ms`. Screenshots or waits
+inside an Agent tool can instead be part of that tool's duration. These timers
+therefore do not form mutually exclusive pieces of a task-duration total.
+
+### 3.3 Model calls, model time, and visual inference
+
+History derivation visits messages in order. A message counts as a model call
+only when its type is `assistant` or `tool_call` and its `usage` is a mapping.
+There is no additional deduplication by provider request ID.
+
+```text
+llm_calls   = number of qualifying usage-bearing messages
+llm_time_ms = sum(duration_ms on those messages)
+```
+
+The call count is null if no qualifying usage is present. The duration sum is
+null if any qualifying message lacks a numeric, nonnegative duration; it is not
+the sum of only the measured subset. Calls absent from history or without usage
+cannot be recovered by this calculation. Recorded model durations measure call
+latency, not a separately measured GPU compute time.
+
+Visual inference uses a pending-image flag:
+
+1. Set the flag on an image attachment or a screenshot-like tool result: tool
+   name `screenshot`, text containing `screenshot observation`, or JSON with a
+   string `data` field and a width or height. Screenshot-result detection
+   requires string content; image attachments are checked independently.
+2. Count the next qualifying usage-bearing message as a visual model call and
+   include its duration in the visual sum.
+3. Clear the flag after that qualifying message.
+
+`vision_llm_calls` is zero when usage exists but no calls match this heuristic;
+it is null when there is no qualifying usage. `vision_llm_time_ms` requires at
+least one matching call and complete valid durations for those calls; otherwise
+it is null. Multiple screenshots before one model call count as one visual call.
+An image retained in later model context is not automatically counted again.
+
+For example, model calls of 900, 1,400, and 700 ms give `llm_calls=3` and
+`llm_time_ms=3000`. If only the second follows a screenshot, then
+`vision_llm_calls=1` and `vision_llm_time_ms=1400`. The visual duration is already
+inside the model duration; adding them would double-count it.
+
+### 3.4 Device actions and device execution time
+
+The current device-action allowlist is:
+
+```text
+touch_gesture, enter_text, keyboard_text, keyboard_tap, mouse_move,
+mouse_scroll, quick_action, open_app, launch_app, open_url,
+search_launch_app, bridge_open_app, bridge_clipboard, bridge_contacts,
+bridge_calendar, bridge_notification, bridge_media,
+swipe, tap, long_press, drag, press_key
+```
+
+Names must match the allowlist. `quick_action` with Boolean `list=true` is
+excluded. Any listed `bridge_*` tool with a case-insensitive `action` of `query`,
+`read`, `get`, `inspect`, `list`, or `search` is excluded. An absent or unparseable
+input does not establish either exclusion. New tools require an explicit
+classification update; the metric does not infer device effects from output.
+
+```text
+device_actions = count of qualifying tool_call messages in history
+device_execution_ms = sum(max(0, duration_ms))
+                      over qualifying tool_result events in the episode
+```
+
+For episode classification, the result's `tool_input` takes precedence. If it is
+missing/null, the last preceding input for the same tool name is used. This
+fallback is based on tool name, not a unique call ID.
+
+The runtime starts the timer when handling a tool call, before input
+normalization and validation, and measures elapsed time through the tool's
+return and error handling. It records the duration before after-call hooks and
+result emission. Positive durations are converted to integer milliseconds in
+the episode, so a sub-millisecond call can be recorded as zero.
+
+The duration can include communication, internal waits, nested work, and device
+execution. It is not pure hardware time, the gesture's requested `duration_ms`,
+or a measurement that independently proves the page finished loading. Failed
+and rejected device calls also contribute when they have recorded durations.
+Standalone screenshot, search, memory, and model calls are outside this
+allowlist; similar work performed inside a listed tool remains inside its timer.
+
+The sum is available only when the episode has events and every qualifying
+result has a numeric duration. Negative recorded values are clamped to zero.
+With events but no qualifying results, the value is zero. Without episode
+events, or with a missing duration on a qualifying result, it is unavailable.
+This completeness check covers recorded results only: a call whose result event
+is entirely missing can still be omitted from the sum. Consequently,
+`device_actions` and timed-result counts can differ.
+
+For example, a 200 ms tap, 800 ms text entry, and 400 ms failed swipe contribute
+1,400 ms. A separate 300 ms screenshot and an 11 ms `bridge_contacts` query
+contribute nothing to this device sum.
+
+### 3.5 Tokens, work counters, and failure evidence
+
+Token calculations use the same qualifying messages as `llm_calls`. Each field
+is summed independently; a missing field on any qualifying message makes that
+history-derived total null.
+
+| Metric | History source and calculation | Episode override when numeric |
+| --- | --- | --- |
+| `input_tokens` | Sum `usage.input_tokens`, falling back to `prompt_tokens` per message | `extra.prompt_tokens` |
+| `output_tokens` | Sum `usage.output_tokens`, falling back to `completion_tokens` | `extra.completion_tokens` |
+| `total_tokens` | Sum `usage.total_tokens`; if absent, use input + output only when both are known | `extra.total_tokens` |
+| `cached_input_tokens` | Sum `usage.cached_input_tokens`, falling back to `cached_tokens` | `extra.cached_prompt_tokens` |
+| `reasoning_tokens` | Sum `usage.reasoning_tokens` | `extra.reasoning_tokens` |
+
+An episode value replaces its entire field's history sum, including a numeric
+zero; it is not added to it. Explicit totals are preserved rather than forced
+to equal input plus output. Optional cached/reasoning fields are not assumed to
+be zero when absent. These values cover the recorded task Agent, not judge or
+separate setup model consumption. `cost_usd` has no automatic token-price
+calculation in the current runner.
+
+| Field | Derivation and edge cases |
+| --- | --- |
+| `tool_calls` | Number of tool calls extracted from history, including calls without a following result. Counts an exposed composite tool once, not each internal operation. |
+| `screenshots_taken` | Count extracted calls whose result has truthy JSON `data` or contains `screenshot observation`. It is a result-shape heuristic, not a count of every screenshot. |
+| `tool_errors` | History counts result-level `is_error`, JSON content `is_error`, or JSON `ok=false`. A nonempty episode event list replaces this count with the number of `tool_result` events marked `is_error`; it does not parse their content again. Empty history yields zero, which alone does not prove complete telemetry. |
+| `replan_count` | Count truthy `needs_replan` values across episode events. At least one event must contain the key; otherwise null. Explicit all-false evidence yields zero. |
+| `retry_count` | Remains null without an explicit source. Repeated tool names or benchmark attempts are not counted as Agent retries. |
+| `first_failure_stage`, `failure_event_ref` | History initially points to its first recognized tool error; an episode error can replace this reference. An allowlisted device error maps to `device_execution`, other tool errors to `unknown`. Outcome handling can then overwrite the stage with setup/evaluation/unknown or clear both fields on success. |
+| `recovery_attempted`, `recovery_succeeded` | Set when the runner catches an Agent timeout and invokes recovery. Recovery's Boolean return is recorded separately from the failed task outcome. This pair does not count tool retries or all initialization recovery work. |
+
+### 3.6 Quality score and rubric pass rate
+
+The evaluation order explains why these two values can differ:
+
+1. Execution errors and hard assertions are checked first. An eligible failure
+   receives `quality_score=0`; an execution error/timeout without execution
+   evidence receives null and is ineligible.
+2. Configured expected-answer and memory-recall checks run next. A mismatch
+   receives zero; unavailable required recall evidence produces an evaluation
+   error with unknown quality.
+3. If the judge is disabled, passing the preceding gates yields quality 1.
+   Otherwise, quality is `rubric_pass_count / rubric_total`, where a pass is a
+   `yes` verdict. Full task success requires all rubric checks to pass. Judge
+   errors leave quality unknown. With zero rubric items and zero passed checks,
+   the result passes and quality is 1.
+4. Configured environment-state checks are applied afterward. Missing state
+   makes quality unknown and the attempt ineligible; a failed state check turns
+   an otherwise passing result into an eligible failure with quality zero.
+
+`expected_answer_match` currently supports the `option_letter` format: the
+assertion parser normalizes the expected option, extracts the predicted option
+from the final response, and compares them. An unparseable expected or predicted
+answer fails; this is not a semantic similarity score.
+
+`expected_recalled_memory_match` requires a call to the configured recall tool
+and checks whether all expected memory IDs occur in its evidence; extra IDs do
+not fail the check. Complete inline tool results take precedence. If they are
+incomplete, episode `retrieved_memory_refs` may supply fallback evidence unless
+the task requires inline evidence. The fallback checks attribution against
+other recall tools: missing expected IDs fail, but ambiguous attribution or
+unavailable required evidence yields null. No call to the configured tool
+yields false. Read `memory_recall_evidence_source` alongside the Boolean.
+
+Langfuse's `benchmark.rubric_pass_rate` independently divides the stored pass
+count by the stored rubric total whenever the total is nonzero. It is omitted
+when that total is zero. For example, three `yes` verdicts out of four yield
+quality 0.75 and rubric pass rate 0.75, but the task fails. With `--no-judge`,
+the same four configured checks may remain unevaluated: quality can be 1 and
+the exported rubric ratio 0/4. Inspect verdicts before comparing these fields.
+
+### 3.7 Fixed-k capability and first-success calculations
+
+Group result rows by `task_id` and actual attempt number. Let `T` be the number
+of observed unique tasks, `E1` the tasks with eligible attempt 1, and `Ek` the
+tasks with every attempt from 1 through k present and eligible.
+
+```text
+pass_at_1 = tasks in E1 whose attempt 1 succeeds / size(E1)
+pass_at_k = tasks in Ek with any success in attempts 1..k / size(Ek)
+pass_pow_k = tasks in Ek with all successes in attempts 1..k / size(Ek)
+coverage.pass_at_1 = size(E1) / T
+coverage.pass_at_k = coverage.pass_pow_k = size(Ek) / T
+attempt_success_rate = successful eligible rows / eligible rows
+```
+
+Pass values are null with no eligible denominator; coverage is zero when no
+tasks are observed. `attempt_success_rate` includes eligible attempts beyond k.
+Rows wholly absent from results do not enter observed coverage; check planned
+attempts in the manifest separately. Duplicate task/attempt rows overwrite one
+another in task grouping, while attempt distributions still use all rows; input
+results must contain one row per planned task/attempt.
+
+For k=2, consider:
+
+| Task | Attempt 1 | Attempt 2 | In E1? | In Ek? |
+| --- | --- | --- | --- | --- |
+| A | Pass | Fail | Yes | Yes |
+| B | Fail | Pass | Yes | Yes |
+| C | Pass | Pass | Yes | Yes |
+| D | Pass | Ineligible | Yes | No |
+
+Here `pass_at_1=3/4`, `pass_at_k=3/3`, `pass_pow_k=1/3`, fixed-k coverage is
+`3/4`, and attempt success is `5/7`. The higher pass-at-k describes observed
+success with more opportunities, not improved first-attempt reliability.
+
+For `oracle_best_score_at_k`, take the maximum available quality in each task
+in Ek, then average those maxima. A task with no numeric quality is omitted
+from `count`; a task with only some known qualities still contributes its best
+known value.
+
+For first-success metrics, start at actual attempt 1 and stop at the first
+missing or ineligible attempt. Within that continuous prefix, find the first
+success; the search can extend beyond k. Its attempt number contributes to
+`first_success_attempt`. Sum each resource field separately up to and including
+that success for `cost_to_first_success`; every value through success must be
+numeric for that field to contribute. A task that never succeeds is omitted.
+
+For example, eligible Fail/Pass attempts taking 2,000 and 3,000 ms contribute
+first-success attempt 2 and cumulative task time 5,000 ms. If the second
+attempt's tokens are missing, this task still contributes timing but contributes
+no cumulative-token value. Fail/Ineligible/Pass contributes to neither
+first-success metric because the eligible prefix ends before success.
+
+### 3.8 Distributions, confidence bounds, and diagnostic ratios
+
+For each efficiency/reliability field, collect numeric, non-Boolean values from
+eligible attempt rows, including eligible failures. `setup_ms` instead uses all
+observed rows. Every field therefore has its own sample count.
+
+```text
+count = number of included values
+sum = sum of included values
+mean = sum / count
+```
+
+With no values, count is zero and sum/mean/percentiles are null. For sorted
+values `x[0]` through `x[n-1]`, a percentile P uses linear interpolation:
+
+```text
+h = (n - 1) * P / 100
+f = floor(h)
+c = min(f + 1, n - 1)
+percentile(P) = x[f] + (x[c] - x[f]) * (h - f)
+```
+
+For 100, 200, and 900 ms, p50 is 200 ms and p90 is 760 ms. The latter need not
+be an observed duration. A single sample makes all percentiles equal to it;
+that does not establish stable tail latency.
+
+Pass metrics and attempt success use Wilson 95% intervals. With `s` successes,
+`n` eligible trials, `p=s/n`, and `z=1.959963984540054`:
+
+```text
+d = 1 + z*z/n
+center = (p + z*z/(2*n)) / d
+margin = z * sqrt(p*(1-p)/n + z*z/(4*n*n)) / d
+lower = max(0, center - margin)
+upper = min(1, center + margin)
+```
+
+Bounds are null when n=0. Trials are tasks for pass metrics and attempts for
+attempt success; the latter interval does not model within-task correlation.
+
+Remaining diagnostic ratios use distinct populations:
+
+| Field | Calculation |
+| --- | --- |
+| `coverage.invalid_attempts` | Observed attempt rows minus eligible attempt rows |
+| `diagnostics.failure_stage_coverage` | Eligible failed attempts with a recognized non-unknown stage / eligible failed attempts; null with no eligible failures |
+| `category.<category>.pass_rate` | Rows with `status=passed` / all rows in that category, including ineligible rows |
+| `category.<category>.rubric_pass_rate` | Sum of stored rubric pass counts / sum of rubric totals in the category, when the total is positive; this is rubric-weighted, not a mean of task ratios |
+| `observations.<id>.pass_rate` | Rows with at least one passed observation for that ID / rows containing that ID; repeated checks of the same ID within a row count once |
+
+Failure class counts use all classified rows; stage counts use eligible failures
+only. Neither a class count nor a stage count is a percentage without an
+explicit denominator.
