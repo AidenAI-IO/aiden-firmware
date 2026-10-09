@@ -140,6 +140,14 @@ suites:
     required: true
     timeout_seconds: 180
 
+  - name: debian-media-modules
+    class: deterministic
+    paths: [overlay-debian/usr/lib/aiden/aiden-media-modules, scripts/test_debian_media_modules.sh]
+    command: bash scripts/test_debian_media_modules.sh
+    dependencies: [bash, sh, awk, sed]
+    required: true
+    timeout_seconds: 30
+
   - name: script-contracts
     class: deterministic
     paths: [scripts, .github/workflows, tests]

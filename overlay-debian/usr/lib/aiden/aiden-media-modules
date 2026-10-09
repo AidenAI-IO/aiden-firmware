@@ -32,9 +32,38 @@ for sensor in imx415 os04a10 sc4336 sc3336 sc530ai gc2053 sc200ai \
         rmmod "${sensor}" 2>/dev/null || true
     fi
 done
-# Keep async notifiers intact while the media graph is incomplete or probing.
-# clr_unready_dev forces completion with missing endpoints and can Oops in
-# vendor CIF kernels when the input format is not available.
+
+hdmi_bridge_linked() {
+    command -v media-ctl >/dev/null 2>&1 || return 1
+    for media in /dev/media*; do
+        [ -e "${media}" ] || continue
+        topology=$(media-ctl -d "${media}" -p 2>/dev/null) || continue
+        # The dual-bridge DT describes two alternatives, but only one is fitted.
+        # D-PHY creates this link in its bound callback, before CIF completion
+        # registers /dev/v4l-subdev*. Neither devnodes nor HDMI signal are a
+        # prerequisite for pruning the unused alternative.
+        if printf '%s\n' "${topology}" | awk '
+            /^driver[[:space:]]+rkcif$/ { cif = 1 }
+            /^- entity [0-9]+:/ { bridge = ($0 ~ /rk628-csi|tc358743/) }
+            bridge && /-> "rockchip-csi2-dphy[0-9]+":0 \[ENABLED/ { linked = 1 }
+            END { exit !(cif && linked) }
+        '; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if hdmi_bridge_linked; then
+    # Finish CIF before ISP. Clearing with no bound bridge can call the vendor
+    # format check with a NULL input format and Oops; keep waiting in that case.
+    for module in video_rkcif video_rkisp; do
+        parameter=/sys/module/${module}/parameters/clr_unready_dev
+        [ ! -w "${parameter}" ] || echo 1 >"${parameter}"
+    done
+else
+    echo "HDMI bridge is not linked yet; preserving media async notifiers" >&2
+fi
 
 insert_if_present rga3.ko
 insert_if_present mpp_vcodec.ko
