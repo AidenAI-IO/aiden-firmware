@@ -78,6 +78,14 @@ export function sheet(props) {
     if (!open || event.target.closest('input, textarea, button')) return;
     dragging = {startY: event.clientY, offset: 0, id: event.pointerId};
     panel.style.transition = 'none';
+    // Keep receiving the drag when the finger runs past the panel's edge.
+    if (panel.setPointerCapture) {
+      try {
+        panel.setPointerCapture(event.pointerId);
+      } catch {
+        // A pointer that already ended cannot be captured; the drag still works.
+      }
+    }
   });
   panel.addEventListener('pointermove', event => {
     if (!dragging || event.pointerId !== dragging.id) return;
