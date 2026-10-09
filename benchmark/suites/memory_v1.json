@@ -340,7 +340,7 @@
         },
         {
           "id": "answer_preserves_order",
-          "check": "The final response preserves the folder step, includes the exact invoice filename pattern 'YYYY-MM-DD-商家-金额', and includes the final expense.md step in order."
+          "check": "The final response preserves these steps in order: create a folder by date, name each invoice screenshot with date, merchant, and amount fields, then summarize the invoices in expense.md. Preserve the YYYY-MM-DD date format and literal expense.md filename. Merchant and amount are semantic placeholders and may be translated into the response language."
         }
       ],
       "hard_assertions": {
