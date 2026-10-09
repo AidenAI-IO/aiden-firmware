@@ -1828,8 +1828,18 @@ func TestWiFiProxyRequestValidationAndPasswordProtection(t *testing.T) {
 	}
 	public := (wiFiConfig{Networks: []wiFiNetwork{{SSID: "Office"}}}).publicValue(config)
 	network := public["networks"].([]map[string]any)[0]
-	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "" || network["no_proxy"] != noProxy {
+	// The detail page shows the saved proxy, but never its password.
+	if network["proxy_mode"] != "proxy" || network["proxy_url"] != "http://alice:xxxxx@proxy.example:7890" || network["no_proxy"] != noProxy {
 		t.Fatalf("public proxy=%#v", network)
+	}
+
+	// Saving the redacted form back (here with a new port) keeps the password.
+	edited := "http://alice:xxxxx@proxy.example:8080"
+	if err := applyWiFiProxyRequest(&config, wifiConnectionRequest{SSID: "Office", ProxyMode: "proxy", ProxyURL: &edited}); err != nil {
+		t.Fatal(err)
+	}
+	if got := config.Networks["Office"].ProxyURL; got != "http://alice:secret@proxy.example:8080" {
+		t.Fatalf("saved proxy after redacted edit=%q", got)
 	}
 
 	blank := ""
