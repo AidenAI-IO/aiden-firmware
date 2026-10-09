@@ -1224,6 +1224,7 @@ def test_run_one_task_correlates_timeout_before_recovery(tmp_path: Path):
 
     class TimeoutClient(EpisodeClient):
         def chat(self, *args, **kwargs):
+            events.append("chat")
             raise AgentTimeoutError("timed out", request_id="req-running")
 
         def get_history(self):
@@ -1242,7 +1243,9 @@ def test_run_one_task_correlates_timeout_before_recovery(tmp_path: Path):
     result = run_one_task(
         client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
     )
-    assert events == ["correlate", "recover"]
+    # Isolation recovers any prior run before starting this task. The timed-out
+    # request must be correlated before its own recovery can clear that state.
+    assert events == ["recover", "chat", "correlate", "recover"]
     assert client.episode_requests == ["ep-running"]
     assert result.metrics["episode_id"] == "ep-running"
     assert result.metrics["recovery_succeeded"] is True
