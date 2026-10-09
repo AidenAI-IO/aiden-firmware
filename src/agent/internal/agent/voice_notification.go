@@ -143,6 +143,8 @@ type TurnFailure struct {
 	Params map[string]string
 }
 
+type TurnFailureCode = string
+
 const (
 	TurnFailureNetworkUnavailable = "network_unavailable"
 	TurnFailureTokenInsufficient  = "token_insufficient"
