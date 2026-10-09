@@ -62,6 +62,15 @@ func TestClassifyTransportError(t *testing.T) {
 	if !strings.Contains(classified.Error(), "1007") {
 		t.Errorf("error %q lost the close code", classified.Error())
 	}
+	// Classifying must not flatten the chain: a caller still needs the close
+	// frame itself, not just its text.
+	var recovered *websocket.CloseError
+	if !errors.As(classified, &recovered) {
+		t.Fatal("classified error no longer exposes its *websocket.CloseError")
+	}
+	if recovered.Code != websocket.CloseInvalidFramePayloadData {
+		t.Errorf("recovered close code = %d, want %d", recovered.Code, websocket.CloseInvalidFramePayloadData)
+	}
 
 	wrapped := classifyTransportError(fmt.Errorf("read: %w", closeErr))
 	if !errors.Is(wrapped, ErrSessionIdleTimeout) {

@@ -66,7 +66,7 @@ func classifyTransportError(err error) error {
 	if !errors.As(err, &closeErr) || !isSessionIdleCloseMessage(closeErr.Text) {
 		return err
 	}
-	return fmt.Errorf("%w: %s", ErrSessionIdleTimeout, err.Error())
+	return fmt.Errorf("%w: %w", ErrSessionIdleTimeout, err)
 }
 
 // DeviceMediaConfig is the PCM contract between Aiden's audio device and the
