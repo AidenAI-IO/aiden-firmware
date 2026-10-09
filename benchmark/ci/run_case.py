@@ -416,6 +416,21 @@ def run_case(
             str(case.max_concurrency),
             "--verbose",
         ]
+        repeats = runtime_environment.get("BENCHMARK_REPEATS", "").strip()
+        if repeats and repeats != "1":
+            try:
+                repeat_count = int(repeats)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "BENCHMARK_REPEATS must be a positive integer, "
+                    f"got {repeats!r}"
+                ) from exc
+            if repeat_count <= 0:
+                raise RuntimeError(
+                    "BENCHMARK_REPEATS must be a positive integer, "
+                    f"got {repeats!r}"
+                )
+            command.extend(["--repeats", str(repeat_count)])
         if environment_url:
             command.extend(["--environment-url", environment_url])
         if case.target_platform != "auto":

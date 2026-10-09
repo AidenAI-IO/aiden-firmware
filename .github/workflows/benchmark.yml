@@ -19,6 +19,11 @@ on:
         description: Optional suite path, for example suites/memory_v1.json
         required: false
         type: string
+      repeats:
+        description: Number of attempts for every task in the selected suite
+        required: false
+        default: '1'
+        type: string
 
 permissions:
   contents: read
@@ -101,6 +106,7 @@ jobs:
     env:
       MATRIX: ${{ needs.plan.outputs.matrix }}
       BENCHMARK_CI_MAX_PARALLEL: '2'
+      BENCHMARK_REPEATS: ${{ inputs.repeats || '1' }}
       BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
       DOCKER_BUILDKIT: 1
       BENCHMARK_AGENT_MODEL: ${{ vars.BENCHMARK_AGENT_MODEL }}
