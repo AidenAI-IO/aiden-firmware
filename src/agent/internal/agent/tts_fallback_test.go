@@ -62,7 +62,7 @@ func TestTTSUnavailableFallbackPathPrefersFailureSpecificClip(t *testing.T) {
 	writeTestTTSFallback(t, dir, ttsUnavailableFallbackChinese)
 
 	// Write failure-specific clip
-	writeTestTTSFallback(t, dir, "session-idle.zh-CN.wav")
+	writeTestTTSFallback(t, dir, "session_idle.zh-CN.wav")
 
 	cfg := Config{Locale: "zh-CN"}
 
@@ -73,9 +73,9 @@ func TestTTSUnavailableFallbackPathPrefersFailureSpecificClip(t *testing.T) {
 	}
 
 	// With failure code, should return specific
-	specificPath := ttsUnavailableFallbackPath(cfg, "session-idle")
-	if want := filepath.Join(dir, "session-idle.zh-CN.wav"); specificPath != want {
-		t.Fatalf("session-idle fallback path = %q, want %q", specificPath, want)
+	specificPath := ttsUnavailableFallbackPath(cfg, TurnFailureSessionIdle)
+	if want := filepath.Join(dir, "session_idle.zh-CN.wav"); specificPath != want {
+		t.Fatalf("session_idle fallback path = %q, want %q", specificPath, want)
 	}
 
 	// With unknown failure code, should fall back to generic

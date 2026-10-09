@@ -83,7 +83,7 @@ print(f'{w.getnframes()/w.getframerate():.2f}s  '
 Follow the naming convention:
 
 - **Failure-specific clips**: `<failure-code>.<locale>.wav`
-  - Example: `session-idle.zh-CN.wav`, `session-idle.en-US.wav`
+  - Example: `session_idle.zh-CN.wav`, `session_idle.en-US.wav`
   - The failure code matches the `TurnFailure.Code` field from `voice_notification.go`
   
 - **Generic fallback**: `tts-unavailable.<locale>.wav`
@@ -118,12 +118,14 @@ When adding a new failure-specific clip:
 
 ## Fallback Behavior
 
-The audio selection logic in `playTTSUnavailableFallback()`:
+The audio selection logic in `ttsUnavailableFallbackPath()`:
 
 1. Determine the user's locale from device configuration (`zh-CN` or `en-US`).
 2. If a failure code is provided, look for `<failure-code>.<locale>.wav`.
 3. If not found (or no failure code), fall back to `tts-unavailable.<locale>.wav`.
-4. If the locale-specific file is missing, try the other locale as a last resort.
+
+There is no cross-locale fallback: the generic clip is always chosen from the
+resolved locale, so both locales' generic clips must ship with the package.
 
 This means:
 - Adding a new failure-specific clip is **opt-in** — existing behavior is unchanged until the file is placed.
