@@ -611,6 +611,10 @@ def _per_task_setup_seed_notification(client: AgentClient, setup: dict[str, Any]
 
 
 def _per_task_setup_assert_memory(client: AgentClient, setup: dict[str, Any]) -> None:
+    assert_memory_results(read_memory_results(client, setup), setup)
+
+
+def read_memory_results(client: AgentClient, setup: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         validate_assert_memory_setup(setup)
     except SuiteValidationError as e:
@@ -635,7 +639,10 @@ def _per_task_setup_assert_memory(client: AgentClient, setup: dict[str, Any]) ->
     results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(results, list) or not all(isinstance(item, dict) for item in results):
         raise ResetError("assert_memory recall returned invalid results")
+    return results
 
+
+def assert_memory_results(results: list[dict[str, Any]], setup: dict[str, Any]) -> None:
     expected_count = setup.get("expected_count")
     if expected_count is not None:
         try:
