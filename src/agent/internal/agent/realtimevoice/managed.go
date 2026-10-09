@@ -22,6 +22,13 @@ var ErrUnsupportedCapability = errors.New("realtime voice capability is unsuppor
 // Wrap it with errors.Is to distinguish rotation from a real error.
 var ErrSessionRotated = errors.New("realtime voice session was rotated by the provider")
 
+// ErrSessionIdleTimeout reports that the provider closed the session because no
+// response was generated for its idle window. This is normal session
+// management, not a fault, so callers should announce it as an idle timeout
+// rather than a service outage. Wrap it with errors.Is to distinguish an idle
+// close from a real error.
+var ErrSessionIdleTimeout = errors.New("realtime voice session was closed after an idle timeout")
+
 // DeviceMediaConfig is the PCM contract between Aiden's audio device and the
 // managed realtime session. Provider-native formats stay behind this seam.
 type DeviceMediaConfig struct {

@@ -2,7 +2,10 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+
+	"aiden-agent/internal/agent/realtimevoice"
 )
 
 func TestTurnFailureFromError_SessionIdle(t *testing.T) {
@@ -12,14 +15,19 @@ func TestTurnFailureFromError_SessionIdle(t *testing.T) {
 		wantCode string
 	}{
 		{
-			name:     "gemini 180 seconds timeout",
-			err:      errors.New("Your session was closed because no response was generated for 180 seconds"),
+			name:     "wrapped idle timeout sentinel",
+			err:      fmt.Errorf("%w: Your session was closed because no response was generated for 180 seconds", realtimevoice.ErrSessionIdleTimeout),
 			wantCode: TurnFailureSessionIdle,
 		},
 		{
-			name:     "session closed partial match",
-			err:      errors.New("session was closed because no response was sent"),
+			name:     "idle timeout wrapped again by the caller",
+			err:      fmt.Errorf("realtime session ended: %w", fmt.Errorf("%w: idle", realtimevoice.ErrSessionIdleTimeout)),
 			wantCode: TurnFailureSessionIdle,
+		},
+		{
+			name:     "same wording without the sentinel is not reclassified",
+			err:      errors.New("Your session was closed because no response was generated for 180 seconds"),
+			wantCode: TurnFailureLLMUnavailable,
 		},
 		{
 			name:     "generic error should not match",

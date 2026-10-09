@@ -579,6 +579,25 @@ func waitGeminiReady(ctx context.Context, s *geminiSession) error {
 	}
 }
 
+// geminiServerError classifies a server-sent error payload. Gemini Live closes
+// an idle session with a plain error frame rather than a dedicated signal, so
+// the wording is the only seam available; an unrecognized message stays a plain
+// error and keeps its existing handling.
+func geminiServerError(message string) error {
+	if isGeminiIdleTimeoutMessage(message) {
+		return fmt.Errorf("%w: %s", ErrSessionIdleTimeout, message)
+	}
+	return errors.New(message)
+}
+
+func isGeminiIdleTimeoutMessage(message string) bool {
+	normalized := strings.ToLower(message)
+	if !strings.Contains(normalized, "session") || !strings.Contains(normalized, "closed") {
+		return false
+	}
+	return strings.Contains(normalized, "no response was generated")
+}
+
 func (s *geminiSession) translate(body []byte) []Event {
 	var envelope struct {
 		ResponseID       string               `json:"responseId"`
@@ -615,7 +634,7 @@ func (s *geminiSession) translate(body []byte) []Event {
 		return []Event{{Kind: EventReady}}
 	}
 	if envelope.Error != nil {
-		return []Event{{Kind: EventError, Error: errors.New(envelope.Error.Message)}}
+		return []Event{{Kind: EventError, Error: geminiServerError(envelope.Error.Message)}}
 	}
 	var events []Event
 	usageEmitted := false

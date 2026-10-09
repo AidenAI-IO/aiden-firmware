@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aiden-agent/internal/agent/realtimevoice"
 )
 
 type NotificationSeverity uint8
@@ -23,6 +25,11 @@ const (
 func TurnFailureFromError(err error) *TurnFailure {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return nil
+	}
+	// An idle close is the provider's own session management, so it is
+	// classified before the generic timeout and network checks below.
+	if errors.Is(err, realtimevoice.ErrSessionIdleTimeout) {
+		return &TurnFailure{Code: TurnFailureSessionIdle}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &TurnFailure{Code: TurnFailureNetworkUnavailable}
@@ -46,15 +53,6 @@ func TurnFailureFromError(err error) *TurnFailure {
 	}
 
 	message := strings.ToLower(err.Error())
-	// Check for session idle timeout (180 seconds)
-	for _, marker := range []string{
-		"no response was generated for 180 seconds",
-		"session was closed because no response",
-	} {
-		if strings.Contains(message, marker) {
-			return &TurnFailure{Code: TurnFailureSessionIdle}
-		}
-	}
 	for _, marker := range []string{
 		"insufficient balance",
 		"insufficient quota",
