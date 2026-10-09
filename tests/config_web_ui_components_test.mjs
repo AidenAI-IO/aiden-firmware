@@ -270,8 +270,8 @@ const countByClass = (node, className) => {
 }
 
 {
-  // Touch drags must reach the sheet: the panel captures the pointer, follows
-  // the finger, and a long enough pull dismisses it.
+  // Touch drags must reach the sheet: once the finger clearly moves, the panel
+  // captures the pointer, follows the finger, and a long pull dismisses it.
   const view = sheet({title: 'Wi-Fi 密码', body: [new Element('div')]});
   view.open();
   const panel = view.el.children.find(child => child.classList.contains('ds-sheet__panel'));
@@ -279,11 +279,31 @@ const countByClass = (node, className) => {
   panel.setPointerCapture = id => captured.push(id);
   const grab = {closest: () => null};
   panel.fire('pointerdown', {pointerId: 7, clientY: 100, target: grab});
-  assert.deepEqual(captured, [7], 'the sheet keeps the drag when the finger leaves the panel');
+  assert.deepEqual(captured, [], 'a press alone captures nothing, so a tap still clicks');
   panel.fire('pointermove', {pointerId: 7, clientY: 300, target: grab});
+  assert.deepEqual(captured, [7], 'the sheet keeps the drag when the finger leaves the panel');
   assert.equal(panel.style.transform, 'translateY(200px)', 'the panel follows the finger');
   panel.fire('pointerup', {pointerId: 7, clientY: 300, target: grab});
   assert.equal(view.isOpen(), false, 'a long pull dismisses the sheet');
+}
+
+{
+  // A choice row is a div[role=button]: pressing it must not start a drag or
+  // capture the pointer, or its click would land on the panel instead.
+  const view = sheet({title: 'Choose', body: [new Element('div')]});
+  view.open();
+  const panel = view.el.children.find(child => child.classList.contains('ds-sheet__panel'));
+  const captured = [];
+  panel.setPointerCapture = id => captured.push(id);
+  let asked = '';
+  const choiceRow = {closest: selector => ((asked = selector), selector.includes('[role="button"]') ? {} : null)};
+  panel.fire('pointerdown', {pointerId: 8, clientY: 100, target: choiceRow});
+  panel.fire('pointermove', {pointerId: 8, clientY: 300, target: choiceRow});
+  assert.match(asked, /\[role="button"\]/, 'tappable rows are excluded from dragging');
+  assert.deepEqual(captured, [], 'a row press never captures the pointer');
+  assert.equal(panel.style.transform || '', '', 'a row press does not move the panel');
+  assert.equal(view.isOpen(), true);
+  view.close();
 }
 
 {
