@@ -33,11 +33,22 @@ for sensor in imx415 os04a10 sc4336 sc3336 sc530ai gc2053 sc200ai \
     fi
 done
 
+media_log() {
+    printf '[aiden-media-modules] %s\n' "$*" >&2
+}
+
 hdmi_bridge_linked() {
-    command -v media-ctl >/dev/null 2>&1 || return 1
+    command -v media-ctl >/dev/null 2>&1 || return 3
+    query_failed=0
     for media in /dev/media*; do
         [ -e "${media}" ] || continue
-        topology=$(media-ctl -d "${media}" -p 2>/dev/null) || continue
+        if topology=$(media-ctl -d "${media}" -p 2>&1); then
+            :
+        else
+            media_log "WARN: topology query failed for ${media}: ${topology}"
+            query_failed=2
+            continue
+        fi
         # The dual-bridge DT describes two alternatives, but only one is fitted.
         # D-PHY creates this link in its bound callback, before CIF completion
         # registers /dev/v4l-subdev*. Neither devnodes nor HDMI signal are a
@@ -51,6 +62,7 @@ hdmi_bridge_linked() {
             return 0
         fi
     done
+    [ "${query_failed}" -eq 0 ] || return "${query_failed}"
     return 1
 }
 
@@ -62,7 +74,14 @@ if hdmi_bridge_linked; then
         [ ! -w "${parameter}" ] || echo 1 >"${parameter}"
     done
 else
-    echo "HDMI bridge is not linked yet; preserving media async notifiers" >&2
+    bridge_status=$?
+    case "${bridge_status}" in
+        1) media_log "WARN: neither RK628 nor TC358743 has an enabled link to CSI D-PHY." ;;
+        2) media_log "WARN: media topology query failed; HDMI bridge readiness is unknown." ;;
+        3) media_log "WARN: media-ctl is unavailable; cannot verify HDMI bridge readiness." ;;
+    esac
+    media_log "CIF/ISP async notifiers remain pending; skipping clr_unready_dev and continuing other media/audio modules."
+    media_log "After the bridge binds, stop aiden-frame.service and rerun /usr/lib/aiden/aiden-media-modules before restarting capture."
 fi
 
 insert_if_present rga3.ko

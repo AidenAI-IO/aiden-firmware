@@ -142,7 +142,7 @@ suites:
 
   - name: debian-media-modules
     class: deterministic
-    paths: [overlay-debian/usr/lib/aiden/aiden-media-modules, scripts/test_debian_media_modules.sh]
+    paths: [overlay-debian/usr/lib/aiden/aiden-media-modules, overlay-debian/etc/systemd/system/aiden-media-modules.service, scripts/test_debian_media_modules.sh]
     command: bash scripts/test_debian_media_modules.sh
     dependencies: [bash, sh, awk, sed]
     required: true

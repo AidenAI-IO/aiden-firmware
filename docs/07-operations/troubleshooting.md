@@ -94,6 +94,14 @@ HDMI signal. If neither bridge is linked, the helper preserves the waiting
 endpoints and continues loading the independent media/audio modules. Clearing
 them without a bound bridge can Oops in the vendor CIF input-format check.
 
+The helper reports pending initialization to both the system journal and the
+boot console with an `[aiden-media-modules]` prefix. It distinguishes a missing
+enabled bridge link from a failed topology query (or missing `media-ctl`),
+and explicitly states that CIF/ISP notifiers remain pending, cleanup was
+skipped, and independent modules will continue loading. Query failures include
+the media device path and diagnostic output; they do not imply a bridge is
+absent.
+
 Inspect the graph with `media-ctl -d /dev/media0 -p` (select the media device
 whose driver is `rkcif`). If the bridge binds after the initial module helper
 has finished, stop capture and rerun the helper so it can safely complete the

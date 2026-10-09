@@ -5,6 +5,10 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
 
+unit="$repo/overlay-debian/etc/systemd/system/aiden-media-modules.service"
+grep -Fxq 'StandardOutput=journal+console' "$unit"
+grep -Fxq 'StandardError=journal+console' "$unit"
+
 write_topology() {
     local bridge=$1 flags=$2
     # A bridge's bound callback creates entities and links before CIF exposes
@@ -65,7 +69,10 @@ case "$2" in
     "$FIXTURE/dev/media1") cat "$FIXTURE/topology" ;;
     *) exit 1 ;;
 esac
-[ ! -e "$FIXTURE/media-error" ]
+if [ -e "$FIXTURE/media-error" ]; then
+    echo 'topology unavailable' >&2
+    exit 1
+fi
 EOF
     printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/lsmod"
     printf '#!/bin/sh\nexit 0\n' >"$fixture/bin/udevadm"
@@ -87,8 +94,16 @@ assert_parameters() {
 
 run_case() {
     local expected=$1
-    PATH="$fixture/bin:$PATH" sh "$fixture/loader"
+    PATH="$fixture/bin:$PATH" sh "$fixture/loader" 2>"$fixture/stderr"
     assert_parameters "$expected"
+    if [ "$expected" = not-ready ]; then
+        grep -Fq '[aiden-media-modules] WARN:' "$fixture/stderr"
+        grep -Fq 'CIF/ISP async notifiers remain pending; skipping clr_unready_dev' "$fixture/stderr"
+        grep -Fq 'continuing other media/audio modules' "$fixture/stderr"
+        grep -Fq 'After the bridge binds, stop aiden-frame.service and rerun' "$fixture/stderr"
+    else
+        test ! -s "$fixture/stderr"
+    fi
     for module in rga3 mpp_vcodec rknpu snd_soc_rv1106 motor rockit; do
         test -d "$fixture/sys/module/$module"
     done
@@ -97,7 +112,7 @@ run_case() {
     test ! -e "$fixture/dev/v4l-subdev0"
     local before
     before=$(wc -l <"$fixture/loaded")
-    PATH="$fixture/bin:$PATH" sh "$fixture/loader"
+    PATH="$fixture/bin:$PATH" sh "$fixture/loader" 2>"$fixture/stderr"
     test "$(wc -l <"$fixture/loaded")" -eq "$before"
 }
 
@@ -110,6 +125,7 @@ done
 prepare_case absent
 write_topology '' ''
 run_case not-ready
+grep -Fq 'neither RK628 nor TC358743 has an enabled link' "$fixture/stderr"
 # A later bound callback can be finalized by rerunning the loader.
 before=$(wc -l <"$fixture/loaded")
 write_topology 'm00_b_rk628-csi 4-0050' ENABLED
@@ -120,10 +136,18 @@ test "$(wc -l <"$fixture/loaded")" -eq "$before"
 prepare_case unlinked
 write_topology 'm00_b_rk628-csi 4-0050' ''
 run_case not-ready
+grep -Fq 'neither RK628 nor TC358743 has an enabled link' "$fixture/stderr"
 
 prepare_case query-failed
 write_topology 'm00_b_rk628-csi 4-0050' ENABLED
 touch "$fixture/media-error"
 run_case not-ready
+grep -Fq 'topology query failed for' "$fixture/stderr"
+grep -Fq 'topology unavailable' "$fixture/stderr"
+grep -Fq 'HDMI bridge readiness is unknown' "$fixture/stderr"
+if grep -Fq 'neither RK628 nor TC358743 has an enabled link' "$fixture/stderr"; then
+    echo 'FAIL: query errors must not be reported as a missing bridge' >&2
+    exit 1
+fi
 
 echo 'PASS: either linked bridge completes CIF/ISP; absent or unlinked bridges retain async waiting'
