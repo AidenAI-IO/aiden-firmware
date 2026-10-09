@@ -9,20 +9,29 @@ import (
 )
 
 // A provider idle close must stay announceable and reach the voice layer as an
-// idle timeout rather than a generic service outage.
+// idle timeout rather than a generic service outage. Both shapes below were
+// observed on hardware: a bare error frame and a 1007 close frame.
 func TestRealtimeIdleCloseAnnouncesIdleTimeout(t *testing.T) {
-	providerErr := fmt.Errorf("%w: Your session was closed because no response was generated for 180 seconds", realtimevoice.ErrSessionIdleTimeout)
-	sessionErr := markRealtimeProviderFailure(providerErr)
-
-	if !shouldAnnounceRealtimeSessionFailure(sessionErr) {
-		t.Fatal("idle close must be announced; the failed session cannot voice its own error")
+	const reason = "Your session was closed because no response was generated for 180 seconds."
+	cases := map[string]error{
+		"error frame": fmt.Errorf("%w: %s", realtimevoice.ErrSessionIdleTimeout, reason),
+		"1007 close frame": fmt.Errorf("%w: websocket: close 1007 (invalid payload data): %s",
+			realtimevoice.ErrSessionIdleTimeout, reason),
 	}
-	failure := agent.TurnFailureFromError(sessionErr)
-	if failure == nil {
-		t.Fatal("TurnFailureFromError returned nil for an idle close")
-	}
-	if failure.Code != agent.TurnFailureSessionIdle {
-		t.Errorf("Code = %q, want %q", failure.Code, agent.TurnFailureSessionIdle)
+	for name, providerErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			sessionErr := markRealtimeProviderFailure(providerErr)
+			if !shouldAnnounceRealtimeSessionFailure(sessionErr) {
+				t.Fatal("idle close must be announced; the failed session cannot voice its own error")
+			}
+			failure := agent.TurnFailureFromError(sessionErr)
+			if failure == nil {
+				t.Fatal("TurnFailureFromError returned nil for an idle close")
+			}
+			if failure.Code != agent.TurnFailureSessionIdle {
+				t.Errorf("Code = %q, want %q", failure.Code, agent.TurnFailureSessionIdle)
+			}
+		})
 	}
 }
 
