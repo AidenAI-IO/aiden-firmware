@@ -4,8 +4,6 @@ sidebar_position: 4
 
 # Benchmark Metrics Reference
 
-[中文版](./metrics-reference.zh-CN.md)
-
 This reference defines benchmark result fields and exported scores, including
 measurement scope, denominators, units, and missing-value semantics.
 
