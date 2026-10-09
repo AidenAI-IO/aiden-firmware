@@ -2,19 +2,17 @@
 sidebar_position: 4
 ---
 
-# Benchmark Metrics and Optimization Playbook
+# Benchmark Metrics Reference
 
-[中文版](./metrics-and-optimization.zh-CN.md)
+[中文版](./metrics-reference.zh-CN.md)
 
-This guide explains the metrics currently produced by Aiden's benchmark runner,
-how to turn them into engineering decisions, and how to verify an improvement.
-The worked scenario is updating a remembered user preference from dark mode to
-light mode. It uses the existing memory benchmark and needs no phone simulator.
+This reference defines benchmark result fields and exported scores, including
+measurement scope, denominators, units, and missing-value semantics.
 
 ## 1. What the pipeline measures
 
 ```text
-GitHub Actions / CLI
+Benchmark runner
   → isolated task setup → Agent execution → assertions and optional LLM judge
   → results.jsonl → metrics.json, summary.md, report.html
   → Langfuse Dataset Experiment and benchmark scores
@@ -40,9 +38,32 @@ Langfuse stores one Dataset per stable suite name, a Dataset Item per task/attem
 and an Experiment Run per benchmark run. Agent episode IDs, when available, link
 the experiment to the underlying Agent telemetry.
 
-**The native Langfuse Latency and Cost columns describe artifact replay during
-publication. They do not measure the original Agent execution.** Use the exported
-scores below. Publication success also does not mean that the benchmark passed.
+### Experiment output and execution evidence
+
+| Field | Meaning and boundary |
+| --- | --- |
+| `final_response` | Final response from the attempt's saved `trace.json`. Null means evidence is unavailable; an empty string means the recorded response is empty. |
+| `tool_calls` in Experiment Output | Ordered tool names and arguments from the saved trace, not tool results. This list differs from the numeric `benchmark.tool_calls` score. |
+| `trace_artifact.status` | `available`: valid saved trace; `missing`: absent; `invalid`: malformed or unexpected structure; `unreadable`: file could not be read. |
+| `trace_artifact.path` | Evidence path relative to the run directory; may be null when unavailable. |
+| `aiden_episode_id` | Unambiguous Agent episode ID, or null if unavailable. |
+| `aiden_trace_id` | Execution trace's 32-character hexadecimal OTLP ID. A known ID does not prove successful ingestion. |
+| `aiden_trace_url` | Optional link to the execution trace; null when the episode ID or project lookup is unavailable. |
+| `execution_trace_status` | `available`: a benchmark execution root was found and linked; `pending_or_missing`: the episode is known but its execution root was not found; `no_episode`: no unambiguous episode ID. Older items may omit this field. |
+
+When `execution_trace_status=available`, the Experiment drawer uses the execution
+trace. `agent-run` contains the goal and final answer, `agent-response` contains
+model inputs and outputs, and tool observations contain arguments and results.
+The `benchmark/<task>#attempt-<n>` node contains the evaluation output. Finding a
+root does not guarantee all child observations were ingested. Unavailable
+execution evidence uses a separate result replay; existing items retain their
+original binding on publication retries. Replay parent and child observations
+do not represent separate Agent attempts.
+
+The Agent's `success` score describes its own outcome; `benchmark.success`
+records the benchmark outcome. The evaluation node's duration measures
+publication, so native Experiment Latency/Cost must not be substituted for the
+benchmark execution metrics below. Publication success is not task success.
 
 ## 2. Metric reference
 
@@ -201,7 +222,7 @@ and retries instead use the `reliability.` prefix.
 | `screenshot_capture_ms` | Runner-side timed screenshot captures; not all screenshots taken internally by the Agent. Inspect `screenshot_capture_source`. |
 | `tool_calls`, `device_actions` | All traced tool calls versus recognized device-changing calls. Read-only bridge queries are excluded from device actions. |
 | `llm_calls` | Count derived from messages carrying usage; unavailable when no usage is present. Validate telemetry completeness before treating it as every provider call. |
-| `input_tokens`, `output_tokens`, `total_tokens` | Reported Agent usage; episode totals can override history-derived totals. Does not measure the entire CI bill or judge/setup consumption. |
+| `input_tokens`, `output_tokens`, `total_tokens` | Reported Agent usage; episode totals can override history-derived totals. Does not measure the entire run cost or judge/setup consumption. |
 | `cached_input_tokens`, `reasoning_tokens` | Optional usage details; unknown when not reported. Do not add them to totals as independent extra usage. |
 | `tool_errors` | Recorded tool-result errors, including errors the Agent later recovered from. |
 | `replan_count` | Explicit episode `needs_replan` evidence; not inferred from tool names. |
@@ -251,247 +272,5 @@ means the first **eligible** attempt after sorting, unlike `pass_at_1`, which
 requires actual attempt 1. Do not substitute one for the other.
 
 `oracle_best_score_at_k.count` can be smaller than its `eligible_tasks` when
-quality scores are absent. At the current scheduled runnable configuration all
-suite runs use k=1, including notification memory with one five-repeat task and
-other one-repeat tasks. Separate scheduled runs are not automatically combined
-into k attempts. Verify the actual manifest for each run.
-
-## 3. How the team uses these metrics
-
-1. **Validate the measurement.** Match suite hash, workload hash, k, metric schema,
-   Agent model, judge model/provider/prompt version, platform, and active skills.
-   Record the code SHA, actual image identity, skill contents/configuration,
-   environment version, and concurrency. Change only the declared experiment
-   axis. A stable image tag or skill name does not prove identical contents.
-2. **Choose a failure cluster.** Group by suite, task, rubric, and failure class.
-   Prioritize frequent, user-important failures with a plausible common cause.
-   Audit invalid runs separately rather than hiding them in an improved denominator.
-3. **Inspect evidence.** Read several failures and nearby successes. Record the
-   first incorrect decision, its evidence, and what remains uncertain.
-4. **State one hypothesis.** Specify the code/prompt/skill change and the expected
-   effect on a primary quality metric, with latency and resource guardrails.
-5. **Run baseline and candidate.** Use the same tasks, clean setup, repeat count,
-   model, judge, and resource allocation. Alternate run order when practical to
-   reduce provider load or environment drift effects.
-6. **Decide: accept, reject, or inconclusive.** Examine task-level regressions and
-   uncertainty, not just averages. Evaluate an untouched task set before broad
-   rollout. Preserve run IDs and the exact change so another teammate can repeat it.
-
-For reliability work, prioritize `pass_at_1` and `pass_pow_k`. For efficiency
-work, maintain quality and compare latency/tokens on matched tasks that both
-versions successfully complete, while still reporting all failures separately.
-An early failure can otherwise look like a speed improvement.
-
-The current `runner compare` prints status changes and selected summaries; it
-returns success and does not enforce a statistical regression gate. The existing
-SkillOpt loop can propose skill edits, but its weighted hard-success acceptance
-score is not the same as benchmark `pass_at_1`. Add coverage and efficiency review
-and retain an untouched test set when using it for optimization.
-
-## 4. Worked scenario: update a remembered preference
-
-### Existing task and real failure evidence
-
-Use `update_changed_preference` in
-[`memory_v1.json`](../../benchmark/suites/memory_v1.json):
-
-- Setup asks the Agent to remember a dark-mode preference and clears visible
-  conversation history afterward.
-- The task asks it to update that preference to light mode.
-- Hard assertions require 2–12 tool calls, completion within 120 seconds, and a response.
-- The judge checks recall of the old preference, saving a light-mode preference,
-  and a response confirming the update.
-
-A local historical artifact (`2026-05-29_044024`, task
-`update_changed_preference`) contains one `save_memory` call for light mode, no
-`recall_memory` call, and a final response claiming the update was complete.
-It records `status=failed`, `tool_calls=1`, and a failed minimum-tool-call check.
-The judge did not run because the hard gate already failed.
-
-This is evidence of a historical trace/contract mismatch, not evidence that the
-current Agent still has the bug. That old run lacks the current `metrics.json`
-and cannot be used as a like-for-like modern baseline. Its recorded wall time
-must not be compared directly to today's task-only timer. Local run artifacts
-are not required to use this guide and should not be committed.
-
-### What optimization would mean
-
-Hypothesis: when a user explicitly replaces a remembered preference, the Agent
-must identify the existing relevant memory and use the current supported
-replacement/update semantics, rather than merely create another statement and
-claim completion. Verify which semantics the current memory tools provide before
-choosing a prompt change or a storage/retrieval fix.
-
-An example candidate policy to investigate is:
-
-> When the user replaces an existing preference, retrieve the relevant stored
-> preference, apply the supported replacement operation, and confirm the new
-> preference only after the operation succeeds.
-
-Only introduce or change this policy if baseline traces show it is missing or
-ineffective. Do not add arbitrary calls just to satisfy `min_tool_calls`.
-
-The existing task checks the update interaction. **It does not prove that old
-and new records cannot conflict, or that the new preference survives a later
-conversation.** To validate the product outcome, also check persisted active
-memory state and ask a fresh conversation which display mode the user prefers.
-The answer must select light mode, and the old dark preference must not remain
-an active conflicting preference. Inspect storage/retrieval evidence, not just
-the assistant's acknowledgement. An inactive historical record can be legitimate.
-
-If these checks become a new benchmark definition, freeze it before running
-both versions. Compare both versions on that same definition; changing the judge
-or suite only for the candidate would invalidate the comparison.
-
-### Validate metric behavior independently of model quality
-
-Use a controlled example with two tasks and three attempts each. These are
-**teaching fixtures, not measured Agent improvements**:
-
-| Task | Baseline attempts 1–3 | Candidate attempts 1–3 |
-| --- | --- | --- |
-| Update preference | fail, pass, fail | pass, pass, pass |
-| Recall a saved fact | pass, pass, pass | pass, pass, pass |
-
-With all attempts eligible and `k=3`, the expected scores are:
-
-| Score | Baseline | Candidate | Interpretation |
-| --- | --- | --- | --- |
-| `pass_at_1` | 1/2 = 50% | 2/2 = 100% | First-attempt outcome improved. |
-| `pass_at_k` | 2/2 = 100% | 2/2 = 100% | Both could already succeed at least once. |
-| `pass_pow_k` | 1/2 = 50% | 2/2 = 100% | Repeated execution became consistent. |
-| `attempt_success_rate` | 4/6 | 6/6 | More executions succeeded. |
-| `coverage.pass_at_k` | 100% | 100% | Improvement did not come from exclusion. |
-
-As a negative control, change the first update attempt to an ineligible
-evaluation failure. Baseline `pass_at_1` becomes 100% with only 50% task coverage,
-and `pass_at_k`/`pass_pow_k` also have 50% coverage. That apparent success gain
-comes entirely from losing evidence. This is why coverage is part of acceptance.
-
-Existing automated tests exercise these mechanisms:
-
-| Verification layer | Existing tests |
-| --- | --- |
-| Fixed-k outcomes, eligibility, percentiles, first-success cost, missing usage | `benchmark/tests/test_metrics.py` |
-| Hard-gate failures, timeout eligibility, missing evidence, judge behavior | `benchmark/tests/test_runtask.py` |
-| Memory setup and deterministic memory assertions | `benchmark/tests/test_reset.py` |
-| Attempt/run score mapping, idempotent publication, incomplete uploads | `benchmark/tests/test_langfuse_reporter.py` |
-
-Run from the repository root using the pinned Docker environment:
-
-```bash
-make check
-bash scripts/run_tests_in_docker.sh --suite benchmark-python
-```
-
-The quick profile only samples benchmark tests; the focused `benchmark-python`
-suite is needed for the metric and publisher tests above. Publisher unit tests
-use a fake client: they do not prove that a live Langfuse deployment ingested
-the scores correctly.
-
-### Run a current baseline and candidate
-
-Prerequisites: working Docker, initialized repository submodules, configured
-benchmark Agent/Judge credentials, and an isolated benchmark Agent configuration.
-Use the [quickstart](./quickstart.md) for setup. Do not reuse a personal Agent's
-memory. Keep configuration files and credentials out of commits.
-
-From `benchmark/`, first record a baseline on two tasks with three attempts each:
-
-```bash
-uv run python -m runner run \
-  --suite suites/memory_v1.json \
-  --task-ids update_changed_preference,recall_saved_fact_after_setup \
-  --repeats 3 \
-  --auto-agent-setup \
-  --agent-config /absolute/path/to/benchmark-agent.toml \
-  --agent-model YOUR_FIXED_MODEL \
-  --max-concurrency 1 \
-  --run-id memory-update-baseline-01
-```
-
-Keep the judge enabled: `--no-judge` skips the semantic rubric and cannot prove
-that this task performs the intended preference update. Inspect setup evidence
-too: the old preference is created through an Agent prompt, so setup success
-alone does not guarantee it was actually stored.
-
-After inspecting the baseline, make one targeted candidate change. Repeat the
-same command with `--run-id memory-update-candidate-01`, using the candidate's
-actual code/configuration/image and keeping other settings fixed. Verify that
-the daemon loaded the intended change; record the diff and image identity.
-Use fresh run IDs for additional rounds and rebuild changed code into the image.
-
-```bash
-uv run python -m runner compare --runs \
-  runs/memory-update-baseline-01 runs/memory-update-candidate-01
-
-uv run python -m runner publish-langfuse \
-  --run-dir runs/memory-update-baseline-01
-uv run python -m runner publish-langfuse \
-  --run-dir runs/memory-update-candidate-01
-```
-
-Read `metrics.json` and the per-attempt evidence as well as the comparison output.
-In Langfuse, open the `memory_v1` Dataset and the two Experiment Runs, match item
-IDs, and verify `benchmark.success`, eligibility, and tool counts against
-`results.jsonl`. Compare run scores against `metrics.json`. Check missing metrics
-remain missing. A publication retry should preserve item counts and scores.
-
-The scheduled workflow runs the runnable catalog; its dispatch inputs currently
-select profile and suite, not task IDs or repeat overrides. Use the CLI above for
-this focused experiment rather than assuming a manual dispatch changes k.
-
-### Acceptance criteria
-
-Agree on the criteria before inspecting the candidate results:
-
-1. All six planned attempts have usable evidence and matching comparison metadata.
-2. The update task satisfies the existing assertions and rubric on all three
-   candidate attempts, with an inspected trace showing the intended behavior.
-3. Fresh-conversation recall and active-memory checks confirm the new preference
-   without an active conflict. Otherwise only the interaction contract is verified.
-4. The saved-fact control does not regress. Also run relevant update, forget,
-   rule, and ephemeral-memory tasks before claiming broader memory improvement.
-5. Review task wall time and total tokens on comparable successful attempts.
-   For this pilot, a team could preselect a 20% median budget increase as a review
-   threshold; this is a proposed guardrail, not an existing CI rule. Extra work
-   may be justified to make an incorrect update correct.
-6. Repeat independent baseline/candidate rounds and evaluate untouched preference
-   variations before a release decision. Two tasks cannot establish general
-   reliability, even when every attempt passes.
-
-If the current baseline already passes, there is no demonstrated improvement
-opportunity in this case. Keep it as a regression/control case and select a
-different measured failure. Do not intentionally weaken the baseline to claim
-a product gain.
-
-## 5. Experiment record and next engineering steps
-
-Use this record in the optimization PR or review document:
-
-| Field | Required evidence |
-| --- | --- |
-| Problem and hypothesis | User-visible failure, representative trace, proposed cause |
-| Experiment axis | Exact code, skill, model, or configuration change |
-| Comparison identity | Run IDs, code/image identity, suite/workload hash, k, judge, platform, concurrency |
-| Measurement quality | Planned vs observed attempts, eligibility, numeric field counts |
-| Quality result | Task-level flips, first-attempt success, repeated success, rubric changes |
-| Efficiency result | Matched-success latency/tokens and overall failure/resource totals |
-| Product outcome | Independent state/recall evidence, not only a benchmark score |
-| Generalization | Untouched cases and broader regression results |
-| Decision | Accept, reject, or inconclusive, with limitations |
-
-Recommended follow-up work is an automated compatible-baseline report with
-coverage checks and task-level deltas, followed by empirically calibrated
-regression thresholds. Add explicit retry/cost instrumentation only when those
-measurements are needed for a decision; their current empty fields cannot guide
-optimization. Use `make check-full` for changes spanning components or before
-merging, as required by the contribution guide.
-
-Implementation references:
-[task outcomes](../../benchmark/runner/runtask.py),
-[metric aggregation](../../benchmark/runner/metrics.py),
-[Langfuse score mapping](../../benchmark/runner/langfuse_reporter.py),
-[comparison command](../../benchmark/runner/compare.py),
-[CI workflow](../../.github/workflows/benchmark.yml), and
-[SkillOpt](../10-skillopt/README.md).
+quality scores are absent. Read `manifest.metrics_k` for each run; separate runs
+are not automatically combined into k attempts.

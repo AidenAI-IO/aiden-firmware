@@ -1,24 +1,18 @@
 ---
-sidebar_label: 指标解读与优化实践（中文）
+sidebar_label: 指标字段参考（中文）
 sidebar_position: 5
 ---
 
-# Benchmark 指标解读与优化实践
+# Benchmark 指标字段参考
 
-[English version](./metrics-and-optimization.md)
+[English version](./metrics-reference.md)
 
-本文是字段与口径参考。日常评审应该先看什么、如何围绕真实任务开展优化，请阅读[Capability Benchmark：从需求卡片到优化闭环](./capability-benchmark-workflow.zh-CN.md)。
-
-本文面向使用 Aiden benchmark 的开发、测试和产品团队，说明当前指标的实际含义、如何通过指标定位问题，以及怎样验证优化是否有效。
-
-贯穿全文的案例是：**用户把已经记住的 dark mode 偏好修改为 light mode，Agent 是否正确更新并在后续使用新偏好。** 该案例基于现有记忆 benchmark，不需要手机或模拟器。
-
-需要区分三类证据：代码和自动化测试说明指标如何计算；历史运行记录说明过去出现过什么问题；同条件下的当前版本对照实验，才能说明这次优化是否有效。本文的预期分数表是教学示例，不是已经取得的优化结果。
+本文说明 benchmark 结果字段和上报分数的定义、测量范围、统计分母、单位与缺失值含义。
 
 ## 1. 当前评测链路与基本概念
 
 ```text
-GitHub Actions / CLI
+Benchmark runner
   → 任务隔离与初始化
   → Agent 执行
   → 硬断言与可选的 LLM Judge
@@ -32,7 +26,7 @@ GitHub Actions / CLI
 - **Run（运行）：** 一次 benchmark 执行，包含选中的任务及其重复尝试。
 - **重复尝试与内部重试：** 同一道题运行三次是三个 attempt；Agent 在一次执行中重试工具，仍然属于同一个 attempt。
 
-团队分析时需要组合使用以下产物：
+结果文件及其用途：
 
 | 产物 | 用途 |
 | --- | --- |
@@ -52,7 +46,7 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 | 字段 | 含义与边界 |
 | --- | --- |
 | `final_response` | 从该次尝试的 `trace.json` 读取的最终回复。`null` 表示证据不可用，空字符串表示记录中回复确实为空 |
-| `tool_calls` | 按顺序保存的工具名和参数摘要；不包含工具返回值。工具返回值在执行 Trace 或 `history.json` 中查看 |
+| Experiment Output 中的 `tool_calls` | 按顺序保存的工具名和参数摘要；不包含工具返回值，与数值分数 `benchmark.tool_calls` 不同。工具返回值在执行 Trace 或 `history.json` 中查看 |
 | `trace_artifact.status` | `available` 表示已读取有效记录，`missing` 表示缺失，`invalid` 表示格式不符，`unreadable` 表示无法读取 |
 | `trace_artifact.path` | 相对于本轮 run 目录的证据文件路径；缺失时可为 `null` |
 | `aiden_episode_id` | Agent 的 episode 标识；无法唯一确定时为空 |
@@ -60,15 +54,11 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 | `aiden_trace_url` | 执行 Trace 的查看链接。项目查询不可用或没有 episode ID 时为空；有链接不代表已成功上传 |
 | `execution_trace_status` | 发布时的关联状态：`available` 表示已找到 benchmark 执行根节点并关联，但不保证所有子节点已上传；`pending_or_missing` 表示有 episode ID，但未找到执行根节点；`no_episode` 表示没有可唯一确定的 episode ID。旧 item 可能没有此字段 |
 
-当前 CI 接入代码通过 `AIDEN_BENCHMARK_TELEMETRY=1` 为临时 Agent 启用遥测，默认不上传截图。执行记录在 `benchmark` 环境下：`agent-run` 看目标和最终回复，`agent-response` 看模型输入输出，工具节点看参数、返回值和耗时。发布器在同一条执行 Trace 中添加 `benchmark/<task>#attempt-<n>` 评测结果节点，并将 Experiment item 绑定到它。显式 Agent telemetry 配置优先于 CI 默认值。
+`execution_trace_status=available` 时，Experiment 侧滑栏直接显示关联的执行 Trace：`agent-run` 包含目标和最终回复，`agent-response` 包含模型输入输出，工具节点包含参数和返回值，`benchmark/<task>#attempt-<n>` 节点包含评测结果。找到根节点不保证全部子节点均已上传。
 
-具体查看路径：打开 Experiment → 选择 item → 在侧滑栏执行树中展开 phase 和 iteration → 点击 `agent-response` 或具体工具节点。点击评测结果节点可查看 Output 中的最终回复摘要和判定依据，无需跳转到 Tracing。关联 ID 优先来自当前请求的事件；上下文历史可能没有 episode ID，不能仅依赖历史记录建立关联。
+执行证据不可用时，item 使用独立的结果回放。已有 item 在重试发布时保留原来的关联；回放中的父子节点不代表两次 Agent 尝试。
 
-发布器只关联已确认属于 `benchmark` 环境的执行根节点，遇到其他环境会报错，不会修改普通 Agent 的执行记录。未找到执行根节点或没有 episode ID 时，仍保留独立回放以展示评测结果。历史记录和这类回退记录中的 `experiment-item-run` 与 `benchmark/<task>#attempt-<n>` 是父子节点，不代表执行了两次；若执行记录随后上传，可通过 `aiden_trace_url` 查看。
-
-新行为需要运行修改后的版本；重试发布已有 Experiment 不会回填旧 item 的 Output，也无法恢复当时未采集的模型遥测。上传失败或容器被强制终止时，使用 GitHub artifacts 中保存的执行记录与 worker 日志定位原因。执行 Trace 的 `success` 是 Agent 自身结果，评测是否通过仍看 `benchmark.success`。
-
-**注意：评测结果节点的耗时是发布耗时，不能把 Experiment 默认的 Latency、Cost 直接当成任务耗时和费用。** 执行节点保留实际采集的调用耗时；跨版本比较应使用下面介绍的自定义评测分数。上报成功也不代表 benchmark 通过。已有 item 保留原来的 Trace 绑定，重试发布不会迁移旧关联。
+执行 Trace 的 `success` 是 Agent 自身结果，`benchmark.success` 是 benchmark 判定结果。评测结果节点的耗时是发布耗时，不能把 Experiment 默认的 Latency、Cost 直接当成任务耗时和费用。任务性能应使用下述 benchmark 指标；上报成功不代表任务通过。
 
 ## 2. 如何理解现有指标
 
@@ -192,7 +182,7 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 
 如果 `k=1`，三个 pass 指标在同一个有效任务集合上相同，不能据此判断重复执行的稳定性。
 
-按当前 CI 配置，定时 runnable 套件均为 k=1；`notification-memory` 虽有一题重复 5 次，其余题为 1 次，整个 suite 仍是 k=1。每个 run 的最终值以 manifest 为准，不会把多个日期的运行自动拼成 k 次。
+每个 run 的 k 值以 `manifest.metrics_k` 为准；不同 run 不会自动合并为同一任务的 k 次尝试。
 
 三个 pass 指标还包含成功数、有效任务数、总任务数和 Wilson 95% 置信区间。`attempt_success_rate` 也有置信区间，但同一个任务的重复尝试并非相互独立，现有简单区间没有处理这种相关性。发布决策应结合任务配对分析、独立复测或按任务分组的不确定性分析。小幅百分比提高，或两个区间是否重叠，都不能单独证明优化显著。
 
@@ -233,7 +223,7 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 
 当前提取器主要能根据工具错误记录 `device_execution` 或 `unknown`，并由 runner 标记部分 setup/evaluation 路径。成功结果会清空失败阶段和证据指针，但仍可保留非零 `tool_errors`。因此“工具曾报错”与“最终任务失败”不是同一件事。
 
-`failures.class.*` 统计所有带失败类别的结果，`failures.stage.*` 只统计有效且失败的尝试。两组计数的分母不同，不能直接对齐，也不能直接生成需求卡片中的产品根因占比。
+`failures.class.*` 统计所有带失败类别的结果，`failures.stage.*` 只统计有效且失败的尝试。两组计数的分母不同，不能直接对齐，也不能直接当作产品根因占比。
 
 还有两个分母差异：
 
@@ -255,7 +245,7 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 | `screenshot_capture_ms` | runner 自己计时的截图操作，不是 Agent 内部全部截图耗时；结合 `screenshot_capture_source` 查看 |
 | `tool_calls/device_actions` | 全部工具调用数 / 被识别为改变设备状态的动作数；只读 bridge 查询不属于设备动作 |
 | `llm_calls` | 从带 usage 的消息计数；完全没有 usage 时为空，不能未经核验就认为覆盖了全部供应商请求 |
-| `input_tokens/output_tokens/total_tokens` | Agent 上报的用量；episode 总量可以覆盖 history 推导结果，不代表整个 CI、Judge 和初始化的全部消耗 |
+| `input_tokens/output_tokens/total_tokens` | Agent 上报的用量；episode 总量可以覆盖 history 推导结果，不代表整个 run、Judge 和初始化的全部消耗 |
 | `cached_input_tokens/reasoning_tokens` | 可选用量明细，不应作为独立额外消耗再次加到总量上 |
 | `tool_errors` | 工具结果中的错误数，包括随后恢复成功的错误 |
 | `replan_count` | 依赖 episode 中显式的 `needs_replan` 证据，不根据工具名称猜测 |
@@ -305,209 +295,3 @@ Langfuse 中，同名 suite 对应一个 Dataset，每个任务/尝试对应一�
 `aggregate.per_task` 中：`total_attempts` 包含无效尝试，`eligible_attempts` 只含有效尝试，`passed/failed/pass_rate` 使用有效尝试，`best_quality_score/avg_quality_score/avg_wall_ms` 使用有效尝试中的已知数值。当前 `first_attempt_passed` 实际取**排序后的第一个有效尝试**，与严格取编号 1 的 `pass_at_1` 不同；如果第 1 次无效、第 2 次成功，前者可能为 true，而该任务不会进入 `pass_at_1` 分母。
 
 `oracle_best_score_at_k.count` 是存在质量分数的完整任务数，可能少于它的 `eligible_tasks`。判断任一聚合数值，都要先确定样本单位与分母，再看变化方向。
-
-## 3. 团队如何用指标推进优化
-
-### 第一步：确认实验可比
-
-核对 suite hash、workload hash、k、指标版本、Agent 模型、Judge 模型/供应商/prompt 版本、目标平台和启用的 Skill。额外记录代码 SHA、实际镜像身份、Skill 内容、配置、环境版本和并发数。
-
-同一个镜像 tag、同一个 Skill 名称不代表内容相同。除了明确声明的实验变量，其他会影响分数的条件应保持一致。
-
-### 第二步：选一类值得解决的失败
-
-按 suite、任务、rubric 和失败类别聚合，优先选频繁出现、影响用户、可能有共同原因的问题。环境和评估异常单独跟踪，不能通过排除更多样本来获得表面上的提升。
-
-### 第三步：从 Trace 提出可验证假设
-
-查看多个失败和相邻成功样本，记录错误发生的位置、支持原因的证据和仍不确定的部分。例如：“旧偏好未被查找，直接保存新偏好，可能留下冲突记录。”这是假设，需要存储和召回证据验证。
-
-### 第四步：只改变一个关键因素
-
-明确要修改的代码、提示词、Skill 或配置，并预先决定主指标和性能约束。不要一次同时换模型、重写提示词、修改记忆存储，否则很难解释收益来自哪里。
-
-### 第五步：运行基线与候选版本
-
-使用相同任务、干净初始化、重复次数、模型、Judge 和资源配置。条件允许时交替执行基线与候选，降低供应商负载和环境变化的影响。
-
-### 第六步：形成接受、拒绝或证据不足的结论
-
-既看汇总，也看具体哪些任务退化。可靠性优化优先看 `pass_at_1` 和 `pass_pow_k`；效率优化则要求质量保持，并比较两个版本都完成成功的相同任务。否则“更早失败”也可能表现为“更快”。
-
-当前 `runner compare` 只输出差异并返回成功，尚未实现统计回归门禁。SkillOpt 可以生成 Skill 修改，但它的加权成功分数与 benchmark 的 `pass_at_1` 不相同；仍需覆盖率、效率约束和不参与调优的测试集。
-
-## 4. 实践案例：用户修改记忆中的偏好
-
-### 4.1 现有任务与真实历史证据
-
-使用 [memory_v1.json](../../benchmark/suites/memory_v1.json) 中的 `update_changed_preference`：
-
-1. 初始化时让 Agent 记住 dark mode 偏好，然后清空可见对话历史。
-2. 用户要求改为 light mode。
-3. 硬断言要求调用 2–12 次工具、120 秒内完成、有最终回答。
-4. Judge 检查是否召回旧偏好、保存 light mode 偏好、确认更新。
-
-本地历史运行 `2026-05-29_044024` 的这道题记录了：
-
-| 证据 | 观察结果 |
-| --- | --- |
-| `status` | `failed` |
-| `tool_calls` | 1 |
-| 工具轨迹 | 只调用了 `save_memory` 保存 light mode，没有 `recall_memory` |
-| 最终回答 | 声称已经完成偏好更新 |
-| 失败依据 | 最低工具调用数未通过，Judge 因此未执行 |
-
-这个例子说明：**最终回答说“已经更新”，不等于执行过程满足了任务要求。** 但它不能直接证明产生了冲突记忆，还需要检查存储结果。
-
-这份记录来自旧版本，缺少当前的 `metrics.json`，不能作为现代指标的同条件对照基线。旧 `wall_ms` 也不能直接与当前任务计时比较。它用于说明排查方法，不代表当前 Agent 仍存在同一问题。本地运行产物无需提交到仓库。
-
-### 4.2 优化假设与产品验收目标
-
-可调查的假设是：用户明确替换已有偏好时，Agent 应先找到相关旧记忆，再使用当前工具支持的更新或替换语义，操作成功后才确认完成。
-
-一条候选策略可以写成：
-
-> 用户替换已有偏好时，先召回相关记忆，按工具支持的方式更新或替换；确认操作成功后，再向用户说明新偏好已生效。
-
-先核对当前记忆工具的语义，再决定改提示词还是改存储、检索逻辑。如果当前策略已经具备该要求，应根据实际失败证据定位为何没有生效。不要仅为了满足最低调用次数而增加无用工具调用。
-
-**现有任务只检查更新交互，不能单独证明长期记忆已经正确更新。** 产品层面还需要：
-
-- 检查持久化的有效记忆，新偏好确实生效。
-- 在新的对话中询问显示模式偏好，答案应选择 light mode。
-- 旧 dark mode 偏好不再作为有效的冲突偏好参与回答；保留失效历史记录可以是合理设计。
-- 用存储与检索证据验证，不能只看 Agent 的口头确认。
-
-如果要把这些检查加入新的 benchmark，必须先冻结题目定义，再让基线与候选都运行这一定义。不能只为候选修改题目或 Judge。
-
-### 4.3 先验证指标是否按预期工作
-
-以下是两道题、每题三次尝试的**教学数据，不是已测得的优化收益**：
-
-| 任务 | 基线第 1–3 次 | 候选第 1–3 次 |
-| --- | --- | --- |
-| 更新偏好 | 失败、成功、失败 | 成功、成功、成功 |
-| 召回已保存事实 | 成功、成功、成功 | 成功、成功、成功 |
-
-所有尝试都有效、`k=3` 时：
-
-| 指标 | 基线 | 候选 | 说明 |
-| --- | --- | --- | --- |
-| `pass_at_1` | 1/2 = 50% | 2/2 = 100% | 首次执行改善 |
-| `pass_at_k` | 2/2 = 100% | 2/2 = 100% | 基线原本就有能力至少成功一次 |
-| `pass_pow_k` | 1/2 = 50% | 2/2 = 100% | 重复执行更稳定 |
-| `attempt_success_rate` | 4/6 | 6/6 | 总成功尝试增加 |
-| `coverage.pass_at_k` | 100% | 100% | 改善不是来自排除失败样本 |
-
-再做一个反例：把基线“更新偏好”的第 1 次改为无效的评估失败。此时 `pass_at_1` 会变为 100%，但任务覆盖率只有 50%；`pass_at_k`、`pass_pow_k` 的覆盖率也变成 50%。这是证据丢失造成的表面提升，不是能力提升。
-
-仓库现有测试覆盖以下层次：
-
-| 验证层次 | 测试文件 |
-| --- | --- |
-| 固定 k、有效性、分位数、首次成功累计消耗、缺失用量 | `benchmark/tests/test_metrics.py` |
-| 硬断言、超时有效性、缺失证据、Judge 行为 | `benchmark/tests/test_runtask.py` |
-| 记忆初始化与确定性记忆断言 | `benchmark/tests/test_reset.py` |
-| 单次/汇总分数映射、幂等上报、不完整上报 | `benchmark/tests/test_langfuse_reporter.py` |
-
-从仓库根目录运行：
-
-```bash
-make check
-bash scripts/run_tests_in_docker.sh --suite benchmark-python
-```
-
-`make check` 只抽样执行 benchmark 测试；上面的 `benchmark-python` 套件才包含指标和上报相关测试。它们使用仓库固定的 Docker 测试环境。
-
-上报单元测试使用模拟客户端，因此不能证明真实 Langfuse 已正确收到分数。后面仍需要一次真实上报核对。
-
-### 4.4 当前版本的基线与候选实验
-
-前置条件：Docker 可用、submodule 已初始化、Agent/Judge 凭据已配置，以及一份专用 benchmark Agent 配置。参考[快速开始](./quickstart.md)。不要复用个人 Agent 的长期记忆，也不要提交凭据或本地配置。
-
-在 `benchmark/` 中运行两道题、每题三次：
-
-```bash
-uv run python -m runner run \
-  --suite suites/memory_v1.json \
-  --task-ids update_changed_preference,recall_saved_fact_after_setup \
-  --repeats 3 \
-  --auto-agent-setup \
-  --agent-config /absolute/path/to/benchmark-agent.toml \
-  --agent-model YOUR_FIXED_MODEL \
-  --max-concurrency 1 \
-  --run-id memory-update-baseline-01
-```
-
-保留 Judge，不能用 `--no-judge` 的硬断言通过结果来证明偏好更新语义正确。
-
-还要检查初始化：旧偏好通过 Agent 提示创建，初始化步骤没有报错，不等于旧偏好确实被存储。
-
-查看基线后，做一项有证据支持的修改。用相同命令将 run ID 改为 `memory-update-candidate-01`，并确认实际运行了候选代码、配置或镜像。记录 diff 和镜像身份；代码变化应构建进镜像；增加实验轮次时使用新的 run ID。
-
-然后比较与上报：
-
-```bash
-uv run python -m runner compare --runs \
-  runs/memory-update-baseline-01 runs/memory-update-candidate-01
-
-uv run python -m runner publish-langfuse \
-  --run-dir runs/memory-update-baseline-01
-
-uv run python -m runner publish-langfuse \
-  --run-dir runs/memory-update-candidate-01
-```
-
-除了 compare 输出，还要直接检查 `metrics.json` 和每次尝试的证据。
-
-在 Langfuse 打开 `memory_v1` 对应的 Dataset 和两个 Experiment Run，逐项核对：
-
-1. 相同任务/尝试的 Item ID 是否对应。
-2. `benchmark.success`、有效性、工具调用数是否与 `results.jsonl` 一致。
-3. 汇总分数是否与 `metrics.json` 一致。
-4. 缺失指标是否仍然缺失，未变为 0。
-5. 重试上报后，Item 数量和分数是否保持一致。
-
-当前 GitHub Actions 手动触发参数支持 profile 和 suite，没有任务 ID 和重复次数覆盖参数。这个小实验应使用上述 CLI，不能假设手动触发会自动把 k 改为 3。
-
-### 4.5 什么情况下可以说优化达到了目的
-
-在查看候选结果前，约定以下验收条件：
-
-1. **数据完整：** 六次计划尝试都有有效证据，比较条件一致。
-2. **交互正确：** 候选的偏好更新题三次都通过现有断言与 rubric，且 Trace 体现了预期操作。
-3. **产品结果正确：** 持久化状态和新对话召回证明新偏好生效，没有有效的冲突旧偏好。缺少这一步，只能说通过了交互契约检查。
-4. **无相关回归：** 已保存事实的召回题不退化；再检查相关的更新、遗忘、规则和临时信息任务。
-5. **性能代价可接受：** 在可比的成功尝试上检查耗时和 Token。试验可预先约定“中位数增加超过 20% 需复核”，但这只是建议阈值，不是现有 CI 规则。为正确更新而增加必要工作量可能是合理的。
-6. **能推广：** 进行独立的基线/候选复测，并在未参与调优的偏好变化题上验证。两道题全通过不能证明整体记忆能力可靠。
-
-如果当前基线已经全部通过，这个案例适合作为回归检查，但还没有可证明的优化收益。应选择另一类真实失败，不能人为削弱基线制造提升。
-
-## 5. 团队实验记录模板
-
-每个优化 PR 或评审文档记录以下内容：
-
-| 项目 | 必须提供的证据 |
-| --- | --- |
-| 问题与假设 | 用户可见问题、代表性 Trace、推测原因 |
-| 实验变量 | 准确的代码、Skill、模型或配置变化 |
-| 对照条件 | Run ID、代码/镜像身份、suite/workload hash、k、Judge、平台、并发 |
-| 数据质量 | 计划与实际尝试数、有效性、各数值指标的样本数 |
-| 质量结果 | 逐题变化、首次成功率、稳定性、rubric 变化 |
-| 效率结果 | 相同成功任务的耗时/Token，以及整体失败与消耗 |
-| 产品结果 | 独立的记忆状态和召回证据，不只是一项评测分数 |
-| 泛化验证 | 未参与调优的任务与相关回归结果 |
-| 最终决定 | 接受、拒绝或证据不足，并说明限制 |
-
-建议优先补充自动基线对比报告：先检查可比性、覆盖率和任务级变化，再根据真实波动制定门禁阈值。重试次数和费用埋点可以按决策需要补充，目前的空字段不能指导优化。
-
-跨组件修改或合并前，按仓库要求运行 `make check-full`。
-
-## 6. 实现参考
-
-- [任务执行与结果判定](../../benchmark/runner/runtask.py)
-- [指标聚合](../../benchmark/runner/metrics.py)
-- [Langfuse 分数映射](../../benchmark/runner/langfuse_reporter.py)
-- [运行比较命令](../../benchmark/runner/compare.py)
-- [GitHub Actions 工作流](../../.github/workflows/benchmark.yml)
-- [SkillOpt 文档](../10-skillopt/README.md)
