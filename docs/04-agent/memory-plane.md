@@ -68,6 +68,17 @@ memory/
 
 The `reflection.yaml` and `reflection.lock` names are retained for upgrade compatibility. Their owner is now the Episode Memory pipeline, not the removed failure-only Reflection implementation.
 
+## User Memory Recall
+
+`recall_memory` searches both temporary and long-term records. Topic terms in
+`tags` and `entities` can match either metadata field, so classifying a term
+differently at save and recall time does not make the record inaccessible.
+Matches in the requested field receive more weight than matches in the other
+field; title, summary, and content matches also contribute to relevance.
+The same relevance scoring is used when merging results from both stores.
+Active-state and expiry checks still apply, and a matching type alone cannot
+make an unrelated record satisfy a topical query.
+
 ## Device Memory Recall
 
 Normal `recall_device_memory` results have the following limits:

@@ -162,26 +162,9 @@ func recallMemoryResultScore(query MemoryQuery, result MemoryResult) int {
 		}
 		return 0
 	}
-	score := 0
-	for _, want := range query.Tags {
-		for _, got := range result.Tags {
-			if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(got)) {
-				score += 4
-			}
-		}
-	}
-	for _, want := range query.Entities {
-		for _, got := range result.Entities {
-			if strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(got)) {
-				score += 5
-			}
-		}
-	}
-	for _, want := range query.Types {
-		if strings.EqualFold(strings.TrimSpace(want), result.Type) {
-			score += 3
-		}
-	}
+	score := scoreMemoryEntry(query, memoryIndexEntry{
+		Type: result.Type, Tags: result.Tags, Entities: result.Entities, Summary: result.Summary,
+	}, parsedMemoryMarkdown{Title: result.Title, Content: result.Content})
 	if score > 0 && result.MemoryScope == "temporary" {
 		score++
 	}
