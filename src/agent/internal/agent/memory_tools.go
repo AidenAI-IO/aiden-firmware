@@ -222,6 +222,7 @@ func (t *SaveMemoryTool) Name() string { return "save_memory" }
 func (t *SaveMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Save long-term memory for future recall. Mandatory when the user asks to remember/save; also use for observed stable preferences, rules, or procedures.",
+		"Never save information when the user says it is temporary, only for this conversation, one-time, or explicitly says not to remember it.",
 		"Do not tell the user something was remembered or saved until this tool returns status=saved or status=ignored as a duplicate.",
 		"Use profile for durable user facts (name, nickname, location, timezone, home city, role, background); preference/rule for future defaults and must/must-not behavior such as a default city; fact for stable info that should be recalled but not surfaced in the synthesized user profile.",
 		"Returns status=saved with id, or status=ignored when it is a duplicate.",
