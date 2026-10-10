@@ -1243,8 +1243,8 @@ def test_run_one_task_correlates_timeout_before_recovery(tmp_path: Path):
     result = run_one_task(
         client, suite, task, 1, tmp_path / "artifacts", None, None, "run-1"
     )
-    # Isolation recovers any prior run before starting this task. The timed-out
-    # request must be correlated before its own recovery can clear that state.
+    # Isolation recovers before starting chat; timeout correlation must happen
+    # before the second recovery, which can clear the active request evidence.
     assert events == ["recover", "chat", "correlate", "recover"]
     assert client.episode_requests == ["ep-running"]
     assert result.metrics["episode_id"] == "ep-running"

@@ -39,12 +39,6 @@ tags = ["aiden-hardware"]
 
 Credentials are written directly into the `[advanced_settings.runtime.telemetry]` section of `agent.toml`.
 
-`AIDEN_LANGFUSE_HTTPS_PROXY` optionally overrides the HTTPS proxy for the Langfuse
-client only, respecting `NO_PROXY`. This lets benchmark workers reach Langfuse
-without changing model or device routing. On normal runtime shutdown, pending
-exports drain for up to 35 seconds before cancellation. Forced termination can
-still interrupt uploads.
-
 The Langfuse deployment must support OTLP ingestion: self-hosted Langfuse `>= 3.22.0`, or Langfuse Cloud. The agent sends the `x-langfuse-ingestion-version: 4` header so spans land on the observations-first data model in real time.
 
 ## Data Flow
@@ -249,7 +243,7 @@ After new tasks are added to the suite, use the benchmark runner for automated r
 
 | Symptom | Possible Cause |
 | --- | --- |
-| Log `[telemetry] export episode <id> failed` | `base_url` unreachable, incorrect credentials, timeout, or a Langfuse version without OTLP ingestion (`< 3.22.0`) |
+| Log `[telemetry] export episode failed` | `base_url` unreachable, incorrect credentials, timeout, or a Langfuse version without OTLP ingestion (`< 3.22.0`) |
 | Log `langfuse rejected N span(s)` | Langfuse accepted the request but dropped spans; the batch is not retried because the rest was ingested |
 | Trace has no screenshots / media not yet uploaded | Agent did not PATCH upload status (fixed); or MinIO presigned URL uses `localhost:9090`, device cannot access; check agent log `[telemetry] screenshot upload failed` |
 

@@ -13,8 +13,17 @@ import (
 )
 
 // Exercise the actual async export and shutdown path against a local OTLP
-// receiver. The worker must retain prompts until export and drain before exit.
-func TestRuntimeCloseDrainsTelemetryWithExecutionEvidence(t *testing.T) {
+// receiver. Only benchmark workers should wait for telemetry before exit.
+func TestRuntimeCloseTelemetryIsolation(t *testing.T) {
+	for _, environment := range []string{"benchmark", "production", ""} {
+		t.Run("environment="+environment, func(t *testing.T) {
+			testRuntimeCloseTelemetry(t, environment)
+		})
+	}
+}
+
+func testRuntimeCloseTelemetry(t *testing.T, environment string) {
+	t.Helper()
 	episode, fixtureDir, prompts := langfuseLiveEpisodeFixture(t)
 	configDir := t.TempDir()
 	episodeDir := EpisodeDirectory(filepath.Join(configDir, "memory", "episodes"), episode)
@@ -25,6 +34,7 @@ func TestRuntimeCloseDrainsTelemetryWithExecutionEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := make(chan struct{}, 1)
+	scored := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var once sync.Once
 	releaseUpload := func() { once.Do(func() { close(release) }) }
@@ -51,6 +61,7 @@ func TestRuntimeCloseDrainsTelemetryWithExecutionEvidence(t *testing.T) {
 			mu.Lock()
 			scoreCount++
 			mu.Unlock()
+			scored <- struct{}{}
 		default:
 			t.Errorf("unexpected request (screenshots are disabled): %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -66,7 +77,7 @@ func TestRuntimeCloseDrainsTelemetryWithExecutionEvidence(t *testing.T) {
 			Enabled: boolPtr(true), BaseURL: server.URL,
 			PublicKey: "pk-test", SecretKey: "sk-test",
 			UploadScreenshots: boolPtr(false), UploadTimeoutSec: 5,
-			Environment: "benchmark",
+			Environment: environment,
 		},
 	}}
 	runtime.exportEpisodeBestEffort(episode, &telemetryPromptCapture{calls: prompts})
@@ -77,23 +88,40 @@ func TestRuntimeCloseDrainsTelemetryWithExecutionEvidence(t *testing.T) {
 	}
 	closed := make(chan error, 1)
 	go func() { closed <- runtime.Close() }()
-	select {
-	case err := <-closed:
-		t.Fatalf("Close returned before telemetry was accepted: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	releaseUpload()
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatal(err)
+	if environment == "benchmark" {
+		select {
+		case err := <-closed:
+			t.Fatalf("Close returned before telemetry was accepted: %v", err)
+		case <-time.After(100 * time.Millisecond):
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Close did not finish after upload")
+		releaseUpload()
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("Close did not finish after upload")
+		}
+		if _, ok := runtime.telemetryExports.begin(); ok {
+			runtime.telemetryExports.done()
+			t.Fatal("export accepted after shutdown")
+		}
+	} else {
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("ordinary Agent shutdown waited for telemetry")
+		}
+		releaseUpload()
 	}
-	if _, ok := runtime.telemetryExports.begin(); ok {
-		runtime.telemetryExports.done()
-		t.Fatal("export accepted after shutdown")
+	select {
+	case <-scored:
+	case <-time.After(3 * time.Second):
+		t.Fatal("export did not finish after upload was released")
 	}
 	mu.Lock()
 	defer mu.Unlock()

@@ -13,11 +13,8 @@ are:
 - CLI for scripted runs, single-suite debugging, rejudge, and compare.
 
 For the full manual, see [`benchmark/manual.md`](../../benchmark/manual.md).
-For metric definitions, interpretation limits, and a worked memory optimization
-experiment, see [Metrics and Optimization Playbook](./metrics-and-optimization.md).
-The guide is also available in [Chinese](./metrics-and-optimization.zh-CN.md).
-For a task-centered dashboard and experiment review workflow, see
-[Capability Benchmark workflow (Chinese)](./capability-benchmark-workflow.zh-CN.md).
+For field definitions, units, denominators, and missing-value semantics, see the
+[Metrics Reference](./metrics-reference.md).
 
 ## Quick Start
 
@@ -301,65 +298,6 @@ scores should not be treated as a like-for-like regression unless the unchanged
 item intersection is used or the old product version is rerun against the new
 suite definition. When an Agent episode ID is present, the experiment trace also
 records the deterministic Agent trace ID for correlation with Aiden telemetry.
-
-Open a Dataset Experiment item and inspect **Output** to see `final_response`
-and the ordered `tool_calls` summary (tool names and inputs) from that attempt's
-saved `trace.json`, alongside its status and evaluations. This does not require
-the separate Agent telemetry exporter. `trace_artifact` gives the run-relative
-source path and availability status (`available`, `missing`, `invalid`, or
-`unreadable`). Missing or unusable evidence produces null response/tool fields;
-an available empty response remains an empty string. Missing optional traces do
-not block score publication. Downloaded runs resolve evidence inside their own
-run directory, including `attempt_N` directories for repeated tasks.
-
-The tool summary does not include tool results or screenshots. Open
-`aiden_trace_url` from the item Output or metadata for the Agent execution trace.
-`aiden_trace_id` is the 32-character OTLP trace ID, distinct from the experiment
-replay trace ID. URL generation does not verify ingestion: if project lookup is
-unavailable, the URL is null and the ID can still be used to find the trace.
-Already linked experiment items keep their original Output on publication retries;
-retries repair scores and missing items, but do not backfill answers into existing
-items. Publish a new benchmark run to get the enriched Output for all attempts.
-
-### Inspecting Agent execution
-
-The scheduled GitHub workflow sets `AIDEN_BENCHMARK_TELEMETRY=1`. When preparing
-temporary Agent configs, the runner enables the existing episode exporter using
-`LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`. Missing
-credentials are a configuration error. An explicit
-`[advanced_settings.runtime.telemetry]` section takes precedence, including an
-explicit opt-out. Local CLI/WebUI runs are not opted in automatically; set the
-same flag and credentials or provide explicit telemetry settings. The endpoint
-must be reachable from the Agent container (use `host.docker.internal` for a
-host-local service).
-
-There are two separate views:
-
-| Environment | Observations | Meaning |
-| --- | --- | --- |
-| `sdk-experiment` | `experiment-item-run` → `benchmark/<task>#attempt-<n>` | SDK parent and child in one replay trace; these do not represent two Agent attempts |
-| `benchmark` | `agent-run`, `agent-response`, named tools, phases/iterations | Actual execution: goal, final answer, captured model inputs/outputs, tool arguments/results and timing |
-
-Screenshots and prompt media uploads are disabled in the generated benchmark
-config. Enable `upload_screenshots` in an explicit telemetry config when visual
-evidence is needed. Setup prompts may create additional execution traces; use the
-item's episode/trace ID to select the measured attempt. The Agent's `success`
-score describes its own outcome, while benchmark assertions and the judge
-determine `benchmark.success`.
-
-The workflow passes its HTTPS proxy as `AIDEN_LANGFUSE_HTTPS_PROXY`, which affects
-only the Langfuse client and respects `NO_PROXY`. Model/device routing is unchanged.
-Telemetry runs asynchronously with a 30-second upload budget. Runtime shutdown
-drains pending exports for up to 35 seconds, and benchmark containers have a
-90-second stop grace period. Forced kills or upload failures can still leave a
-missing or incomplete trace; worker logs record the episode ID and export result.
-Log capture stays active during normal shutdown.
-
-GitHub artifacts include per-attempt `trace.json`, `history.json`, optional
-`episode.json`, and worker logs, without worker configs or credentials. Use these
-and the self-contained `report.html` if an execution trace is unavailable.
-Historical runs without captured model telemetry cannot acquire it by retrying
-score publication.
 
 Publishing is idempotent by run ID. A retry verifies the Dataset Run Item set,
 adds any missing items, and rewrites scores with stable IDs. A conflicting run ID

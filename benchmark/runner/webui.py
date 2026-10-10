@@ -2250,9 +2250,8 @@ def daemon_compose_env(
     environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
-    # Benchmark runs never go through an HTTP proxy: strip any proxy variables the
-    # host shell may have exported (e.g. a running Clash), so neither the docker
-    # build (base image / go mod / apt) nor the daemon container inherits them.
+    # Strip general host proxies so builds and model/device traffic do not
+    # inherit them. The explicitly configured telemetry-only proxy is retained.
     # NO_PROXY is a bypass list, not a proxy, and is set explicitly below.
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
                 "http_proxy", "https_proxy", "all_proxy"):
