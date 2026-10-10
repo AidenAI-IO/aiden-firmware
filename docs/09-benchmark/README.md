@@ -13,6 +13,8 @@ are:
 - CLI for scripted runs, single-suite debugging, rejudge, and compare.
 
 For the full manual, see [`benchmark/manual.md`](../../benchmark/manual.md).
+For field definitions, units, denominators, and missing-value semantics, see the
+[Metrics Reference](./metrics-reference.md).
 
 ## Quick Start
 

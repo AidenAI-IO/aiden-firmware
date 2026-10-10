@@ -566,6 +566,7 @@ def run_one_task(
             )
     timed_out = False
     episode = None
+    episode_id = None
     base.metrics.setdefault("recovery_attempted", False)
     base.metrics.setdefault("recovery_succeeded", None)
     task_started_mono = time.monotonic()
@@ -582,10 +583,14 @@ def run_one_task(
         chat = client.chat(prompt, **chat_kwargs)
         base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         history = chat.history
-    except AgentTimeoutError:
+        # The client resolves request-scoped evidence. Context history may refer
+        # to an earlier task, so never replace a missing request ID with it.
+        episode_id = chat.episode_id
+    except AgentTimeoutError as exc:
         base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         timed_out = True
         history = client_history_or_empty(client)
+        episode_id = _request_episode_id(client, exc)
         base.metrics["recovery_attempted"] = True
         recovery_succeeded = recover_agent_after_timeout(client)
         base.metrics["recovery_succeeded"] = recovery_succeeded
@@ -594,8 +599,8 @@ def run_one_task(
     except Exception as e:
         base.metrics["task_wall_ms"] = int((time.monotonic() - task_started_mono) * 1000)
         history = client_history_or_empty(client)
+        episode_id = _request_episode_id(client, e)
         base.metrics["agent_error"] = str(e)[:300]
-    episode_id = _unique_episode_id(history)
     if episode_id is not None:
         base.metrics["episode_id"] = episode_id
         try:
@@ -737,16 +742,18 @@ def _format_csv(items: list[str]) -> str:
     return ", ".join(items) if items else "none"
 
 
-def _unique_episode_id(history: list[dict[str, Any]]) -> str | None:
-    episode_ids: list[str] = []
-    for message in history:
-        episode_id = message.get("episode_id")
-        if not isinstance(episode_id, str):
-            continue
-        episode_id = episode_id.strip()
-        if episode_id and episode_id not in episode_ids:
-            episode_ids.append(episode_id)
-    return episode_ids[0] if len(episode_ids) == 1 else None
+def _request_episode_id(client: AgentClient, error: Exception) -> str | None:
+    episode_id = getattr(error, "episode_id", None)
+    if episode_id:
+        return episode_id
+    request_id = getattr(error, "request_id", None)
+    if request_id:
+        try:
+            return client.chat_episode_id(request_id)
+        except Exception:
+            # Correlation must not replace the original execution failure.
+            pass
+    return None
 
 
 def _normalise_active_skills(skills: list[str] | None) -> list[str]:

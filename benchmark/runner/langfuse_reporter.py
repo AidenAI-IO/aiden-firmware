@@ -7,7 +7,9 @@ import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
 from runner.suite import Suite, TaskSpec, load_suite
 
@@ -222,8 +224,15 @@ def publish_run(
             key = _item_key(item_input["task_id"], item_input["attempt"])
             row = results_by_key[key]
             output = _experiment_output(artifacts.run_dir, row)
+            trace_url = getattr(client, "get_trace_url", None)
+            if output["aiden_trace_id"] and callable(trace_url):
+                try:
+                    output["aiden_trace_url"] = trace_url(trace_id=output["aiden_trace_id"])
+                except Exception:
+                    # A missing project lookup must not discard benchmark scores.
+                    pass
             update_span = getattr(client, "update_current_span", None)
-            if callable(update_span):
+            if callable(update_span) and _.get("record_replay_span", True):
                 episode_id = _episode_id(row)
                 span_metadata: dict[str, Any] = {
                     "benchmark_task_id": row["task_id"],
@@ -233,6 +242,7 @@ def publish_run(
                     span_metadata.update({
                         "aiden_episode_id": episode_id,
                         "aiden_trace_id": _agent_trace_id(episode_id),
+                        "aiden_trace_url": output.get("aiden_trace_url"),
                     })
                 update_span(
                     name=f"benchmark/{row['task_id']}#attempt-{row['attempt']}",
@@ -243,9 +253,9 @@ def publish_run(
         phase = "run-experiment"
         _emit_progress(
             progress,
-            f"experiment replay start: items={len(dataset_items)} concurrency=1",
+            f"experiment publication start: items={len(dataset_items)} concurrency=1",
         )
-        experiment = client.run_experiment(
+        experiment_args = dict(
             name=f"Aiden benchmark: {artifacts.suite.name}",
             run_name=run_name,
             description="Published from completed Aiden benchmark artifacts.",
@@ -260,6 +270,10 @@ def publish_run(
             max_concurrency=1,
             metadata=experiment_metadata,
         )
+        if callable(getattr(client, "start_observation", None)):
+            experiment = _publish_execution_items(client, **experiment_args)
+        else:
+            experiment = client.run_experiment(**experiment_args)
         _validate_experiment_result(experiment, len(dataset_items))
         flush = getattr(client, "flush", None)
         if callable(flush):
@@ -267,7 +281,7 @@ def publish_run(
         experiment_run_id = _string_attr(experiment, "dataset_run_id")
         _emit_progress(
             progress,
-            f"experiment replay complete: dataset_run_id={experiment_run_id or 'missing'} "
+            f"experiment publication complete: dataset_run_id={experiment_run_id or 'missing'} "
             f"linked_items={len(getattr(experiment, 'item_results', []) or [])}",
         )
         if existing_run_id and experiment_run_id != existing_run_id:
@@ -336,6 +350,113 @@ def _new_client(manifest: Mapping[str, Any]) -> Any:
         base_url=base_url,
         environment="benchmark",
         release=str(manifest.get("git_sha") or "") or None,
+    )
+
+
+def _publish_execution_items(client: Any, **experiment_args: Any) -> Any:
+    """Attach experiment result observations to the original execution traces."""
+    results = []
+    fallback_items = []
+    dataset_run_url = None
+    for item in experiment_args["data"]:
+        output = experiment_args["task"](item=item, record_replay_span=False)
+        trace_id = output.get("aiden_trace_id")
+        if not trace_id:
+            fallback_items.append(item)
+            continue
+        roots = client.api.observations.get_many(
+            trace_id=trace_id, name="agent-run", fields="core,basic", limit=2,
+        ).data
+        if len(roots) > 1:
+            raise LangfusePublishError(f"ambiguous Agent roots in trace {trace_id}")
+        if roots and _string_attr(roots[0], "environment") != "benchmark":
+            raise LangfusePublishError(
+                f"refusing to attach benchmark results to non-benchmark trace {trace_id}"
+            )
+        parent_id = _string_attr(roots[0], "id") if roots else None
+        if not parent_id:
+            # Never write into an execution trace whose environment we cannot
+            # verify. Preserve the result in a separate replay if export is late
+            # or disabled; its output still links to the expected execution ID.
+            fallback_items.append(item)
+            continue
+        output["execution_trace_status"] = "available"
+        observation = client.start_observation(
+            name=f"benchmark/{item.input['task_id']}#attempt-{item.input['attempt']}",
+            trace_context={"trace_id": trace_id, "parent_span_id": parent_id},
+            input=item.input,
+            output=output,
+            metadata={
+                **experiment_args["metadata"], "benchmark_execution_trace": True,
+                "aiden_episode_id": output["aiden_episode_id"],
+                "aiden_trace_url": output["aiden_trace_url"],
+            },
+        )
+        try:
+            linked = client.api.dataset_run_items.create(
+                run_name=experiment_args["run_name"],
+                run_description=experiment_args["description"],
+                metadata=experiment_args["metadata"],
+                dataset_item_id=item.id,
+                trace_id=trace_id,
+                observation_id=observation.id,
+            )
+            # Native v4 experiment association uses OTLP attributes, in addition
+            # to the dataset-run link retained for API compatibility.
+            observation._otel_span.set_attributes({
+                # Distributed tracing defaults to an application root in the
+                # pinned SDK. Keep this evaluation under the existing Agent root.
+                "langfuse.internal.as_root": False,
+                "langfuse.experiment.id": linked.dataset_run_id,
+                "langfuse.experiment.name": experiment_args["run_name"],
+                "langfuse.experiment.description": experiment_args["description"],
+                **{
+                    f"langfuse.experiment.metadata.{key}": value
+                    for key, value in experiment_args["metadata"].items()
+                },
+                "langfuse.experiment.dataset.id": item.dataset_id,
+                "langfuse.experiment.item.id": item.id,
+                "langfuse.experiment.item.root_observation_id": observation.id,
+                "langfuse.experiment.item.expected_output": json.dumps(item.expected_output),
+                **{
+                    f"langfuse.experiment.item.metadata.{key}": (
+                        value if isinstance(value, str) else json.dumps(value)
+                    )
+                    for key, value in item.metadata.items()
+                },
+            })
+            results.append(SimpleNamespace(
+                item=item, output=output, trace_id=trace_id,
+                dataset_run_id=linked.dataset_run_id,
+            ))
+        finally:
+            observation.end()
+        if dataset_run_url is None and output.get("aiden_trace_url"):
+            project_url, separator, _ = output["aiden_trace_url"].rpartition("/traces/")
+            if separator:
+                dataset_run_url = (
+                    f"{project_url}/experiments/results?"
+                    + urlencode({"baseline": linked.dataset_run_id})
+                )
+    if fallback_items:
+        def replay_without_execution(*, item: Any, **kwargs: Any) -> dict[str, Any]:
+            output = experiment_args["task"](item=item, **kwargs)
+            output["execution_trace_status"] = (
+                "pending_or_missing" if output.get("aiden_trace_id") else "no_episode"
+            )
+            return output
+
+        fallback = client.run_experiment(**{
+            **experiment_args, "data": fallback_items, "task": replay_without_execution,
+        })
+        _validate_experiment_result(fallback, len(fallback_items))
+        results.extend(fallback.item_results)
+        if dataset_run_url is None:
+            dataset_run_url = _string_attr(fallback, "dataset_run_url")
+    return SimpleNamespace(
+        item_results=results,
+        dataset_run_id=results[0].dataset_run_id if results else None,
+        dataset_run_url=dataset_run_url,
     )
 
 
@@ -765,6 +886,65 @@ def _dataset_item_metadata(
     }
 
 
+def _saved_trace_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Read optional, attempt-specific evidence from this run (including moved runs)."""
+    run_dir = run_dir.resolve()
+    raw = Path(str(row.get("artifact_dir") or ""))
+    attempt = int(row.get("attempt") or 1)
+    task_dir = run_dir / "tasks" / str(row["task_id"])
+    candidates = [task_dir / f"attempt_{attempt}"]
+    if str(row.get("artifact_dir") or "") and (
+        raw.name == f"attempt_{attempt}"
+        or (attempt == 1 and not raw.name.startswith("attempt_"))
+    ):
+        candidates.append(raw if raw.is_absolute() else run_dir / raw)
+    # Never borrow the single-attempt trace for a missing repeated attempt.
+    if attempt == 1 and not raw.name.startswith("attempt_"):
+        candidates.append(task_dir)
+
+    output: dict[str, Any] = {
+        "final_response": None,
+        "tool_calls": None,
+        "trace_artifact": {"status": "missing", "path": None},
+    }
+    for directory in candidates:
+        try:
+            path = (directory / "trace.json").resolve()
+        except (OSError, RuntimeError):
+            output["trace_artifact"]["status"] = "unreadable"
+            continue
+        if not path.is_relative_to(run_dir):
+            continue
+        try:
+            payload = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError):
+            output["trace_artifact"] = {
+                "status": "unreadable", "path": str(path.relative_to(run_dir)),
+            }
+            return output
+        output["trace_artifact"] = {
+            "status": "invalid", "path": str(path.relative_to(run_dir)),
+        }
+        try:
+            trace = json.loads(payload)
+        except json.JSONDecodeError:
+            return output
+        if not isinstance(trace, dict):
+            return output
+        response = trace.get("final_response")
+        calls = trace.get("tool_calls")
+        if not isinstance(response, str) or not isinstance(calls, list) or not all(
+            isinstance(call, dict) for call in calls
+        ):
+            return output
+        output.update(final_response=response, tool_calls=calls)
+        output["trace_artifact"]["status"] = "available"
+        return output
+    return output
+
+
 def _experiment_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
     artifact_dir = str(row.get("artifact_dir") or "")
     artifact_path = Path(artifact_dir)
@@ -775,6 +955,7 @@ def _experiment_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
             pass
     metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
     return {
+        **_saved_trace_output(run_dir, row),
         "status": row.get("status"),
         "rubric": row.get("rubric") or [],
         "rubric_pass_count": row.get("rubric_pass_count", 0),
@@ -787,6 +968,7 @@ def _experiment_output(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
         "finished_at": row.get("finished_at"),
         "aiden_episode_id": _episode_id(row),
         "aiden_trace_id": _agent_trace_id(_episode_id(row)) if _episode_id(row) else None,
+        "aiden_trace_url": None,
     }
 
 
@@ -1106,9 +1288,9 @@ def _agent_trace_id(episode_id: str | None) -> str | None:
     if not episode_id:
         return None
     try:
-        return str(uuid.UUID(episode_id))
+        return uuid.UUID(episode_id).hex
     except ValueError:
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, episode_id))
+        return uuid.uuid5(uuid.NAMESPACE_URL, episode_id).hex
 
 
 def _string_attr(value: Any, name: str) -> str | None:
