@@ -1952,6 +1952,7 @@ func runRealtimeSessionWithIdleTimeout(cfg agent.Config, sigChan chan os.Signal,
 					if err := appendRealtimeUserMessage(userContext, event.Text); err != nil {
 						return fmt.Errorf("persist realtime user transcript: %w", err)
 					}
+					logging.Debugf("agent", "realtime", "User transcript handled: provider=%s session_id=%s item_id=%s history_enabled=%t transcript=%q", providerName, info.ID, event.ItemID, userContext != nil, strings.TrimSpace(event.Text))
 				} else if event.Role == "assistant" {
 					if !turnState.acceptsResponseEvent(event.ResponseID) {
 						logging.Warnf("agent", "realtime", "Ignoring stale assistant transcript: response_id=%s active_response_id=%s", event.ResponseID, turnState.responseID)

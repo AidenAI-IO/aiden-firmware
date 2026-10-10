@@ -17,6 +17,20 @@ the adapter package must not be treated as an OpenAI-compatible wire protocol.
 
 ### Input transcription
 
+For Qwen transcription investigations, set `[advanced_settings.log] level =
+"debug"`. `Qwen input transcription received` records the provider's final
+transcript and item ID; `User transcript handled` records the trimmed text
+passed to history, provider session ID, item ID, and whether history is enabled.
+`Qwen session acknowledged` also records the server-reported audio formats,
+turn detection settings, and transcription configuration. Missing fields mean
+the server did not report them; they are not inferred defaults.
+These debug records include spoken content. Correlate them by item ID with the
+speech start/stop and audio commit records, then compare with Web history.
+A wrong transcript already present in the receive record places the discrepancy
+before history rendering, but does not distinguish recognition errors from
+microphone quality or segmentation problems. Retain the original recording to
+investigate those cases. Standard logs retain transcript lengths only.
+
 Realtime audio understanding and user-facing transcription are separate
 outputs of the same provider session. The provider consumes microphone audio
 directly to produce a response; the final user transcript is used for Web

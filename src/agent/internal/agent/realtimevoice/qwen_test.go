@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -339,5 +340,20 @@ func TestQwenResponseDoneFailureIsError(t *testing.T) {
 				t.Fatalf("error = %v, want status %q", event.Error, status)
 			}
 		})
+	}
+}
+
+// Synthetic inputs exercise preservation; they are not captured provider events.
+func TestTranslateQwenPreservesAdjacentUserTranscripts(t *testing.T) {
+	for i, transcript := range []string{"Out of.", "北京。", "我会保存的温暖背景。", "the weather in beijing"} {
+		itemID := fmt.Sprintf("input-%d", i)
+		raw, err := json.Marshal(map[string]string{"type": "conversation.item.input_audio_transcription.completed", "item_id": itemID, "transcript": transcript})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, ok := translateQwenEvent(raw)
+		if !ok || event.Kind != EventTranscriptFinal || event.Role != "user" || event.ItemID != itemID || event.Text != transcript || !event.Final {
+			t.Fatalf("transcript %d changed or misattributed: %+v", i, event)
+		}
 	}
 }

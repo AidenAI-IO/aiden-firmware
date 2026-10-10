@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 
+	"aiden-agent/internal/logging"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -201,12 +203,17 @@ func translateQwenEvent(body []byte) (Event, bool) {
 	case "session.created", "session.updated":
 		var event struct {
 			Session struct {
-				ID string `json:"id"`
+				ID                      string          `json:"id"`
+				InputAudioFormat        string          `json:"input_audio_format"`
+				OutputAudioFormat       string          `json:"output_audio_format"`
+				TurnDetection           json.RawMessage `json:"turn_detection"`
+				InputAudioTranscription json.RawMessage `json:"input_audio_transcription"`
 			} `json:"session"`
 		}
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
+		logging.Debugf("agent", "realtime", "Qwen session acknowledged: event=%s session_id=%s input_format=%q output_format=%q turn_detection=%s input_audio_transcription=%s", envelope.Type, event.Session.ID, event.Session.InputAudioFormat, event.Session.OutputAudioFormat, event.Session.TurnDetection, event.Session.InputAudioTranscription)
 		return Event{Kind: EventReady, SessionID: event.Session.ID}, true
 	case "input_audio_buffer.speech_started":
 		var event struct {
@@ -244,6 +251,7 @@ func translateQwenEvent(body []byte) (Event, bool) {
 		if err := json.Unmarshal(body, &event); err != nil {
 			return Event{Kind: EventError, Error: err}, true
 		}
+		logging.Debugf("agent", "realtime", "Qwen input transcription received: item_id=%s transcript=%q", event.ItemID, event.Transcript)
 		return Event{Kind: EventTranscriptFinal, ItemID: event.ItemID, Role: "user", Text: event.Transcript, TextSource: "audio", Final: true}, true
 	case "conversation.item.input_audio_transcription.failed":
 		var event struct {
