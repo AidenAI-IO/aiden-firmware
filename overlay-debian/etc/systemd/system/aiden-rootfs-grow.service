@@ -8,6 +8,7 @@ Before=userdata.mount userdata-ota.mount systemd-timesyncd.service local-fs.targ
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/aiden/aiden-rootfs-grow
+RemainAfterExit=yes
 TimeoutStartSec=90s
 
 [Install]
