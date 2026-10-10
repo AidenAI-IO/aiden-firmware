@@ -525,7 +525,7 @@ def test_publish_run_maps_attempts_and_aggregate_metrics(tmp_path: Path):
     assert run_scores["reliability.retry_count.sum"] == 1.0
     assert run_scores["capability.first_success_attempt.p50"] == 1.0
     assert run_scores["status.passed"] == 1
-    assert run_scores["category.diagnostic.pass_rate"] == 1.0
+    assert not any(name.startswith("category.") for name in run_scores)
     assert run_scores["observations.used_memory.pass_rate"] == 1.0
     assert client.experiment["metadata"]["git_sha"] == "abc123"
     assert len(client.experiment["metadata"]["workload_sha256"]) == 64
@@ -537,6 +537,26 @@ def test_publish_run_maps_attempts_and_aggregate_metrics(tmp_path: Path):
     assert output["aiden_trace_url"] == expected_url
     assert client.spans[0]["metadata"]["aiden_trace_url"] == expected_url
     assert client.flushed is True
+
+
+@pytest.mark.parametrize("client_type", [FakeLangfuse, ExecutionLangfuse])
+def test_publish_run_retains_category_data_without_category_scores(tmp_path: Path, client_type):
+    run_dir = _write_run(tmp_path)
+    metrics_path = run_dir / "metrics.json"
+    metrics = json.loads(metrics_path.read_text())
+    metrics["aggregate"]["by_category"]["memory"] = {
+        "passed": 2, "total": 3, "rubric_pass": 4, "rubric_total": 6,
+    }
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    client = client_type()
+
+    publish_run(run_dir, client=client)
+
+    assert not any(score["name"].startswith("category.") for score in client.score_calls)
+    assert any(score["name"] == "capability.pass_at_1" for score in client.score_calls)
+    assert client.items[0].input["category"] == "diagnostic"
+    assert client.items[0].metadata["category"] == "diagnostic"
+    assert json.loads(metrics_path.read_text()) == metrics
 
 
 @pytest.mark.parametrize("client_type", [FakeLangfuse, ExecutionLangfuse])

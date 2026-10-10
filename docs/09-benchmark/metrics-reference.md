@@ -202,9 +202,12 @@ Having these labels available does not mean the runtime identifies every stage.
 Many semantic failures currently remain `unknown`. Find the first meaningful
 deviation in the trace; the first tool error can be a downstream symptom.
 
-Category scores (`category.<category>.pass_rate`) use the category's total
-attempt count, including invalid attempts, unlike eligible-only capability
-scores. Observation scores (`observations.<id>.*`) count evaluated attempt rows
+Category summaries remain in `metrics.json` under `aggregate.by_category` and
+in the local summary report. The publisher no longer exports `category.*`
+Langfuse scores. Historical experiments can still contain them: their pass
+rate uses all category attempts, including invalid attempts, unlike eligible-only
+capability scores. Task category remains available in Dataset item input and
+metadata. Observation scores (`observations.<id>.*`) count evaluated attempt rows
 despite their historical `passed_tasks`/`observed_tasks` names. Trace observations
 describe behavior, such as tool usage, and do not themselves make a task fail.
 
@@ -305,7 +308,7 @@ Attempt metrics are assembled before run-level aggregation:
 | [Tool execution](../../src/agent/internal/agent/tool_execution.go) and [episode recording](../../src/agent/internal/agent/task_episode.go) | Agent-side device-call timers and recorded event durations |
 | [Runtime callbacks](../../src/agent/internal/agent/runtime.go) | First-token timing and Agent usage totals |
 | [Run planning](../../benchmark/runner/main.py) | Planned repeats and manifest `metrics_k` |
-| [Langfuse publisher](../../benchmark/runner/langfuse_reporter.py) | Score names, rubric ratios, and omission of unavailable scores |
+| [Langfuse publisher](../../benchmark/runner/langfuse_reporter.py) | Score names, attempt rubric ratios, and omission of unavailable scores |
 
 ### 3.2 Task, setup, and screenshot timers
 
@@ -587,8 +590,8 @@ Remaining diagnostic ratios use distinct populations:
 | --- | --- |
 | `coverage.invalid_attempts` | Observed attempt rows minus eligible attempt rows |
 | `diagnostics.failure_stage_coverage` | Eligible failed attempts with a recognized non-unknown stage / eligible failed attempts; null with no eligible failures |
-| `category.<category>.pass_rate` | Rows with `status=passed` / all rows in that category, including ineligible rows |
-| `category.<category>.rubric_pass_rate` | Sum of stored rubric pass counts / sum of rubric totals in the category, when the total is positive; this is rubric-weighted, not a mean of task ratios |
+| `aggregate.by_category.<category>.passed/total` | Category pass ratio in local artifacts: rows with `status=passed` / all rows in that category, including ineligible rows; no longer exported as `category.<category>.pass_rate` |
+| `aggregate.by_category.<category>.rubric_pass/rubric_total` | Category rubric ratio in local reports: sum of stored rubric pass counts / sum of rubric totals when positive; rubric-weighted, not a mean of task ratios; no longer exported as `category.<category>.rubric_pass_rate` |
 | `observations.<id>.pass_rate` | Rows with at least one passed observation for that ID / rows containing that ID; repeated checks of the same ID within a row count once |
 
 Failure class counts use all classified rows; stage counts use eligible failures
