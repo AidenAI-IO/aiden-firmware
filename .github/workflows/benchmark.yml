@@ -20,9 +20,8 @@ on:
         required: false
         type: string
       repeats:
-        description: Number of attempts for every task in the selected suite
+        description: Optional attempt count override; defaults to repository BENCHMARK_REPEATS
         required: false
-        default: '1'
         type: string
 
 permissions:
@@ -106,7 +105,7 @@ jobs:
     env:
       MATRIX: ${{ needs.plan.outputs.matrix }}
       BENCHMARK_CI_MAX_PARALLEL: '2'
-      BENCHMARK_REPEATS: ${{ inputs.repeats || '1' }}
+      BENCHMARK_REPEATS: ${{ inputs.repeats || vars.BENCHMARK_REPEATS || '1' }}
       BENCHMARK_AGENT_PROVIDER: ${{ vars.BENCHMARK_AGENT_PROVIDER }}
       DOCKER_BUILDKIT: 1
       BENCHMARK_AGENT_MODEL: ${{ vars.BENCHMARK_AGENT_MODEL }}

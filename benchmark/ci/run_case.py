@@ -419,7 +419,7 @@ def run_case(
             "--verbose",
         ]
         repeats = runtime_environment.get("BENCHMARK_REPEATS", "").strip()
-        if repeats and repeats != "1":
+        if repeats:
             try:
                 repeat_count = int(repeats)
             except ValueError as exc:
