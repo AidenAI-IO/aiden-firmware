@@ -1,119 +1,263 @@
 #!/usr/bin/env python3
-"""Exercise Wi-Fi boot recovery with isolated sysfs and command fixtures."""
+"""Exercise retained Wi-Fi startup with isolated sysfs and command fixtures."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
-HELPER = REPO / "overlay-debian/usr/lib/aiden/aiden-wifi-prepare"
+HELPERS = REPO / "overlay-debian/usr/lib/aiden"
 
 
-class WifiPrepareTest(unittest.TestCase):
+class StartupFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.host = self.root / "sys/bus/platform/devices/ff9a0000.mmc"
         self.driver = self.root / "sys/bus/platform/drivers/dwmmc_rockchip"
-        self.gpio = self.root / "sys/class/gpio/gpio117"
-        self.driver.mkdir(parents=True)
-        (self.driver / "ff9a0000.mmc").touch()
-        self.gpio.mkdir(parents=True)
-        (self.gpio / "direction").write_text("in\n")
-        (self.gpio / "value").write_text("1\n")
-        model = self.root / "proc/device-tree/model"
-        model.parent.mkdir(parents=True)
-        model.write_bytes(b"Aiden SCH v1\0")
-        self.helper = self.root / "prepare"
-        self.helper.write_text(HELPER.read_text().replace("/sys/", str(self.root / "sys") + "/")
-                               .replace("/proc/", str(self.root / "proc") + "/"))
+        self.control = self.host / "power/control"
+        self.state = self.root / "sys/devices/platform/aic-bsp/aicbsp_info/fw_state"
+        self.model = self.root / "proc/device-tree/model"
+        self.optin = self.root / "sys/firmware/devicetree/base/mmc@ff9a0000/aiden,aic8800d80-retained-sdio"
+        self.lib = self.root / "usr/lib/aiden"
+        self.modules = self.lib / "platform/modules"
         self.bin = self.root / "bin"
-        self.bin.mkdir()
-        sleep = self.bin / "sleep"
-        sleep.write_text("""#!/usr/bin/env python3
+        for path in (self.driver, self.control.parent, self.model.parent,
+                     self.optin.parent, self.modules, self.bin):
+            path.mkdir(parents=True, exist_ok=True)
+        self.model.write_bytes(b"Aiden SCH v1\0")
+        self.optin.touch()
+        self.control.write_text("auto\n")
+        (self.driver / "ff9a0000.mmc").touch()
+        # Sentinel files catch any reset/rebind writes even in failure cleanup.
+        for path in (self.driver / "bind", self.driver / "unbind",
+                     self.root / "sys/class/gpio/export",
+                     self.root / "sys/class/gpio/gpio117/direction",
+                     self.root / "sys/class/gpio/gpio117/value"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("untouched\n")
+        self.add_function("390b", 1, "0x0082")
+        self.add_function("390b", 2, "0x0182")
+        for name in ("cfg80211", "aic8800_bsp", "aic8800_fdrv"):
+            (self.modules / (name + ".ko")).touch()
+        for name in ("aiden-wifi-prepare", "aiden-wifi-driver", "aiden-bluetooth-prepare"):
+            script = (HELPERS / name).read_text()
+            for prefix in ("/sys/", "/proc/", "/usr/lib/aiden/", "/userdata/"):
+                script = script.replace(prefix, str(self.root) + prefix)
+            script = script.replace("/dev/ttyS0", "/dev/null")
+            path = self.lib / name
+            path.write_text(script)
+            path.chmod(0o755)
+        for path in (self.lib / "aiden-boot-timeline", self.lib / "agent",
+                     self.bin / "logger"):
+            path.write_text("#!/bin/sh\nexit 0\n")
+            path.chmod(0o755)
+        (self.bin / "sleep").write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$FIXTURE/sleeps"\n')
+        (self.bin / "sleep").chmod(0o755)
+        (self.bin / "insmod").write_text("""#!/usr/bin/env python3
 import os, sys
 from pathlib import Path
 root = Path(os.environ["FIXTURE"])
-driver = root / "sys/bus/platform/drivers/dwmmc_rockchip"
-gpio = root / "sys/class/gpio/gpio117"
-delay = sys.argv[1]
-with (root / "sleeps").open("a") as f:
-    f.write(delay + "\\n")
-assert (driver / "unbind").read_text().strip() == "ff9a0000.mmc"
-if delay == "1":
-    assert (gpio / "direction").read_text().strip() == "low"
-    assert not (driver / "bind").exists()
-    if os.environ["SCENARIO"] == "interrupted":
-        sys.exit(1)
-elif delay == "2":
-    assert (gpio / "value").read_text().strip() == "1"
-    assert not (driver / "bind").exists()
-elif delay == "0.1":
-    assert (driver / "bind").read_text().strip() == "ff9a0000.mmc"
-    scenario = os.environ["SCENARIO"]
-    if scenario in ("success", "partial", "wrong-vendor"):
-        for index, device in enumerate(("0x0082", "0x0182"), 1):
-            if scenario == "partial" and index == 2:
-                continue
-            node = root / ("sys/bus/platform/devices/ff9a0000.mmc/"
-                           "mmc_host/mmc2/mmc2:390b/mmc2:390b:" + str(index))
-            node.mkdir(parents=True, exist_ok=True)
-            (node / "vendor").write_text("0xffff" if scenario == "wrong-vendor" else "0xc8a1")
-            (node / "device").write_text(device)
+module = Path(sys.argv[1]).stem
+with (root / "loads").open("a") as log:
+    log.write(module + "\\n")
+if module in ("aic8800_bsp", "aic8800_fdrv"):
+    assert (root / "sys/bus/platform/devices/ff9a0000.mmc/power/control").read_text().strip() == "on"
+if module == os.environ.get("FAIL_MODULE"):
+    sys.exit(1)
+(root / "sys/module" / module).mkdir(parents=True, exist_ok=True)
+if module == "aic8800_bsp":
+    state = root / "sys/devices/platform/aic-bsp/aicbsp_info/fw_state"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    value = os.environ.get("BSP_STATE", "provisioned")
+    if value != "missing":
+        state.write_text(value + "\\n")
+if module == "aic8800_fdrv":
+    params = root / "sys/module/aic8800_fdrv/parameters"
+    params.mkdir(parents=True, exist_ok=True)
+    (params / "custregd").write_text("Y\\n")
+    wlan = root / "sys/class/net/wlan0"
+    wlan.mkdir(parents=True, exist_ok=True)
+    (wlan / "operstate").write_text("down\\n")
 """)
-        sleep.chmod(0o755)
+        (self.bin / "insmod").chmod(0o755)
+        (self.root / "proc/crypto").write_text("name : aes\nname : ecdh\n")
 
-    def run_helper(self, scenario="success"):
-        return subprocess.run(["sh", str(self.helper)], text=True, capture_output=True,
+    def add_function(self, card, function, device, vendor="0xc8a1"):
+        name = "mmc2:" + card
+        node = self.host / "mmc_host/mmc2" / name / (name + ":" + str(function))
+        node.mkdir(parents=True, exist_ok=True)
+        (node / "vendor").write_text(vendor + "\n")
+        (node / "device").write_text(device + "\n")
+
+    def run_helper(self, name="aiden-wifi-prepare", **extra_env):
+        return subprocess.run(["sh", str(self.lib / name)], text=True, capture_output=True,
                               env={**os.environ, "PATH": str(self.bin) + ":" + os.environ["PATH"],
-                                   "FIXTURE": str(self.root), "SCENARIO": scenario},
-                              timeout=15)
+                                   "FIXTURE": str(self.root), **extra_env}, timeout=15)
 
-    def test_recovery_waits_for_both_functions_after_reset_and_reprobe(self):
+    def sysfs_snapshot(self):
+        return {str(p.relative_to(self.root)): p.read_bytes()
+                for p in (self.root / "sys").rglob("*") if p.is_file()}
+
+    def assert_no_reset(self):
+        for path in (self.driver / "bind", self.driver / "unbind",
+                     self.root / "sys/class/gpio/export",
+                     self.root / "sys/class/gpio/gpio117/direction",
+                     self.root / "sys/class/gpio/gpio117/value"):
+            self.assertEqual(path.read_text(), "untouched\n", str(path))
+
+    def load_names(self):
+        path = self.root / "loads"
+        return path.read_text().splitlines() if path.exists() else []
+
+
+class WifiPrepareTest(StartupFixture):
+    def assert_read_only_result(self, success, reason=None):
+        before = self.sysfs_snapshot()
         result = self.run_helper()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("result=success", result.stderr)
-        self.assertEqual((self.root / "sleeps").read_text().splitlines(), ["1", "2", "0.1"])
-        self.assertEqual((self.gpio / "value").read_text().strip(), "1")
+        self.assertEqual(result.returncode == 0, success, result.stderr)
+        if reason:
+            self.assertIn(reason, result.stderr)
+        self.assertEqual(self.sysfs_snapshot(), before)
+        return result
+
+    def test_same_card_functions_ready_without_sysfs_writes(self):
+        self.assert_read_only_result(True, "card=mmc2:390b")
+        self.assertFalse((self.root / "sleeps").exists())
+
+    def test_loaded_drivers_and_live_interface_are_preserved(self):
+        for name in ("aic8800_bsp", "aic8800_fdrv", "aic8800_btlpm"):
+            (self.root / "sys/module" / name).mkdir(parents=True)
+        (self.root / "sys/class/net/wlan0").mkdir(parents=True)
+        self.assert_read_only_result(True)
 
     def test_other_board_untouched(self):
-        (self.root / "proc/device-tree/model").write_text("Luckfox Pico Zero")
-        self.assertEqual(self.run_helper().returncode, 0)
-        self.assertFalse((self.driver / "unbind").exists())
+        self.model.write_text("Luckfox Pico Zero")
+        self.assert_read_only_result(True)
 
-    def test_live_interface_untouched(self):
-        (self.root / "sys/class/net/wlan0").mkdir(parents=True)
-        self.assertEqual(self.run_helper().returncode, 0)
-        self.assertFalse((self.driver / "unbind").exists())
+    def test_requires_kernel_optin(self):
+        self.optin.unlink()
+        self.assert_read_only_result(False, "retained-sdio-not-configured")
 
-    def test_loaded_driver_without_interface_refuses_reset(self):
-        (self.root / "sys/module/aic8800_bsp").mkdir(parents=True)
-        result = self.run_helper()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("driver-already-loaded", result.stderr)
-        self.assertFalse((self.driver / "unbind").exists())
-
-    def test_missing_host_refuses_gpio_changes(self):
+    def test_requires_bound_host(self):
         (self.driver / "ff9a0000.mmc").unlink()
-        self.assertNotEqual(self.run_helper().returncode, 0)
-        self.assertEqual((self.gpio / "direction").read_text().strip(), "in")
+        self.assert_read_only_result(False, "sdio-host-unbound")
 
-    def test_timeout_partial_or_wrong_card_never_report_success(self):
-        for scenario in ("absent", "partial", "wrong-vendor"):
-            with self.subTest(scenario=scenario):
-                result = self.run_helper(scenario)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("sdio-enumeration-timeout", result.stderr)
-                self.assertEqual((self.gpio / "direction").read_text().strip(), "high")
-                # Reinitialize files that the mock checks at the next reset.
-                (self.driver / "bind").unlink()
+    def test_absent_partial_wrong_identity_and_split_cards_fail(self):
+        cases = [[], [("390b", 1, "0x0082")],
+                 [("390b", 1, "0x0082", "0xffff"), ("390b", 2, "0x0182")],
+                 [("390b", 1, "0x0182"), ("390b", 2, "0x0082")],
+                 [("390b", 1, "0x0082"), ("4000", 2, "0x0182")]]
+        for functions in cases:
+            with self.subTest(functions=functions):
+                shutil.rmtree(self.host / "mmc_host", ignore_errors=True)
+                (self.root / "sleeps").unlink(missing_ok=True)
+                for function in functions:
+                    self.add_function(*function)
+                self.assert_read_only_result(False, "sdio-enumeration-timeout")
+                self.assertEqual((self.root / "sleeps").read_text().splitlines(), ["0.1"] * 50)
 
-    def test_failure_while_low_restores_enable_and_host(self):
-        result = self.run_helper("interrupted")
+
+class WifiDriverTest(StartupFixture):
+    def run_driver(self, **env):
+        result = self.run_helper("aiden-wifi-driver", **env)
+        self.assert_no_reset()
+        return result
+
+    def test_provisioned_probe_order_power_hold_and_idempotent_restart(self):
+        result = self.run_driver()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.load_names(), ["cfg80211", "aic8800_bsp", "aic8800_fdrv"])
+        self.assertEqual(self.control.read_text(), "auto\n")
+        self.assertIn("fw_state=provisioned", result.stderr)
+        self.assertFalse((self.root / "sleeps").exists())
+        result = self.run_driver()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.load_names()), 3)
+
+    def test_reused_probe_preserves_original_on_policy(self):
+        self.control.write_text("on\n")
+        result = self.run_driver(BSP_STATE="reused")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("fw_state=reused", result.stderr)
+        self.assertEqual(self.control.read_text(), "on\n")
+
+    def test_unknown_state_does_not_load_fdrv_or_reprovision_loaded_bsp(self):
+        result = self.run_driver(BSP_STATE="unknown")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.gpio / "direction").read_text().strip(), "high")
-        self.assertEqual((self.driver / "bind").read_text().strip(), "ff9a0000.mmc")
+        self.assertIn("firmware-not-ready", result.stderr)
+        self.assertNotIn("aic8800_fdrv", self.load_names())
+        self.assertEqual(self.control.read_text(), "auto\n")
+        before = self.load_names()
+        result = self.run_driver()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.load_names(), before)
+
+    def test_missing_state_is_not_module_readiness(self):
+        result = self.run_driver(BSP_STATE="missing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fw_state=missing", result.stderr)
+        self.assertNotIn("aic8800_fdrv", self.load_names())
+        self.assertEqual(self.control.read_text(), "auto\n")
+
+    def test_bsp_probe_failure_restores_host_policy(self):
+        result = self.run_driver(FAIL_MODULE="aic8800_bsp")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("aic8800_fdrv", self.load_names())
+        self.assertEqual(self.control.read_text(), "auto\n")
+
+    def test_fdrv_probe_failure_restores_host_policy(self):
+        result = self.run_driver(FAIL_MODULE="aic8800_fdrv")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.control.read_text(), "auto\n")
+
+    def test_missing_mandatory_bsp_fails_without_fdrv(self):
+        (self.modules / "aic8800_bsp.ko").unlink()
+        result = self.run_driver()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("reason=missing", result.stderr)
+        self.assertNotIn("aic8800_fdrv", self.load_names())
+        self.assertEqual(self.control.read_text(), "auto\n")
+
+    def test_invalid_host_policy_is_not_overwritten(self):
+        self.control.write_text("invalid\n")
+        result = self.run_driver()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid-host-power-control", result.stderr)
+        self.assertEqual(self.control.read_text(), "invalid\n")
+        self.assertNotIn("aic8800_bsp", self.load_names())
+
+    def test_invalid_he_does_not_touch_hardware(self):
+        before = self.sysfs_snapshot()
+        result = self.run_driver(AIDEN_WIFI_HE="invalid")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.sysfs_snapshot(), before)
+        self.assertEqual(self.load_names(), [])
+
+
+class BluetoothPrepareTest(StartupFixture):
+    def test_shared_firmware_ready_without_fdrv_presence(self):
+        self.state.parent.mkdir(parents=True)
+        for state in ("provisioned", "reused"):
+            with self.subTest(state=state):
+                self.state.write_text(state + "\n")
+                result = self.run_helper("aiden-bluetooth-prepare")
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "sys/module/aic8800_fdrv").exists())
+
+    def test_unknown_or_missing_state_fails_even_with_fdrv(self):
+        (self.root / "sys/module/aic8800_fdrv").mkdir(parents=True)
+        self.state.parent.mkdir(parents=True)
+        for state in (None, "unknown", "failed", "provisioned\nunknown"):
+            with self.subTest(state=state):
+                if state is not None:
+                    self.state.write_text(state + "\n")
+                result = self.run_helper("aiden-bluetooth-prepare")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("firmware is not ready", result.stderr)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@
   ],
   "exclude": [
     "usr/lib/aiden/aiden-apt-source",
+    "usr/lib/aiden/aiden-bluetooth-prepare",
     "usr/lib/aiden/aiden-machine-id-provision",
     "usr/lib/aiden/aiden-media-modules",
     "usr/lib/aiden/aiden-ota-*",
