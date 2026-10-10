@@ -1137,31 +1137,6 @@ def _run_scores(aggregate: Mapping[str, Any]) -> list[dict[str, Any]]:
         _add_score(evaluations, f"failures.stage.{stage}", count)
     for status, count in sorted((aggregate.get("by_status") or {}).items()):
         _add_score(evaluations, f"status.{status}", count)
-    for category, values in sorted((aggregate.get("by_category") or {}).items()):
-        if not isinstance(values, Mapping):
-            continue
-        for field in ("passed", "total", "rubric_pass", "rubric_total"):
-            _add_score(
-                evaluations,
-                f"category.{category}.{field}",
-                values.get(field),
-            )
-        passed = _number(values.get("passed"))
-        total = _number(values.get("total"))
-        if passed is not None and total:
-            _add_score(
-                evaluations,
-                f"category.{category}.pass_rate",
-                passed / total,
-            )
-        rubric_pass = _number(values.get("rubric_pass"))
-        rubric_total = _number(values.get("rubric_total"))
-        if rubric_pass is not None and rubric_total:
-            _add_score(
-                evaluations,
-                f"category.{category}.rubric_pass_rate",
-                rubric_pass / rubric_total,
-            )
     for observation_id, values in sorted(
         (aggregate.get("trace_observations") or {}).items()
     ):
