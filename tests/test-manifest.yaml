@@ -145,7 +145,7 @@ suites:
     paths: [overlay-debian/usr/lib/aiden/aiden-rootfs-grow, overlay-debian/etc/systemd/system/aiden-rootfs-grow.service, scripts/test_debian_rootfs_grow.sh]
     command: bash scripts/test_debian_rootfs_grow.sh
     quick: true
-    dependencies: [bash, sh, awk, dumpe2fs, e2fsck, mke2fs, resize2fs, debugfs, stat, truncate]
+    dependencies: [bash, sh, awk, sed, date, dumpe2fs, e2fsck, mke2fs, resize2fs, debugfs, stat, truncate]
     required: true
     timeout_seconds: 60
 

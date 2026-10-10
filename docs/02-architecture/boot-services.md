@@ -60,6 +60,15 @@ preparation without writing the completion marker. Mounted filesystems use
 online growth without an offline fsck. The data mounts require preparation to
 succeed, so a failed check cannot be bypassed by a later retry against a mounted
 filesystem. Successful preparation remains active for the current boot.
+The growth service refuses manual stop and restart requests, preventing those
+requests from stopping live data mounts through their `Requires=` dependencies.
+After correcting a preparation failure, retry it with
+`systemctl start aiden-rootfs-grow.service`.
+
+The ext4 regression suite uses image files and simulated mount discovery. Its
+mounted cases verify that neither userdata nor OTA receives an offline fsck;
+actual online growth still requires validation with mounted filesystems on a
+board.
 
 This matters when OTA replaces a rootfs slot while preserving previously used
 userdata: `resize2fs` can require fsck on an unmounted filesystem even when it is

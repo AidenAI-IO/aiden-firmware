@@ -57,7 +57,10 @@ case "$*" in
         [ "${GROW_TEST_MOUNTED:-}" = userdata ] || exit 1
         echo /userdata
         ;;
-    '-rn -S /dev/disk/by-partlabel/ota') exit 1 ;;
+    '-rn -S /dev/disk/by-partlabel/ota')
+        [ "${GROW_TEST_MOUNTED:-}" = ota ] || exit 1
+        echo /userdata/ota
+        ;;
     *) echo "Unexpected findmnt arguments: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -96,8 +99,8 @@ set -eu
 printf 'e2fsck %s\n' "$*" >>"${GROW_TEST_ROOT}/calls"
 [ "$1" = -f ] && [ "$2" = -p ]
 # A repair must never run against a filesystem reported as mounted.
-if [ "${GROW_TEST_MOUNTED:-}" = userdata ] && [ "$3" = /dev/disk/by-partlabel/userdata ]; then
-    echo 'Attempted offline fsck of mounted userdata' >&2
+if [ -n "${GROW_TEST_MOUNTED:-}" ] && [ "$3" = "/dev/disk/by-partlabel/${GROW_TEST_MOUNTED}" ]; then
+    echo "Attempted offline fsck of mounted ${GROW_TEST_MOUNTED}" >&2
     exit 99
 fi
 if [ -n "${GROW_TEST_FSCK_STATUS:-}" ]; then exit "${GROW_TEST_FSCK_STATUS}"; fi
@@ -131,7 +134,19 @@ prepare_case() {
 mark_previously_mounted() {
     # resize2fs requires fsck when last mount is newer than last check, including
     # for a clean filesystem whose geometry already matches its partition.
-    debugfs -w -R "set_super_value mtime $(( $(date +%s) + 60 ))" "$1" >/dev/null 2>&1
+    local image=$1 mount_time geometry recorded_mount_time
+    mount_time=$(( $(date +%s) + 60 ))
+    # The @ prefix makes debugfs interpret the value as Unix epoch seconds.
+    if ! debugfs -w -R "set_super_value mtime @${mount_time}" "${image}" \
+        >"${TEST_ROOT}/debugfs-output" 2>&1; then
+        cat "${TEST_ROOT}/debugfs-output" >&2
+        fail "could not set the last-mount timestamp for ${image}"
+    fi
+    # debugfs can report command errors with status 0, so check the stored value.
+    geometry=$(LC_ALL=C TZ=UTC "${GROW_REAL_DUMPE2FS}" -h "${image}" 2>/dev/null)
+    recorded_mount_time=$(printf '%s\n' "${geometry}" | sed -n 's/^Last mount time:[[:space:]]*//p')
+    [ "$(LC_ALL=C TZ=UTC date -d "${recorded_mount_time}" +%s)" -eq "${mount_time}" ] \
+        || fail "last-mount timestamp was not written to ${image}"
 }
 
 assert_full() {
@@ -186,12 +201,19 @@ run_helper
 assert_full "${TEST_ROOT}/userdata.img"
 [ -f "${AIDEN_ROOTFS_GROW_MARKER}" ] || fail "corrected fsck status prevented growth"
 
-prepare_case
-make_image userdata 16 32 4096
-export GROW_TEST_MOUNTED=userdata
-run_helper
-assert_full "${TEST_ROOT}/userdata.img"
-if grep -q '^e2fsck ' "${TEST_ROOT}/calls"; then fail "mounted data was checked offline"; fi
+# These cases verify the no-offline-fsck branch for devices reported as mounted.
+# resize2fs still operates on image files here; real online growth needs a mount.
+for mounted_device in userdata ota; do
+    prepare_case
+    case "${mounted_device}" in
+        userdata) make_image userdata 16 32 4096 ;;
+        ota) make_image ota 16 32 1024 ;;
+    esac
+    export GROW_TEST_MOUNTED=${mounted_device}
+    run_helper
+    assert_full "${TEST_ROOT}/${mounted_device}.img"
+    if grep -q '^e2fsck ' "${TEST_ROOT}/calls"; then fail "mounted ${mounted_device} was checked offline"; fi
+done
 
 for fsck_status in 2 4 8; do
     prepare_case

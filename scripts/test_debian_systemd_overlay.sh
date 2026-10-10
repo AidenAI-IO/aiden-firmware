@@ -153,6 +153,8 @@ fi
 grep -q 'systemd-timesyncd.service' \
     "${UNIT_DIR}/aiden-rootfs-grow.service"
 grep -qx 'RemainAfterExit=yes' "${UNIT_DIR}/aiden-rootfs-grow.service"
+grep -qx 'RefuseManualStop=yes' "${UNIT_DIR}/aiden-rootfs-grow.service" \
+    || fail "manual growth-service restarts can stop live data mounts"
 grep -q 'mkdir -p /userdata/agent/log' \
     "${OVERLAY}/usr/lib/aiden/aiden-userdata-migrate"
 
