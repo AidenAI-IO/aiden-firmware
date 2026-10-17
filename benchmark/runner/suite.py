@@ -54,6 +54,8 @@ class TraceObservationSpec:
 class RequiredToolCallSpec:
     tool: str
     input_contains: dict[str, Any] = dc.field(default_factory=dict)
+    # Only the first remaining call to this tool may satisfy the requirement.
+    first_attempt: bool = False
 
 @dc.dataclass
 class HardAssertions:
@@ -178,8 +180,6 @@ def load_suite(path: Path) -> Suite:
         if cat not in VALID_CATEGORIES:
             raise SuiteValidationError(f"task {tid}: invalid category {cat!r}")
         rubric_raw = raw.get("rubric") or []
-        if not rubric_raw:
-            raise SuiteValidationError(f"task {tid}: empty rubric")
         rubric: list[RubricItem] = []
         for r in rubric_raw:
             if not isinstance(r, dict):
@@ -189,6 +189,9 @@ def load_suite(path: Path) -> Suite:
                 raise SuiteValidationError(f"task {tid}: rubric items require id and check")
             rubric.append(RubricItem(id=r["id"], check=check))
         ha = raw.get("hard_assertions") or {}
+        # A task may omit the judge only when deterministic call checks decide it.
+        if not rubric_raw and not ha.get("required_tool_calls"):
+            raise SuiteValidationError(f"task {tid}: empty rubric requires hard_assertions.required_tool_calls")
         # Validate hard_assertions types
         rr = ha.get("response_required", True)
         if isinstance(rr, str):
@@ -770,7 +773,12 @@ def _required_tool_call_assertions(raw: Any, task_id: str) -> list[RequiredToolC
             raise SuiteValidationError(
                 f"task {task_id}: required_tool_calls[{index}].input_contains must be an object"
             )
-        out.append(RequiredToolCallSpec(tool=tool, input_contains=input_contains))
+        first_attempt = item.get("first_attempt", False)
+        if not isinstance(first_attempt, bool):
+            raise SuiteValidationError(
+                f"task {task_id}: required_tool_calls[{index}].first_attempt must be boolean"
+            )
+        out.append(RequiredToolCallSpec(tool=tool, input_contains=input_contains, first_attempt=first_attempt))
     return out
 
 

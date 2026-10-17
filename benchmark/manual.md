@@ -262,6 +262,21 @@ may include harmless surrounding context, use `{"$contains": "substring"}` as
 the expected value. The same matcher works in mock responses and
 `hard_assertions.required_tool_calls`; for example, `{"text": {"$contains":
 "+1 202-555-0147"}}` accepts both the bare number and `Biden: +1 202-555-0147`.
+For a numeric field, `{"$gte": min, "$lte": max}` accepts an inclusive range;
+either bound may be omitted.
+
+A required call is satisfied only by a call whose result was not an error; the
+runner reads per-call error status from the recorded episode. Coordinates are
+compared as the device received them: when the agent model uses pixel
+coordinates, the runner substitutes the normalized arguments the episode
+recorded, so 0-1000 bounds apply to every model. Set
+`"first_attempt": true` on a `required_tool_calls` entry when only the next call
+to that tool counts, so a later retry cannot satisfy a missed first attempt.
+
+A task may leave `rubric` empty when `hard_assertions.required_tool_calls`
+fully decides it. Such a task is scored without the judge. The perception suite
+uses this to check the first tap's normalized coordinates against the target's
+bounds; later calls on the static frame do not affect the score.
 
 `enter_text` has its own internal decision chain in the real Go tool:
 
@@ -1166,8 +1181,9 @@ to the step summary, keeps the HTML and JSON artifacts for 90 days, and sends a
 Lark card when `BENCHMARK_REPORT_LARK_WEBHOOK_URL` and
 `BENCHMARK_REPORT_LARK_WEBHOOK_SECRET` are configured. The card summarizes the
 last seven days (runs, overall pass@1, known cost), lists each dataset's pass@1
-over the week with its change from the previous seven days (green up, red down),
-flags configuration-matched regressions, and links to the dashboard. Historical data comes
+over the week with its change from the previous seven days (green up, red down)
+and any settings that differ between the two weeks' latest runs, flags
+configuration-matched regressions, and links to the dashboard. Historical data comes
 from Langfuse v4 experiments and scores. GitHub Actions artifacts are not
 downloaded.
 
@@ -1198,8 +1214,13 @@ counts.
 The overview table compares each dataset's newest two runs across pass@1,
 pass@k, and pass^k, highlighting increases and decreases. Changed datasets
 appear first. Missing scores or a missing previous run show as unavailable.
-Expand **Run details** in Weekly trends to inspect the comparison status and the
-latest two runs' commit, branch, model, platform, and k.
+The comparison always uses the previous run, even when its configuration
+differs; such a row lists each changed setting as `old → new` (for example the
+agent model, judge prompt version, or suite hash), so a score change can be read
+together with its likely cause. Regression alerts still require a matching
+configuration. Expand **Run details** in Weekly trends to compare every
+configuration setting of the latest two runs side by side, with changed values
+highlighted. Run history also shows each run's agent model and judge.
 
 Weekly trends also includes charts for task execution latency (p50 and p90),
 mean tool/device/LLM calls per attempt, recorded timing components (p50), token
